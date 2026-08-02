@@ -137,7 +137,7 @@ internal object AppUpdateService {
 
   private fun openConnection(urlText: String): HttpURLConnection {
     val url = URL(urlText)
-    require(url.protocol.equals("https", ignoreCase = true)) { "Updates require HTTPS." }
+    require(isAllowedUpdateUrl(urlText)) { "Updates require HTTPS." }
     return (url.openConnection() as HttpURLConnection).apply {
       instanceFollowRedirects = true
       connectTimeout = CONNECT_TIMEOUT_MS
@@ -186,7 +186,7 @@ internal fun parseUpdateManifest(jsonText: String): AppUpdateInfo {
   val sha256 = json.getString("sha256").trim().lowercase()
   require(versionCode > 0) { "The update version is invalid." }
   require(versionName.isNotEmpty()) { "The update version name is missing." }
-  require(Uri.parse(apkUrl).scheme.equals("https", ignoreCase = true)) { "The APK URL must use HTTPS." }
+  require(isAllowedUpdateUrl(apkUrl)) { "The APK URL must use HTTPS." }
   require(sha256.matches(Regex("[0-9a-f]{64}"))) { "The update checksum is invalid." }
   return AppUpdateInfo(
     versionCode = versionCode,
@@ -195,6 +195,15 @@ internal fun parseUpdateManifest(jsonText: String): AppUpdateInfo {
     sha256 = sha256,
     releaseNotes = json.optString("releaseNotes").trim(),
   )
+}
+
+/** Production feeds must use HTTPS; debug builds may use the emulator's host loopback for tests. */
+private fun isAllowedUpdateUrl(urlText: String): Boolean {
+  val uri = Uri.parse(urlText)
+  if (uri.scheme.equals("https", ignoreCase = true)) return true
+  return BuildConfig.DEBUG &&
+    uri.scheme.equals("http", ignoreCase = true) &&
+    (uri.host == "10.0.2.2" || uri.host == "localhost" || uri.host == "127.0.0.1")
 }
 
 internal fun buildInstallIntent(context: Context, apkFile: File): Intent {

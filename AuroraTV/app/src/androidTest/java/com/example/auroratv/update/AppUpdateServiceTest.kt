@@ -46,6 +46,23 @@ class AppUpdateServiceTest {
   }
 
   @Test
+  fun emulatorHostHttpUrlIsAcceptedOnlyForDebugTesting() {
+    val update =
+      parseUpdateManifest(
+        """
+        {
+          "versionCode": 19,
+          "versionName": "1.7.1",
+          "apkUrl": "http://10.0.2.2:8765/GIZTV.apk",
+          "sha256": "${"d".repeat(64)}"
+        }
+        """.trimIndent()
+      )
+
+    assertEquals("http://10.0.2.2:8765/GIZTV.apk", update.apkUrl)
+  }
+
+  @Test
   fun invalidChecksumIsRejected() {
     assertThrows(IllegalArgumentException::class.java) {
       parseUpdateManifest(
