@@ -56,7 +56,7 @@ jobs:
           echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
 
       - name: Build signed release APK
-        run: ./gradlew :app:assembleRelease
+        run: bash ./gradlew :app:assembleRelease
 
       - name: Create update metadata
         run: |
