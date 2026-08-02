@@ -16,6 +16,7 @@ jobs:
         working-directory: AuroraTV
     env:
       UPDATE_GITHUB_REPOSITORY: ${{ github.repository }}
+      TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
       ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
@@ -56,7 +57,9 @@ jobs:
           echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
 
       - name: Build signed release APK
-        run: bash ./gradlew :app:assembleRelease
+        run: |
+          test -n "$TMDB_API_KEY"
+          bash ./gradlew :app:assembleRelease
 
       - name: Create update metadata
         run: |
