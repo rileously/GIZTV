@@ -34,11 +34,11 @@ Never commit the `.jks` file or its passwords. Losing the keystore means existin
 
 1. Increase both `versionCode` and `versionName` in `app/build.gradle.kts`.
 2. Commit and push the change.
-3. Push a matching tag. For `versionName = "1.7.0"`:
+3. Push a matching tag. For `versionName = "1.7.1"`:
 
    ```powershell
-   git tag v1.7.0
-   git push origin v1.7.0
+   git tag v1.7.1
+   git push origin v1.7.1
    ```
 
 The repository workflow in `../.github/workflows/release.yml` does everything else. On its next normal launch, GIZTV checks:
@@ -61,9 +61,9 @@ The feed format is:
 
 ```json
 {
-  "versionCode": 19,
-  "versionName": "1.7.1",
-  "apkUrl": "https://example.com/GIZTV-v1.7.1.apk",
+  "versionCode": 20,
+  "versionName": "1.7.2",
+  "apkUrl": "https://example.com/GIZTV-v1.7.2.apk",
   "sha256": "64-lowercase-hex-characters",
   "releaseNotes": "What changed in this version."
 }

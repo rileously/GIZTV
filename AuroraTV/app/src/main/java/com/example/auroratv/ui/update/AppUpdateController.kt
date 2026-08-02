@@ -9,6 +9,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -53,6 +54,7 @@ import com.example.auroratv.update.AppUpdateInfo
 import com.example.auroratv.update.AppUpdateService
 import com.example.auroratv.update.buildInstallIntent
 import java.io.File
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 internal sealed interface UpdateUiState {
@@ -165,8 +167,13 @@ internal fun AppUpdateOverlay(
   val isDownloading = state is UpdateUiState.Downloading
   BackHandler { if (!isDownloading) onDismiss() }
 
-  LaunchedEffect(state::class) {
-    if (!isDownloading) primaryFocus.requestFocus()
+  LaunchedEffect(state) {
+    if (!isDownloading) {
+      // Catalog rails may restore their own focus in the same frame. Let them settle, then make
+      // the modal the only active remote-control surface.
+      delay(180)
+      primaryFocus.requestFocus()
+    }
   }
 
   val update =
@@ -180,7 +187,7 @@ internal fun AppUpdateOverlay(
 
   Box(
     modifier =
-      Modifier.fillMaxSize().background(DeepSpace.copy(alpha = .96f)).padding(horizontal = 40.dp, vertical = 28.dp)
+      Modifier.fillMaxSize().focusGroup().background(DeepSpace.copy(alpha = .96f)).padding(horizontal = 40.dp, vertical = 28.dp)
         .testTag("update_overlay"),
     contentAlignment = Alignment.Center,
   ) {

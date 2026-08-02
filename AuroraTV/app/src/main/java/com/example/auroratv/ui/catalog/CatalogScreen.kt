@@ -588,6 +588,15 @@ private fun CatalogWordmark() {
     GizTvMark(modifier = Modifier.size(34.dp), cornerRadius = 10.dp)
     Spacer(Modifier.width(11.dp))
     Text("GIZTV", color = SoftWhite, fontWeight = FontWeight.Black, letterSpacing = 2.5.sp, fontSize = 18.sp)
+    Spacer(Modifier.width(9.dp))
+    Box(
+      modifier =
+        Modifier.clip(RoundedCornerShape(9.dp)).background(AuroraMint.copy(alpha = .14f))
+          .border(1.dp, AuroraMint.copy(alpha = .55f), RoundedCornerShape(9.dp)).padding(horizontal = 7.dp, vertical = 3.dp),
+      contentAlignment = Alignment.Center,
+    ) {
+      Text("v${BuildConfig.VERSION_NAME}", color = AuroraMint, fontWeight = FontWeight.Bold, fontSize = 9.sp)
+    }
   }
 }
 
