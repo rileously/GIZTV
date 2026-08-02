@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The artwork is an opaque illustration on its own black backdrop, so it is supplied as the
+  background layer with the subject already inset into the 72dp safe zone. A separate foreground
+  would only sit on top of it as an opaque square.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@mipmap/ic_launcher_backdrop" />
+    <foreground android:drawable="@android:color/transparent" />
+</adaptive-icon>
