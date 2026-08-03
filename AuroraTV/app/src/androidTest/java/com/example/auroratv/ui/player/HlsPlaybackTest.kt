@@ -49,6 +49,19 @@ class HlsPlaybackTest {
   }
 
   @Test
+  fun orientationPolicy_staysUprightForAVerticalShortDramaOnAPhone() {
+    assertEquals(
+      ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
+      gizTvOrientation(isTelevision = false, playerActive = true, verticalVideo = true),
+    )
+    // A television has nowhere to turn, so it stays landscape whatever the shape of the picture.
+    assertEquals(
+      ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE,
+      gizTvOrientation(isTelevision = true, playerActive = true, verticalVideo = true),
+    )
+  }
+
+  @Test
   fun playerControls_hideQuicklyOnPhoneAndRemainTvNavigable() {
     assertEquals(3_000, playerControllerTimeoutMs(isTelevision = false))
     assertEquals(5_000, playerControllerTimeoutMs(isTelevision = true))

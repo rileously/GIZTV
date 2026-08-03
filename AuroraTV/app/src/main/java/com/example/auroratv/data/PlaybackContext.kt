@@ -33,9 +33,18 @@ internal data class PlaybackContext(
   val seasonNumber: Int? = null,
   val episodeNumber: Int? = null,
   val playlist: List<PlaylistEntry> = emptyList(),
+  /**
+   * A vertical episode a couple of minutes long, as short dramas are.
+   *
+   * These are watched as a run rather than one at a time, so the player rolls straight into the
+   * next one, and on a phone it stays portrait instead of turning a 9:16 picture on its side.
+   */
+  val shortForm: Boolean = false,
 ) {
+  // Short dramas are numbered straight through with no seasons, so an episode is anything that
+  // carries an episode number.
   val isEpisode: Boolean
-    get() = seasonNumber != null && episodeNumber != null
+    get() = episodeNumber != null
 
   private val currentIndex: Int
     get() = playlist.indexOfFirst { it.pageUrl == pageUrl }
@@ -51,7 +60,9 @@ internal data class PlaybackContext(
   fun advanceTo(entry: PlaylistEntry): PlaybackContext =
     copy(
       pageUrl = entry.pageUrl,
-      subtitle = "S$seasonNumber · E${entry.episodeNumber} · ${entry.name}",
+      subtitle =
+        listOfNotNull(seasonNumber?.let { "S$it" }, "E${entry.episodeNumber}", entry.name)
+          .joinToString(" · "),
       overview = entry.overview,
       runtimeMinutes = entry.runtimeMinutes,
       airDate = entry.airDate,

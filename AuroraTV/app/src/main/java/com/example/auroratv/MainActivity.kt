@@ -35,8 +35,19 @@ class MainActivity : AppCompatActivity() {
   }
 }
 
-internal fun gizTvOrientation(isTelevision: Boolean, playerActive: Boolean): Int =
-  if (isTelevision || playerActive) {
+/**
+ * Which way up the app sits.
+ *
+ * A television is always landscape. A phone turns landscape to give a widescreen picture the whole
+ * display, but a short drama is shot 9:16 — rotating for it would letterbox a portrait video inside
+ * a landscape window and waste most of the screen, so [verticalVideo] keeps it upright.
+ */
+internal fun gizTvOrientation(
+  isTelevision: Boolean,
+  playerActive: Boolean,
+  verticalVideo: Boolean = false,
+): Int =
+  if (isTelevision || (playerActive && !verticalVideo)) {
     ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
   } else {
     ActivityInfo.SCREEN_ORIENTATION_PORTRAIT

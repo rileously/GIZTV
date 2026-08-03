@@ -1,5 +1,6 @@
 package com.example.auroratv.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,6 +15,9 @@ import com.example.auroratv.ui.browser.BrowserScreen
 import com.example.auroratv.ui.catalog.CatalogScreen
 import com.example.auroratv.ui.catalog.TmdbShow
 import com.example.auroratv.ui.catalog.TvShowDetailScreen
+import com.example.auroratv.ui.drama.ShortDrama
+import com.example.auroratv.ui.drama.ShortDramaDetailScreen
+import com.example.auroratv.ui.drama.ShortDramaScreen
 import com.example.auroratv.ui.main.AuroraTvApp
 import com.example.auroratv.ui.player.HlsPlayerScreen
 import com.example.auroratv.ui.player.HlsStreamRequest
@@ -24,6 +28,8 @@ private const val SKYFLIX_URL = "https://skyflix.to/"
 private enum class Destination {
   CATALOG,
   SHOW_DETAIL,
+  SHORT_DRAMAS,
+  DRAMA_DETAIL,
   WEB_HOME,
   BROWSER,
   PLAYER,
@@ -45,10 +51,21 @@ fun AuroraTvRoot(initialStreamUrl: String? = null, initialBrowserUrl: String? = 
   var browserUrl by remember { mutableStateOf(initialBrowserUrl ?: SKYFLIX_URL) }
   var browserReturnDestination by remember { mutableStateOf(Destination.CATALOG) }
   var selectedShow by remember { mutableStateOf<TmdbShow?>(null) }
+  var selectedDrama by remember { mutableStateOf<ShortDrama?>(null) }
   // Held while the browser resolves a stream, then attached to the request the player receives.
   var pendingContext by remember { mutableStateOf<PlaybackContext?>(null) }
   var streamRequest by remember {
     mutableStateOf(initialStreamUrl?.let { HlsStreamRequest(url = it, headers = emptyMap()) })
+  }
+
+  // One stable handler for both drama destinations. Registering a BackHandler inside each screen
+  // instead would hand the press that leaves the detail page to the listing page as well, dropping
+  // the viewer two levels at once.
+  BackHandler(
+    enabled = destination == Destination.SHORT_DRAMAS || destination == Destination.DRAMA_DETAIL
+  ) {
+    destination =
+      if (destination == Destination.DRAMA_DETAIL) Destination.SHORT_DRAMAS else Destination.CATALOG
   }
 
   fun openForPlayback(context: PlaybackContext, returnTo: Destination) {
@@ -67,6 +84,7 @@ fun AuroraTvRoot(initialStreamUrl: String? = null, initialBrowserUrl: String? = 
         destination = Destination.SHOW_DETAIL
       },
       onOpenWeb = { destination = Destination.WEB_HOME },
+      onOpenShortDramas = { destination = Destination.SHORT_DRAMAS },
     )
   }
 
@@ -80,6 +98,26 @@ fun AuroraTvRoot(initialStreamUrl: String? = null, initialBrowserUrl: String? = 
             show = show,
             onPlayEpisode = { context -> openForPlayback(context, Destination.SHOW_DETAIL) },
             onBack = { destination = Destination.CATALOG },
+          )
+        } else {
+          Catalog()
+        }
+      }
+      Destination.SHORT_DRAMAS ->
+        ShortDramaScreen(
+          onOpenDrama = { drama ->
+            selectedDrama = drama
+            destination = Destination.DRAMA_DETAIL
+          },
+          onBack = { destination = Destination.CATALOG },
+        )
+      Destination.DRAMA_DETAIL -> {
+        val drama = selectedDrama
+        if (drama != null) {
+          ShortDramaDetailScreen(
+            drama = drama,
+            onPlayEpisode = { context -> openForPlayback(context, Destination.DRAMA_DETAIL) },
+            onBack = { destination = Destination.SHORT_DRAMAS },
           )
         } else {
           Catalog()

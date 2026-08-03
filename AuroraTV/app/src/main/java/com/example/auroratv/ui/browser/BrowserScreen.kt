@@ -293,7 +293,12 @@ internal fun BrowserScreen(
               loadWithOverviewMode = true
               builtInZoomControls = false
               displayZoomControls = false
-              cacheMode = WebSettings.LOAD_DEFAULT
+              // A stream is only discovered by watching requests leave, and the cache is never
+              // consulted for a request that is never made: on a second visit the page would be
+              // rebuilt entirely from cache and resolve silently to nothing. Plain browsing keeps
+              // the cache, since there is nothing to discover there.
+              cacheMode =
+                if (playback != null) WebSettings.LOAD_NO_CACHE else WebSettings.LOAD_DEFAULT
               mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
               setGeolocationEnabled(false)
               if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) safeBrowsingEnabled = true
@@ -596,7 +601,12 @@ private fun preparationDetails(playback: PlaybackContext, remote: TmdbPlaybackDe
   val rating = remote?.rating ?: playback.rating
   val genres = remote?.genres?.takeIf { it.isNotEmpty() } ?: playback.genres
   val chips = buildList {
-    if (playback.isEpisode) add("S${playback.seasonNumber} · E${playback.episodeNumber}")
+    if (playback.isEpisode) {
+      add(
+        listOfNotNull(playback.seasonNumber?.let { "S$it" }, "E${playback.episodeNumber}")
+          .joinToString(" · ")
+      )
+    }
     (releaseDate ?: year)?.takeIf(String::isNotBlank)?.let(::add)
     runtime?.takeIf { it > 0 }?.let { add("$it min") }
     rating?.takeIf { it > 0.0 }?.let { add("★ ${String.format(Locale.US, "%.1f", it)}") }

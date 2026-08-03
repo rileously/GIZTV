@@ -298,7 +298,11 @@ internal fun HlsPlayerScreen(
   var controlsInteractionVersion by remember { mutableIntStateOf(0) }
   var playbackFinished by remember(request) { mutableStateOf(false) }
   var automaticQualityRampCompleted by remember(player) { mutableStateOf(false) }
-  var autoAdvanceSeconds by remember(request) { mutableIntStateOf(AUTO_ADVANCE_SECONDS) }
+  // A two-minute short drama is watched as a run, so it rolls on with no countdown to sit through.
+  // A full-length episode gets the pause, which is the viewer's chance to stop after one.
+  val shortForm = request.context?.shortForm == true
+  val autoAdvanceDelaySeconds = if (shortForm) 0 else AUTO_ADVANCE_SECONDS
+  var autoAdvanceSeconds by remember(request) { mutableIntStateOf(autoAdvanceDelaySeconds) }
   val playButtonFocusRequester = remember { FocusRequester() }
   val surfaceFocusRequester = remember { FocusRequester() }
   val nextEntry = request.context?.nextEntry
@@ -325,8 +329,9 @@ internal fun HlsPlayerScreen(
     }
   }
 
-  DisposableEffect(activity, isTelevision) {
-    activity?.requestedOrientation = gizTvOrientation(isTelevision = isTelevision, playerActive = true)
+  DisposableEffect(activity, isTelevision, shortForm) {
+    activity?.requestedOrientation =
+      gizTvOrientation(isTelevision = isTelevision, playerActive = true, verticalVideo = shortForm)
     onDispose {
       activity?.requestedOrientation = gizTvOrientation(isTelevision = isTelevision, playerActive = false)
     }
@@ -335,7 +340,7 @@ internal fun HlsPlayerScreen(
   // Roll into the next episode once one finishes, unless the viewer steps in first.
   LaunchedEffect(nextPromptVisible) {
     if (!nextPromptVisible) return@LaunchedEffect
-    autoAdvanceSeconds = AUTO_ADVANCE_SECONDS
+    autoAdvanceSeconds = autoAdvanceDelaySeconds
     while (autoAdvanceSeconds > 0) {
       delay(1_000L)
       autoAdvanceSeconds--
@@ -597,7 +602,8 @@ internal fun HlsPlayerScreen(
       )
     }
 
-    if (nextPromptVisible && nextEntry != null && error == null) {
+    // Nothing to offer when the next episode is already starting; the card would only flash.
+    if (nextPromptVisible && nextEntry != null && error == null && !shortForm) {
       NextEpisodePrompt(
         label = request.context?.nextLabel ?: "Next episode",
         secondsRemaining = autoAdvanceSeconds,
