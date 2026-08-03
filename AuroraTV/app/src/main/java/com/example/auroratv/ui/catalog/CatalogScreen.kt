@@ -23,7 +23,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -39,6 +42,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -49,6 +53,11 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -78,6 +87,9 @@ import com.example.auroratv.theme.SoftWhite
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import javax.net.ssl.SSLException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
 internal enum class CatalogTab(val label: String) {
@@ -106,24 +118,24 @@ internal fun CatalogScreen(
   val openWebFocusRequester = remember { FocusRequester() }
   val shortDramasFocusRequester = remember { FocusRequester() }
   val firstTabFocusRequester = remember { FocusRequester() }
-  val categoryFocusRequester = remember { FocusRequester() }
   val searchFieldFocusRequester = remember { FocusRequester() }
   val searchButtonFocusRequester = remember { FocusRequester() }
   val continueRowFocusRequester = remember { FocusRequester() }
   val gridFocusRequester = remember { FocusRequester() }
+  // One per listing, so a press of down lands on the next rail rather than wherever focus search
+  // decides — the same reason every other list on this screen names its own neighbours.
+  val railFocusRequesters = remember { List(CatalogCategory.entries.size) { FocusRequester() } }
   val gridState = rememberLazyGridState()
+  val railState = rememberLazyListState()
 
   var tab by rememberSaveable {
     mutableStateOf(CatalogTab.entries.firstOrNull { it.name == uiPreferences.lastTab() } ?: CatalogTab.MOVIES)
   }
-  var category by rememberSaveable {
-    mutableStateOf(
-      CatalogCategory.entries.firstOrNull { it.name == uiPreferences.lastCategory(tab.name) }
-        ?: CatalogCategory.POPULAR
-    )
-  }
   var query by rememberSaveable { mutableStateOf("") }
   var searchActive by rememberSaveable { mutableStateOf(false) }
+  // Every listing is on the page at once, one rail each, rather than behind a filter.
+  var movieSections by remember { mutableStateOf<Map<CatalogCategory, List<TmdbMovie>>>(emptyMap()) }
+  var showSections by remember { mutableStateOf<Map<CatalogCategory, List<TmdbShow>>>(emptyMap()) }
   var movies by remember { mutableStateOf<List<TmdbMovie>>(emptyList()) }
   var shows by remember { mutableStateOf<List<TmdbShow>>(emptyList()) }
   var savedItems by remember { mutableStateOf<List<LibraryItem>>(emptyList()) }
@@ -136,20 +148,35 @@ internal fun CatalogScreen(
     keyboardController?.hide()
   }
 
-  fun load(activeTab: CatalogTab, activeCategory: CatalogCategory, searchQuery: String?) {
+  fun load(activeTab: CatalogTab, searchQuery: String?) {
     scope.launch {
       loading = true
       errorMessage = null
       runCatching {
           when (activeTab) {
             CatalogTab.MOVIES ->
-              movies =
-                if (searchQuery.isNullOrBlank()) movieRepository.movies(activeCategory)
-                else movieRepository.searchMovies(searchQuery)
+              if (searchQuery.isNullOrBlank()) {
+                // The listings are independent, so they are fetched together rather than in turn.
+                movieSections = coroutineScope {
+                  CatalogCategory.entries
+                    .map { category -> async { category to movieRepository.movies(category) } }
+                    .awaitAll()
+                    .toMap()
+                }
+              } else {
+                movies = movieRepository.searchMovies(searchQuery)
+              }
             CatalogTab.SHOWS ->
-              shows =
-                if (searchQuery.isNullOrBlank()) tvRepository.shows(activeCategory)
-                else tvRepository.searchShows(searchQuery)
+              if (searchQuery.isNullOrBlank()) {
+                showSections = coroutineScope {
+                  CatalogCategory.entries
+                    .map { category -> async { category to tvRepository.shows(category) } }
+                    .awaitAll()
+                    .toMap()
+                }
+              } else {
+                shows = tvRepository.searchShows(searchQuery)
+              }
             CatalogTab.MY_LIST -> savedItems = myListStore.all()
           }
         }
@@ -168,57 +195,68 @@ internal fun CatalogScreen(
     searchActive = false
     errorMessage = null
     uiPreferences.setLastTab(next.name)
-    category =
-      CatalogCategory.entries.firstOrNull { it.name == uiPreferences.lastCategory(next.name) }
-        ?: CatalogCategory.POPULAR
-    load(next, category, null)
-  }
-
-  fun selectCategory(next: CatalogCategory) {
-    if (next == category && !searchActive) return
-    category = next
-    query = ""
-    searchActive = false
-    uiPreferences.setLastCategory(tab.name, next.name)
-    load(tab, next, null)
+    load(next, null)
   }
 
   fun runSearch() {
+    // Nothing typed yet, so Search means "let me type": the field takes focus and the keyboard
+    // comes up on purpose, rather than the moment focus passes through the row.
+    if (query.isBlank()) {
+      searchFieldFocusRequester.requestFocus()
+      return
+    }
     keyboardController?.hide()
     focusManager.clearFocus()
     searchButtonFocusRequester.requestFocus()
-    searchActive = query.isNotBlank()
-    load(tab, category, query.trim().takeIf(String::isNotBlank))
+    searchActive = true
+    load(tab, query.trim())
   }
 
   // Re-read on every entry so progress and saved titles reflect what just happened in the player.
   LaunchedEffect(Unit) {
     continueWatching = historyStore.continueWatching()
-    load(tab, category, null)
+    load(tab, null)
     firstTabFocusRequester.requestFocus()
   }
 
-  // Switching tab or category should start at the top, not wherever the last list was scrolled to.
-  LaunchedEffect(tab, category, searchActive, loading) {
+  // Switching tab should start at the top, not wherever the last list was scrolled to.
+  LaunchedEffect(tab, searchActive, loading) {
     if (!loading && gridState.layoutInfo.totalItemsCount > 0) gridState.scrollToItem(0)
+    if (!loading && railState.layoutInfo.totalItemsCount > 0) railState.scrollToItem(0)
   }
 
   val browsing = tab != CatalogTab.MY_LIST
   val showContinueRow = continueWatching.isNotEmpty() && !searchActive
+  // Rails carry the browsable listings; a search and My List are a plain grid of one answer.
+  val showRails = browsing && !searchActive
+  val sections: List<Pair<CatalogCategory, Int>> =
+    if (!showRails) emptyList()
+    else
+      CatalogCategory.entries.map { category ->
+        val size =
+          if (tab == CatalogTab.MOVIES) movieSections[category].orEmpty().size
+          else showSections[category].orEmpty().size
+        category to size
+      }.filter { (_, size) -> size > 0 }
   val itemCount =
-    when (tab) {
-      CatalogTab.MOVIES -> movies.size
-      CatalogTab.SHOWS -> shows.size
-      CatalogTab.MY_LIST -> savedItems.size
+    when {
+      showRails -> sections.sumOf { (_, size) -> size }
+      tab == CatalogTab.MOVIES -> movies.size
+      tab == CatalogTab.SHOWS -> shows.size
+      else -> savedItems.size
     }
   val heading =
     when {
       searchActive -> "Results for “${query.trim()}”"
-      tab == CatalogTab.MY_LIST -> "My List"
-      tab == CatalogTab.MOVIES -> "${category.label} movies"
-      else -> "${category.label} TV shows"
+      else -> "My List"
     }
-  val firstBodyFocusRequester = if (showContinueRow) continueRowFocusRequester else gridFocusRequester
+  val firstRailFocusRequester = railFocusRequesters.first()
+  val firstBodyFocusRequester =
+    when {
+      showContinueRow -> continueRowFocusRequester
+      showRails -> firstRailFocusRequester
+      else -> gridFocusRequester
+    }
 
   BoxWithConstraints(
     modifier =
@@ -247,13 +285,13 @@ internal fun CatalogScreen(
         openWebModifier =
           Modifier.focusRequester(openWebFocusRequester).focusProperties {
             left = shortDramasFocusRequester
-            down = if (browsing) categoryFocusRequester else firstBodyFocusRequester
+            down = if (browsing) searchButtonFocusRequester else firstBodyFocusRequester
           },
         shortDramasModifier =
           Modifier.focusRequester(shortDramasFocusRequester).focusProperties {
             left = firstTabFocusRequester
             right = openWebFocusRequester
-            down = if (browsing) categoryFocusRequester else firstBodyFocusRequester
+            down = if (browsing) searchButtonFocusRequester else firstBodyFocusRequester
           },
         tabs = {
           ChipRow(
@@ -261,22 +299,18 @@ internal fun CatalogScreen(
             selectedIndex = CatalogTab.entries.indexOf(tab),
             onSelect = { selectTab(CatalogTab.entries[it]) },
             firstChipFocusRequester = firstTabFocusRequester,
-            down = if (browsing) categoryFocusRequester else firstBodyFocusRequester,
+            down = if (browsing) searchButtonFocusRequester else firstBodyFocusRequester,
             semanticsRole = Role.Tab,
           )
         },
       )
       if (browsing) {
         Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
-        CatalogFilterRow(
-          narrow = narrow,
-          selectedCategory = if (searchActive) null else category,
-          onSelectCategory = ::selectCategory,
+        CatalogSearchRow(
           query = query,
           placeholder = if (tab == CatalogTab.MOVIES) "Search movies…" else "Search shows…",
           onQueryChanged = { query = it },
           onSearch = ::runSearch,
-          categoryFocusRequester = categoryFocusRequester,
           searchFieldFocusRequester = searchFieldFocusRequester,
           searchButtonFocusRequester = searchButtonFocusRequester,
           tabFocusRequester = firstTabFocusRequester,
@@ -292,7 +326,7 @@ internal fun CatalogScreen(
             message = errorMessage ?: "Content could not be loaded",
             modifier = Modifier.weight(1f),
             actionLabel = "Try again",
-            onAction = { load(tab, category, query.trim().takeIf(String::isNotBlank)) },
+            onAction = { load(tab, query.trim().takeIf(String::isNotBlank)) },
           )
         itemCount == 0 && !showContinueRow ->
           StatusPanel(
@@ -300,6 +334,110 @@ internal fun CatalogScreen(
             else "Nothing found. Try another title.",
             Modifier.weight(1f),
           )
+        showRails ->
+          LazyColumn(
+            state = railState,
+            // The focus group is what lets a press of down reach a rail that has not been composed
+            // yet: focus search asks the list to bring it into view first.
+            modifier = Modifier.weight(1f).fillMaxWidth().focusGroup(),
+            contentPadding = PaddingValues(bottom = 22.dp),
+            verticalArrangement = Arrangement.spacedBy(if (compact) 12.dp else 20.dp),
+          ) {
+            if (showContinueRow) {
+              item {
+                ContinueWatchingSection(
+                  entries = continueWatching,
+                  onResume = { entry -> onPlay(entry.toPlaybackContext()) },
+                  firstCardFocusRequester = continueRowFocusRequester,
+                  up = searchButtonFocusRequester,
+                  down = firstRailFocusRequester,
+                  hasGrid = sections.isNotEmpty(),
+                )
+              }
+            }
+            itemsIndexed(items = sections, key = { _, (category, _) -> category.name }) {
+              index,
+              (category, size) ->
+              val railFocusRequester = railFocusRequesters[index]
+              // Only the way back into the chrome is named. A rail further down the page has not
+              // been composed yet, and a FocusRequester for a node that does not exist does
+              // nothing at all, so moving between rails is left to focus search, which scrolls the
+              // next one into view as it goes.
+              val up =
+                if (index == 0) {
+                  if (showContinueRow) continueRowFocusRequester else searchButtonFocusRequester
+                } else {
+                  null
+                }
+              val down: FocusRequester? = null
+              // Rails past the fold are not composed, and neither a FocusRequester nor focus search
+              // can reach a node that does not exist yet. So the move is driven: scroll the
+              // neighbour into view first, then hand it the focus.
+              val moveToRail: (Int) -> Unit = { target ->
+                scope.launch {
+                  railState.scrollToItem(target + if (showContinueRow) 1 else 0)
+                  runCatching { railFocusRequesters[target].requestFocus() }
+                    .onFailure {
+                      // One frame later the rail has certainly been placed.
+                      withFrameNanos {}
+                      runCatching { railFocusRequesters[target].requestFocus() }
+                    }
+                }
+                Unit
+              }
+              val railHeading =
+                if (tab == CatalogTab.MOVIES) "${category.label} movies"
+                else "${category.label} TV shows"
+              if (tab == CatalogTab.MOVIES) {
+                CatalogRail(
+                  heading = railHeading,
+                  items = movieSections[category].orEmpty(),
+                  key = { it.id },
+                  narrow = narrow,
+                  attribution = index == 0,
+                  firstCardFocusRequester = railFocusRequester,
+                  up = up,
+                  down = down,
+                  onMoveDown = if (index + 1 < sections.size) { { moveToRail(index + 1) } } else null,
+                  onMoveUp = if (index > 0) { { moveToRail(index - 1) } } else null,
+                ) { movie, cardModifier ->
+                  PosterCard(
+                    title = movie.title,
+                    subtitle = movie.year ?: "—",
+                    rating = movie.voteAverage,
+                    posterUrl = movie.posterUrl,
+                    actionLabel = "Play ${movie.title}",
+                    watched = historyStore.find(vidfastMovieUrl(movie.id))?.completed == true,
+                    onClick = { onPlay(movie.toPlaybackContext()) },
+                    modifier = cardModifier,
+                  )
+                }
+              } else {
+                CatalogRail(
+                  heading = railHeading,
+                  items = showSections[category].orEmpty(),
+                  key = { it.id },
+                  narrow = narrow,
+                  attribution = index == 0,
+                  firstCardFocusRequester = railFocusRequester,
+                  up = up,
+                  down = down,
+                  onMoveDown = if (index + 1 < sections.size) { { moveToRail(index + 1) } } else null,
+                  onMoveUp = if (index > 0) { { moveToRail(index - 1) } } else null,
+                ) { show, cardModifier ->
+                  PosterCard(
+                    title = show.name,
+                    subtitle = show.year ?: "—",
+                    rating = show.voteAverage,
+                    posterUrl = show.posterUrl,
+                    actionLabel = "Open ${show.name}",
+                    onClick = { onOpenShow(show) },
+                    modifier = cardModifier,
+                  )
+                }
+              }
+            }
+          }
         else ->
           LazyVerticalGrid(
             state = gridState,
@@ -433,7 +571,12 @@ internal fun friendlyCatalogError(error: Throwable): String =
   }
 
 @Composable
-private fun SectionHeading(heading: String, itemCount: Int, narrow: Boolean) {
+private fun SectionHeading(
+  heading: String,
+  itemCount: Int,
+  narrow: Boolean,
+  attribution: Boolean = true,
+) {
   Column {
     Row(verticalAlignment = Alignment.CenterVertically) {
       Text(heading, color = SoftWhite, fontWeight = FontWeight.Black, fontSize = if (narrow) 17.sp else 19.sp)
@@ -442,7 +585,8 @@ private fun SectionHeading(heading: String, itemCount: Int, narrow: Boolean) {
         Text("$itemCount titles", color = AuroraMint, fontWeight = FontWeight.Bold, fontSize = 11.sp)
       }
       Spacer(Modifier.weight(1f))
-      if (!narrow) {
+      // Stated once at the top of the page rather than over every rail.
+      if (!narrow && attribution) {
         Text(
           "TMDB API · not endorsed or certified by TMDB",
           color = MutedBlue.copy(alpha = .6f),
@@ -514,41 +658,83 @@ private fun CatalogWordmark() {
   }
 }
 
-/** Listing chips and the search box share one line, so filtering costs a single row. */
+/**
+ * One listing rail: a heading and a row of posters.
+ *
+ * Every listing is on the page at once, so a viewer reaches Top rated with two presses of down
+ * rather than by first choosing it from a filter.
+ */
 @Composable
-private fun CatalogFilterRow(
+private fun <T> CatalogRail(
+  heading: String,
+  items: List<T>,
+  key: (T) -> Any,
   narrow: Boolean,
-  selectedCategory: CatalogCategory?,
-  onSelectCategory: (CatalogCategory) -> Unit,
+  attribution: Boolean,
+  firstCardFocusRequester: FocusRequester,
+  up: FocusRequester?,
+  down: FocusRequester?,
+  onMoveDown: (() -> Unit)?,
+  onMoveUp: (() -> Unit)?,
+  card: @Composable (T, Modifier) -> Unit,
+) {
+  if (items.isEmpty()) return
+  val firstKey = key(items.first())
+  Column(
+    modifier =
+      Modifier.onPreviewKeyEvent { event ->
+        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+        when (event.key) {
+          Key.DirectionDown -> onMoveDown?.let { it(); true } ?: false
+          Key.DirectionUp -> onMoveUp?.let { it(); true } ?: false
+          else -> false
+        }
+      }
+  ) {
+    SectionHeading(
+      heading = heading,
+      itemCount = items.size,
+      narrow = narrow,
+      attribution = attribution,
+    )
+    LazyRow(
+      modifier = Modifier.fillMaxWidth().focusGroup(),
+      horizontalArrangement = Arrangement.spacedBy(if (narrow) 12.dp else 18.dp),
+    ) {
+      items(items = items, key = key) { item ->
+        val cardModifier =
+          Modifier.width(if (narrow) 132.dp else 158.dp)
+            .let { if (key(item) == firstKey) it.focusRequester(firstCardFocusRequester) else it }
+            .focusProperties {
+              if (up != null) this.up = up
+              if (down != null) this.down = down
+            }
+        card(item, cardModifier)
+      }
+    }
+  }
+}
+
+/** The search box, on its own line now that the listings are rails rather than a filter. */
+@Composable
+private fun CatalogSearchRow(
   query: String,
   placeholder: String,
   onQueryChanged: (String) -> Unit,
   onSearch: () -> Unit,
-  categoryFocusRequester: FocusRequester,
   searchFieldFocusRequester: FocusRequester,
   searchButtonFocusRequester: FocusRequester,
   tabFocusRequester: FocusRequester,
   bodyFocusRequester: FocusRequester?,
 ) {
-  val categories: @Composable () -> Unit = {
-    ChipRow(
-      labels = CatalogCategory.entries.map { it.label },
-      selectedIndex = selectedCategory?.let { CatalogCategory.entries.indexOf(it) } ?: -1,
-      onSelect = { onSelectCategory(CatalogCategory.entries[it]) },
-      firstChipFocusRequester = categoryFocusRequester,
-      up = tabFocusRequester,
-      down = bodyFocusRequester,
-      semanticsRole = Role.Tab,
-      compactChips = true,
-    )
-  }
   val fieldModifier =
     Modifier.focusRequester(searchFieldFocusRequester).focusProperties {
       up = tabFocusRequester
-      left = categoryFocusRequester
       down = bodyFocusRequester ?: FocusRequester.Default
       right = searchButtonFocusRequester
     }.remoteFocusNavigation(up = tabFocusRequester, down = bodyFocusRequester)
+  // Down from the chrome lands here rather than in the field, so passing through the row never
+  // summons the keyboard; pressing it is what opens the field for typing.
   val buttonModifier =
     Modifier.focusRequester(searchButtonFocusRequester).focusProperties {
       up = tabFocusRequester
@@ -559,25 +745,13 @@ private fun CatalogFilterRow(
       left = searchFieldFocusRequester,
       down = bodyFocusRequester,
     )
-  if (narrow) {
-    Column(modifier = Modifier.focusGroup(), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-      categories()
-      Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.CenterVertically) {
-        CatalogSearchField(query, placeholder, onQueryChanged, onSearch, fieldModifier.weight(1f))
-        CatalogButton("Search", onSearch, buttonModifier)
-      }
-    }
-  } else {
-    Row(
-      modifier = Modifier.focusGroup().fillMaxWidth(),
-      horizontalArrangement = Arrangement.spacedBy(10.dp),
-      verticalAlignment = Alignment.CenterVertically,
-    ) {
-      categories()
-      Spacer(Modifier.width(6.dp))
-      CatalogSearchField(query, placeholder, onQueryChanged, onSearch, fieldModifier.weight(1f))
-      CatalogButton("Search", onSearch, buttonModifier)
-    }
+  Row(
+    modifier = Modifier.focusGroup().fillMaxWidth(),
+    horizontalArrangement = Arrangement.spacedBy(10.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    CatalogSearchField(query, placeholder, onQueryChanged, onSearch, fieldModifier.weight(1f))
+    CatalogButton("Search", onSearch, buttonModifier)
   }
 }
 
