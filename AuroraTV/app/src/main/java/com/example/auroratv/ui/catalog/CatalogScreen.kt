@@ -90,7 +90,11 @@ import javax.net.ssl.SSLException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+/** Long enough that a word typed at speed is one request, short enough to feel immediate. */
+private const val SEARCH_DEBOUNCE_MS = 350L
 
 internal enum class CatalogTab(val label: String) {
   MOVIES("Movies"),
@@ -148,11 +152,10 @@ internal fun CatalogScreen(
     keyboardController?.hide()
   }
 
-  fun load(activeTab: CatalogTab, searchQuery: String?) {
-    scope.launch {
-      loading = true
-      errorMessage = null
-      runCatching {
+  suspend fun runLoad(activeTab: CatalogTab, searchQuery: String?) {
+    loading = true
+    errorMessage = null
+    runCatching {
           when (activeTab) {
             CatalogTab.MOVIES ->
               if (searchQuery.isNullOrBlank()) {
@@ -184,8 +187,11 @@ internal fun CatalogScreen(
           Log.e("GizTvTmdb", "TMDB ${activeTab.name} load failed", it)
           errorMessage = friendlyCatalogError(it)
         }
-      loading = false
-    }
+    loading = false
+  }
+
+  fun load(activeTab: CatalogTab, searchQuery: String?) {
+    scope.launch { runLoad(activeTab, searchQuery) }
   }
 
   fun selectTab(next: CatalogTab) {
@@ -205,11 +211,37 @@ internal fun CatalogScreen(
       searchFieldFocusRequester.requestFocus()
       return
     }
+    // Results are already arriving as the viewer types, so this only puts the keyboard away.
     keyboardController?.hide()
     focusManager.clearFocus()
     searchButtonFocusRequester.requestFocus()
+  }
+
+  /**
+   * Searches as the viewer types.
+   *
+   * Each keystroke restarts this effect, which cancels the wait and any request already in
+   * flight — so results can never arrive out of order, and a fast typist costs one request rather
+   * than one per letter. An emptied box falls straight back to the rails, which are still in hand.
+   */
+  LaunchedEffect(query, tab) {
+    val trimmed = query.trim()
+    if (trimmed.isBlank()) {
+      // Only when a search is being abandoned. On the first composition there is nothing to undo,
+      // and clearing the flag then would cut the opening load short.
+      if (searchActive) {
+        searchActive = false
+        errorMessage = null
+        loading = false
+      }
+      return@LaunchedEffect
+    }
+    delay(SEARCH_DEBOUNCE_MS)
+    // Set before the request, not after it. Cancellation is cooperative, so a superseded search
+    // can still be finishing its last steps, and an assignment made after the await would switch
+    // the results back on just as an emptied box had switched them off.
     searchActive = true
-    load(tab, query.trim())
+    runLoad(tab, trimmed)
   }
 
   // Re-read on every entry so progress and saved titles reflect what just happened in the player.
@@ -320,8 +352,10 @@ internal fun CatalogScreen(
       Spacer(Modifier.height(if (compact) 8.dp else 14.dp))
 
       when {
-        loading -> StatusPanel("Loading…", Modifier.weight(1f), loading = true)
-        errorMessage != null ->
+        // Only when there is nothing to show. Typing would otherwise replace the results with a
+        // loading panel on every letter, which flickers and loses the viewer's place.
+        loading && itemCount == 0 -> StatusPanel("Loading…", Modifier.weight(1f), loading = true)
+        errorMessage != null && itemCount == 0 ->
           StatusPanel(
             message = errorMessage ?: "Content could not be loaded",
             modifier = Modifier.weight(1f),
