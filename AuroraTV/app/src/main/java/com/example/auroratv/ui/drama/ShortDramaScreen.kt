@@ -62,9 +62,9 @@ import kotlinx.coroutines.launch
 /**
  * The short drama listing.
  *
- * DramaBox has no browsable listing endpoint, so the keyword chips stand in for categories: the
- * page opens on the first one and every chip press is exactly one request, which keeps the shared
- * ten-per-minute budget intact.
+ * chartdrama matches on title text rather than genre, so the keyword chips are title words: the
+ * page opens on the first one and every chip press is exactly one request, which the repository
+ * caches and paces.
  */
 @Composable
 internal fun ShortDramaScreen(
@@ -101,7 +101,7 @@ internal fun ShortDramaScreen(
       runCatching { ShortDramaRepository.search(searchQuery) }
         .onSuccess { dramas = it }
         .onFailure {
-          Log.e("GizTvDramaBox", "DramaBox search failed for \"$searchQuery\"", it)
+          Log.e("GizTvShortDrama", "Short drama search failed for \"$searchQuery\"", it)
           errorMessage = friendlyCatalogError(it)
         }
       loading = false
@@ -237,22 +237,22 @@ internal fun ShortDramaScreen(
                   )
                   Spacer(Modifier.weight(1f))
                   if (!narrow) {
-                    Text("DramaBox listing", color = MutedBlue.copy(alpha = .6f), fontSize = 9.sp)
+                    Text("chartdrama listing", color = MutedBlue.copy(alpha = .6f), fontSize = 9.sp)
                   }
                 }
                 Spacer(Modifier.height(8.dp))
               }
             }
-            items(items = dramas, key = { it.bookId }) { drama ->
+            items(items = dramas, key = { it.slug }) { drama ->
               PosterCard(
-                title = drama.bookName,
-                subtitle = drama.subtitle ?: "—",
+                title = drama.title,
+                subtitle = drama.subtitle,
                 rating = 0.0,
                 posterUrl = drama.coverUrl,
-                actionLabel = "Open ${drama.bookName}",
+                actionLabel = "Open ${drama.title}",
                 onClick = { dismissKeyboard(); onOpenDrama(drama) },
                 modifier =
-                  if (drama.bookId == dramas.first().bookId) {
+                  if (drama.slug == dramas.first().slug) {
                     Modifier.focusRequester(gridFocusRequester)
                   } else {
                     Modifier

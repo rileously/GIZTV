@@ -17,109 +17,117 @@ import org.junit.Test
 
 class ShortDramaRepositoryTest {
   @Test
-  fun searchParser_readsDramaFieldsAndSkipsInvalidRows() {
+  fun parser_readsTheListingAndSkipsUnusableRows() {
     val dramas =
       parseShortDramas(
         """
-        [
-          {
-            "bookId": "42000012638",
-            "bookName": "The One You Love is Her Twin Sister",
-            "introduction": "Countryside girl Elise Jensen marries Cyrus Fenton.",
-            "cover": "https://hwztchapter.dramaboxdb.com/cover.jpg?t=1",
-            "protagonist": "Cyrus Fenton,  Elise Jensen",
-            "tagNames": ["Revenge", "Modern"]
-          },
-          { "bookId": "", "bookName": "Missing id" },
-          { "bookId": "42000000001", "bookName": "   " }
-        ]
-        """.trimIndent()
-      )
-
-    val drama = dramas.single()
-    assertEquals("42000012638", drama.bookId)
-    assertEquals("The One You Love is Her Twin Sister", drama.bookName)
-    assertEquals("https://hwztchapter.dramaboxdb.com/cover.jpg?t=1", drama.coverUrl)
-    assertEquals(listOf("Revenge", "Modern"), drama.tags)
-    // The first tag reads better on a card than the cast list does.
-    assertEquals("Revenge", drama.subtitle)
-  }
-
-  @Test
-  fun searchParser_fallsBackToTheCastWhenThereAreNoTags() {
-    val drama =
-      parseShortDramas("""[{"bookId":"1","bookName":"Untagged","protagonist":"Ada"}]""").single()
-
-    assertEquals("Ada", drama.subtitle)
-    assertNull(drama.coverUrl)
-    assertTrue(drama.tags.isEmpty())
-  }
-
-  @Test
-  fun searchParser_returnsNothingForAnErrorPayload() {
-    assertTrue(parseShortDramas("""{"error":"Terlalu Banyak Permintaan"}""").isEmpty())
-  }
-
-  @Test
-  fun detailParser_readsChapterCountAndTags() {
-    val detail =
-      parseShortDramaDetail(
-        """
         {
-          "bookId": "42000012638",
-          "bookName": "The One You Love is Her Twin Sister",
-          "coverWap": "https://hwztchapter.dramaboxdb.com/cover.jpg",
-          "chapterCount": 71,
-          "introduction": "A synopsis.",
-          "tags": ["Revenge", "Modern"]
+          "items": [
+            {
+              "slug": "42000012638/the-one-you-love-is-her-twin-sister",
+              "dramaId": 32161,
+              "title": "The One You Love is Her Twin Sister",
+              "cover": "https://res.chartdrama.com/5/cover.jpg",
+              "latestEpisodeLabel": "EP71 TV",
+              "synopsis": "Countryside girl Elise marries in place of her twin.",
+              "starring": "Cyrus Fenton",
+              "tags": ["Revenge", "Modern"],
+              "source": 5
+            },
+            { "slug": "", "title": "No slug" },
+            { "slug": "42000000001/blank-title", "title": "   " },
+            { "slug": "not-a-slug", "title": "Missing the id" }
+          ]
         }
         """.trimIndent()
       )
 
-    assertEquals(71, detail.chapterCount)
-    assertEquals("https://hwztchapter.dramaboxdb.com/cover.jpg", detail.coverUrl)
-    assertEquals(listOf("Revenge", "Modern"), detail.tags)
+    val drama = dramas.single()
+    assertEquals("42000012638/the-one-you-love-is-her-twin-sister", drama.slug)
+    assertEquals("The One You Love is Her Twin Sister", drama.title)
+    assertEquals("https://res.chartdrama.com/5/cover.jpg", drama.coverUrl)
+    // The count rides along with the listing, so opening a drama costs no second request.
+    assertEquals(71, drama.episodeCount)
+    assertEquals(listOf("Revenge", "Modern"), drama.tags)
+    assertEquals("Revenge", drama.subtitle)
   }
 
   @Test
-  fun detailParser_alwaysLeavesAtLeastOneEpisode() {
-    assertEquals(1, parseShortDramaDetail("""{"bookId":"1","chapterCount":0}""").chapterCount)
+  fun parser_fallsBackToTheCastAndToleratesAMissingCover() {
+    val drama =
+      parseShortDramas(
+        """{"items":[{"slug":"1/untagged","title":"Untagged","starring":"Ada","cover":""}]}"""
+      )
+        .single()
+
+    assertEquals("Ada", drama.subtitle)
+    assertNull(drama.coverUrl)
+    assertTrue(drama.tags.isEmpty())
+    // Nothing said about episodes still leaves the one about to be opened.
+    assertEquals(1, drama.episodeCount)
   }
 
   @Test
-  fun slug_lowercasesAndHyphenatesTheTitle() {
+  fun subtitle_fallsBackToTheRunLengthWhenTheListingCarriesNoGenre() {
+    val drama =
+      parseShortDramas(
+        """{"items":[{"slug":"1/plain","title":"Plain","latestEpisodeLabel":"EP50 TV"}]}"""
+      )
+        .single()
+
+    assertEquals("50 episodes", drama.subtitle)
     assertEquals(
-      "the-one-you-love-is-her-twin-sister",
-      chartDramaSlug("The One You Love is Her Twin Sister"),
+      "1 episode",
+      parseShortDramas("""{"items":[{"slug":"1/single","title":"Single"}]}""").single().subtitle,
     )
-    assertEquals("ceo-s-secret-wife", chartDramaSlug("CEO's Secret Wife!"))
   }
 
   @Test
-  fun slug_collapsesPunctuationAndSpacingIntoOneHyphen() {
-    // A comma and the space after it are one run of punctuation, so they are one hyphen, not two.
-    assertEquals(
-      "father-of-my-ex-owner-of-my-heart",
-      chartDramaSlug("Father of My Ex, Owner of My Heart"),
-    )
-    assertEquals("married-at-first-sight", chartDramaSlug("  Married — At First Sight!!  "))
+  fun parser_returnsNothingForAnErrorPayload() {
+    assertTrue(parseShortDramas("""{"error":"forbidden"}""").isEmpty())
+  }
+
+  @Test
+  fun episodeCount_readsTheRunLengthOutOfTheLabel() {
+    assertEquals(71, episodeCountFromLabel("EP71 TV"))
+    assertEquals(50, episodeCountFromLabel("EP50"))
+    assertEquals(1, episodeCountFromLabel("Coming soon"))
+    assertEquals(1, episodeCountFromLabel(null))
+    assertEquals(1, episodeCountFromLabel("EP0"))
+  }
+
+  @Test
+  fun episodeUrl_usesTheSiteOwnSlugVerbatim() {
+    // Taken as given rather than rebuilt from the title, so punctuation is never a question.
     assertEquals(
       "https://dramabox.chartdrama.com/p/42000017050/father-of-my-ex-owner-of-my-heart?ep=1",
-      chartDramaEpisodeUrl("42000017050", "Father of My Ex, Owner of My Heart", 1),
+      chartDramaEpisodeUrl("42000017050/father-of-my-ex-owner-of-my-heart", 1),
     )
-  }
-
-  @Test
-  fun episodeUrl_carriesBookIdSlugAndEpisode() {
     assertEquals(
-      "https://dramabox.chartdrama.com/p/42000012638/the-one-you-love-is-her-twin-sister?ep=1",
-      chartDramaEpisodeUrl("42000012638", "The One You Love is Her Twin Sister", 1),
+      "https://dramabox.chartdrama.com/p/42000012638/the-one-you-love-is-her-twin-sister?ep=12",
+      chartDramaEpisodeUrl("/42000012638/the-one-you-love-is-her-twin-sister/", 12),
     )
   }
 
   @Test(expected = IllegalArgumentException::class)
   fun episodeUrl_rejectsEpisodesBelowOne() {
-    chartDramaEpisodeUrl("42000012638", "Any Drama", 0)
+    chartDramaEpisodeUrl("42000017050/any-drama", 0)
+  }
+
+  @Test
+  fun userAgent_looksLikeTheBrowserTheListingExpects() {
+    // The listing turns away requests that do not look like its own site.
+    assertTrue(chartDramaUserAgent().startsWith("Mozilla/5.0"))
+    assertTrue(chartDramaUserAgent().contains("GIZTV/"))
+  }
+
+  @Test
+  fun defaultKeywords_areTitleWordsRatherThanGenres() {
+    // chartdrama matches on title text, so a genre word would match nothing at all.
+    assertTrue(DEFAULT_DRAMA_KEYWORDS.contains("Love"))
+    assertTrue(DEFAULT_DRAMA_KEYWORDS.contains("Marriage"))
+    assertFalse(DEFAULT_DRAMA_KEYWORDS.contains("Billionaire"))
+    assertFalse(DEFAULT_DRAMA_KEYWORDS.contains("Werewolf"))
   }
 
   @Test
@@ -255,7 +263,7 @@ class ShortDramaRepositoryTest {
   @Test
   fun busyException_tellsTheViewerHowLongToWait() {
     assertEquals(
-      "DramaBox is busy right now. Try again in 45 seconds.",
+      "Short dramas are busy right now. Try again in 45 seconds.",
       DramaBoxBusyException(45_000L).message,
     )
   }

@@ -1,6 +1,5 @@
 package com.example.auroratv.ui.drama
 
-import android.util.Log
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
@@ -30,7 +29,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -66,12 +64,11 @@ import com.example.auroratv.theme.SoftWhite
 import com.example.auroratv.ui.catalog.CatalogButton
 import com.example.auroratv.ui.catalog.StatusPanel
 import com.example.auroratv.ui.catalog.TmdbArtwork
-import com.example.auroratv.ui.catalog.friendlyCatalogError
 
 /**
  * Drama landing page: cover and synopsis on the left, every episode on the right.
  *
- * A short drama is one unbroken run of numbered episodes — often seventy or more — and DramaBox
+ * A short drama is one unbroken run of numbered episodes — often seventy or more — and chartdrama
  * publishes no per-episode titles or stills, so the episodes are a dense numbered grid rather than
  * the season rail and description rows a TMDB show gets.
  */
@@ -87,54 +84,38 @@ internal fun ShortDramaDetailScreen(
   val backFocusRequester = remember { FocusRequester() }
   val firstEpisodeFocusRequester = remember { FocusRequester() }
   val episodeGridState = rememberLazyGridState()
-  var detail by remember(drama.bookId) { mutableStateOf<ShortDramaDetail?>(null) }
-  var loading by remember(drama.bookId) { mutableStateOf(true) }
-  var errorMessage by remember(drama.bookId) { mutableStateOf<String?>(null) }
-  var attempt by remember(drama.bookId) { mutableIntStateOf(0) }
-
-  LaunchedEffect(drama.bookId, attempt) {
-    loading = true
-    errorMessage = null
-    runCatching { ShortDramaRepository.detail(drama.bookId) }
-      .onSuccess { detail = it }
-      .onFailure {
-        Log.e("GizTvDramaBox", "DramaBox detail failed for ${drama.bookId}", it)
-        errorMessage = friendlyCatalogError(it)
-      }
-    loading = false
-  }
-
   LaunchedEffect(Unit) { backFocusRequester.requestFocus() }
 
   // Back is handled by AuroraTvRoot; see the note in ShortDramaScreen.
-  val episodeCount = detail?.chapterCount ?: 0
-  val episodes = remember(drama.bookId, episodeCount) { (1..episodeCount).toList() }
-  val tags = detail?.tags?.takeIf { it.isNotEmpty() } ?: drama.tags
-  val synopsis = detail?.introduction?.takeIf(String::isNotBlank) ?: drama.introduction
-  val coverUrl = drama.coverUrl ?: detail?.coverUrl
+  // The listing already carries the episode count, so opening a drama costs no request at all.
+  val episodeCount = drama.episodeCount
+  val episodes = remember(drama.slug, episodeCount) { (1..episodeCount).toList() }
+  val tags = drama.tags
+  val synopsis = drama.synopsis
+  val coverUrl = drama.coverUrl
 
   // Built once so the player's next-episode prompt can roll through the whole drama.
   val playlist =
-    remember(drama.bookId, episodeCount) {
+    remember(drama.slug, episodeCount) {
       episodes.map {
         PlaylistEntry(
           episodeNumber = it,
           name = "Episode $it",
-          pageUrl = chartDramaEpisodeUrl(drama.bookId, drama.bookName, it),
+          pageUrl = chartDramaEpisodeUrl(drama.slug, it),
         )
       }
     }
 
   fun playbackContextFor(episode: Int): PlaybackContext =
     PlaybackContext(
-      pageUrl = chartDramaEpisodeUrl(drama.bookId, drama.bookName, episode),
-      title = drama.bookName,
+      pageUrl = chartDramaEpisodeUrl(drama.slug, episode),
+      title = drama.title,
       subtitle = "Episode $episode",
       posterUrl = coverUrl,
       overview = synopsis.takeIf(String::isNotBlank),
       genres = tags,
-      // bookId is a string far past Int.MAX_VALUE, so it never becomes a showId; short dramas
-      // have no seasons either, which is why only the episode number is carried.
+      // A chartdrama slug is not a TMDB id, so it never becomes a showId; short dramas have no
+      // seasons either, which is why only the episode number is carried.
       episodeNumber = episode,
       playlist = playlist,
       shortForm = true,
@@ -156,14 +137,6 @@ internal fun ShortDramaDetailScreen(
 
     val episodeSection: @Composable (Modifier) -> Unit = { sectionModifier ->
       when {
-        loading -> StatusPanel("Loading episodes…", sectionModifier, loading = true)
-        errorMessage != null ->
-          StatusPanel(
-            message = errorMessage ?: "Episodes could not be loaded",
-            modifier = sectionModifier,
-            actionLabel = "Try again",
-            onAction = { attempt += 1 },
-          )
         episodes.isEmpty() -> StatusPanel("No episodes listed for this drama.", sectionModifier)
         else ->
           Column(modifier = sectionModifier) {
@@ -189,7 +162,7 @@ internal fun ShortDramaDetailScreen(
               items(items = episodes, key = { it }) { episode ->
                 EpisodeTile(
                   episode = episode,
-                  history = historyStore.find(chartDramaEpisodeUrl(drama.bookId, drama.bookName, episode)),
+                  history = historyStore.find(chartDramaEpisodeUrl(drama.slug, episode)),
                   onClick = { onPlayEpisode(playbackContextFor(episode)) },
                   modifier =
                     if (episode == 1) {
@@ -211,7 +184,7 @@ internal fun ShortDramaDetailScreen(
         Row(verticalAlignment = Alignment.CenterVertically) {
           TmdbArtwork(
             url = coverUrl,
-            contentDescription = "${drama.bookName} cover",
+            contentDescription = "${drama.title} cover",
             modifier = Modifier.width(if (narrow) 78.dp else 122.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(12.dp)),
             compact = narrow,
             fallbackLabel = "No cover",
@@ -219,7 +192,7 @@ internal fun ShortDramaDetailScreen(
           Spacer(Modifier.width(14.dp))
           Column(Modifier.weight(1f)) {
             Text(
-              drama.bookName,
+              drama.title,
               color = SoftWhite,
               fontWeight = FontWeight.Black,
               fontSize = if (narrow) 18.sp else 23.sp,
@@ -227,7 +200,7 @@ internal fun ShortDramaDetailScreen(
               overflow = TextOverflow.Ellipsis,
               lineHeight = if (narrow) 22.sp else 27.sp,
             )
-            drama.protagonist?.takeIf(String::isNotBlank)?.let {
+            drama.starring?.takeIf { it.isNotBlank() && it != "-" }?.let {
               Spacer(Modifier.height(6.dp))
               Text(it, color = MutedBlue, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
