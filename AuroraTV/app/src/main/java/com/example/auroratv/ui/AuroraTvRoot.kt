@@ -109,6 +109,7 @@ fun AuroraTvRoot(initialStreamUrl: String? = null, initialBrowserUrl: String? = 
             selectedDrama = drama
             destination = Destination.DRAMA_DETAIL
           },
+          onResume = { context -> openForPlayback(context, Destination.SHORT_DRAMAS) },
           onBack = { destination = Destination.CATALOG },
         )
       Destination.DRAMA_DETAIL -> {

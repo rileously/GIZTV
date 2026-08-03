@@ -19,11 +19,15 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -66,6 +70,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import com.example.auroratv.R
+import com.example.auroratv.data.WatchHistoryEntry
 import com.example.auroratv.theme.AuroraBlue
 import com.example.auroratv.theme.AuroraMint
 import com.example.auroratv.theme.DeepSpace
@@ -371,3 +376,97 @@ internal fun Modifier.remoteFocusNavigation(
       true
     }
   }
+@Composable
+internal fun ContinueWatchingSection(
+  entries: List<WatchHistoryEntry>,
+  onResume: (WatchHistoryEntry) -> Unit,
+  firstCardFocusRequester: FocusRequester,
+  up: FocusRequester,
+  down: FocusRequester,
+  hasGrid: Boolean,
+) {
+  Column {
+    Text("Continue watching", color = SoftWhite, fontWeight = FontWeight.Black, fontSize = 16.sp)
+    Spacer(Modifier.height(8.dp))
+    LazyRow(
+      modifier = Modifier.fillMaxWidth().focusGroup(),
+      horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+      items(items = entries, key = { it.pageUrl }) { entry ->
+        ContinueWatchingCard(
+          entry = entry,
+          onClick = { onResume(entry) },
+          modifier =
+            if (entry.pageUrl == entries.first().pageUrl) {
+              Modifier.focusRequester(firstCardFocusRequester).focusProperties {
+                this.up = up
+                this.down = if (hasGrid) down else FocusRequester.Default
+              }
+            } else {
+              Modifier.focusProperties {
+                this.up = up
+                this.down = if (hasGrid) down else FocusRequester.Default
+              }
+            },
+        )
+      }
+    }
+  }
+}
+
+@Composable
+internal fun ContinueWatchingCard(
+  entry: WatchHistoryEntry,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  var focused by remember { mutableStateOf(false) }
+  val scale by animateFloatAsState(if (focused) 1.05f else 1f, label = "continue scale")
+  val outline by
+    animateColorAsState(if (focused) AuroraMint else SoftWhite.copy(alpha = .08f), label = "continue outline")
+  // Laid out wide and short: a poster-shaped card here would push the catalog below the fold.
+  Row(
+    modifier =
+      modifier.width(248.dp).graphicsLayer { scaleX = scale; scaleY = scale }
+        .clip(RoundedCornerShape(14.dp)).background(NightSurface)
+        .border(if (focused) 3.dp else 1.dp, outline, RoundedCornerShape(14.dp))
+        .onFocusChanged { focused = it.isFocused }.clickable(onClick = onClick)
+        .semantics {
+          role = Role.Button
+          contentDescription = "Resume ${entry.title}${entry.subtitle?.let { ", $it" } ?: ""}"
+        }
+        .padding(8.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    // The fixed width keeps the progress bar tied to the poster instead of the whole card.
+    Box(modifier = Modifier.width(54.dp), contentAlignment = Alignment.BottomStart) {
+      TmdbArtwork(
+        url = entry.posterUrl,
+        contentDescription = "${entry.title} poster",
+        modifier = Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(RoundedCornerShape(8.dp)),
+        compact = true,
+      )
+      Box(modifier = Modifier.fillMaxWidth().height(4.dp).background(DeepSpace.copy(alpha = .7f))) {
+        Box(Modifier.fillMaxWidth(entry.progressFraction).fillMaxHeight().background(AuroraMint))
+      }
+    }
+    Spacer(Modifier.width(10.dp))
+    Column(Modifier.weight(1f)) {
+      Text(
+        entry.title,
+        color = SoftWhite,
+        fontWeight = FontWeight.Bold,
+        fontSize = 12.sp,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+        lineHeight = 15.sp,
+      )
+      entry.subtitle?.takeIf { it.isNotBlank() }?.let {
+        Text(it, color = MutedBlue, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+      }
+      entry.resumeLabel?.let {
+        Text(it, color = AuroraMint, fontWeight = FontWeight.Bold, fontSize = 10.sp, maxLines = 1)
+      }
+    }
+  }
+}

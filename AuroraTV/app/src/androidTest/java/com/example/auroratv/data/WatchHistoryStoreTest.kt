@@ -69,6 +69,28 @@ class WatchHistoryStoreTest {
   }
 
   @Test
+  fun continueWatching_keepsShortDramasOutOfTheFilmCatalog() {
+    val drama =
+      PlaybackContext(
+        pageUrl = "https://dramabox.chartdrama.com/p/42000012638/a-drama?ep=3",
+        title = "A Short Drama",
+        episodeNumber = 3,
+        shortForm = true,
+      )
+    store.record(episodeContext, positionMs = 90_000L, durationMs = 3_600_000L, completed = false)
+    store.record(drama, positionMs = 30_000L, durationMs = 120_000L, completed = false)
+
+    // The catalog row shows films and shows; the drama page shows dramas. Neither borrows the other.
+    assertEquals(listOf("House of the Dragon"), store.continueWatching().map { it.title })
+    assertEquals(
+      listOf("A Short Drama"),
+      store.continueWatching(shortForm = true).map { it.title },
+    )
+    assertTrue(store.find(drama.pageUrl)?.shortForm == true)
+    assertFalse(store.find(episodeContext.pageUrl)?.shortForm == true)
+  }
+
+  @Test
   fun find_ignoresTheFragmentSoTheSameEpisodeMatches() {
     store.record(episodeContext, positionMs = 30_000L, durationMs = 600_000L, completed = false)
 

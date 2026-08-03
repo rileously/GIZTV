@@ -21,6 +21,8 @@ internal data class WatchHistoryEntry(
   val showId: Int? = null,
   val seasonNumber: Int? = null,
   val episodeNumber: Int? = null,
+  /** A short drama episode, which belongs to the short drama page rather than the film catalog. */
+  val shortForm: Boolean = false,
 ) {
   /** How far through the title the viewer got, as 0f..1f. */
   val progressFraction: Float
@@ -72,6 +74,7 @@ internal class WatchHistoryStore(context: Context) {
         showId = context.showId,
         seasonNumber = context.seasonNumber,
         episodeNumber = context.episodeNumber,
+        shortForm = context.shortForm,
       )
     )
   }
@@ -88,12 +91,20 @@ internal class WatchHistoryStore(context: Context) {
     preferences.edit().clear().apply()
   }
 
-  /** Unfinished titles, most recently watched first. */
-  fun continueWatching(limit: Int = CONTINUE_WATCHING_LIMIT): List<WatchHistoryEntry> =
+  /**
+   * Unfinished titles of one kind, most recently watched first.
+   *
+   * Short dramas are kept apart from films and shows: a run of two-minute episodes would crowd the
+   * catalog's row out within an evening, and it belongs beside the dramas it came from anyway.
+   */
+  fun continueWatching(
+    shortForm: Boolean = false,
+    limit: Int = CONTINUE_WATCHING_LIMIT,
+  ): List<WatchHistoryEntry> =
     preferences.all.values
       .filterIsInstance<String>()
       .mapNotNull(::decodeEntry)
-      .filter { !it.completed && it.positionMs > 0L }
+      .filter { !it.completed && it.positionMs > 0L && it.shortForm == shortForm }
       .sortedByDescending { it.updatedAtMs }
       .take(limit)
 }
@@ -128,6 +139,7 @@ private fun encodeEntry(entry: WatchHistoryEntry): String =
     .put("showId", entry.showId ?: JSONObject.NULL)
     .put("seasonNumber", entry.seasonNumber ?: JSONObject.NULL)
     .put("episodeNumber", entry.episodeNumber ?: JSONObject.NULL)
+    .put("shortForm", entry.shortForm)
     .toString()
 
 internal fun decodeEntry(json: String): WatchHistoryEntry? =
@@ -146,6 +158,7 @@ internal fun decodeEntry(json: String): WatchHistoryEntry? =
         showId = item.optIntOrNull("showId"),
         seasonNumber = item.optIntOrNull("seasonNumber"),
         episodeNumber = item.optIntOrNull("episodeNumber"),
+        shortForm = item.optBoolean("shortForm", false),
       )
     }
     .getOrNull()

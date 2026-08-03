@@ -38,6 +38,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
@@ -45,6 +46,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
+import com.example.auroratv.data.PlaybackContext
+import com.example.auroratv.data.WatchHistoryEntry
+import com.example.auroratv.data.WatchHistoryStore
 import com.example.auroratv.theme.AuroraMint
 import com.example.auroratv.theme.DeepSpace
 import com.example.auroratv.theme.MutedBlue
@@ -52,6 +56,7 @@ import com.example.auroratv.theme.SoftWhite
 import com.example.auroratv.ui.catalog.CatalogButton
 import com.example.auroratv.ui.catalog.CatalogSearchField
 import com.example.auroratv.ui.catalog.ChipRow
+import com.example.auroratv.ui.catalog.ContinueWatchingSection
 import com.example.auroratv.ui.catalog.GizTvMark
 import com.example.auroratv.ui.catalog.PosterCard
 import com.example.auroratv.ui.catalog.StatusPanel
@@ -69,9 +74,12 @@ import kotlinx.coroutines.launch
 @Composable
 internal fun ShortDramaScreen(
   onOpenDrama: (ShortDrama) -> Unit,
+  onResume: (PlaybackContext) -> Unit,
   onBack: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
+  val context = LocalContext.current
+  val historyStore = remember(context) { WatchHistoryStore(context) }
   val scope = rememberCoroutineScope()
   val focusManager = LocalFocusManager.current
   val keyboardController = LocalSoftwareKeyboardController.current
@@ -79,6 +87,7 @@ internal fun ShortDramaScreen(
   val keywordFocusRequester = remember { FocusRequester() }
   val searchFieldFocusRequester = remember { FocusRequester() }
   val searchButtonFocusRequester = remember { FocusRequester() }
+  val continueRowFocusRequester = remember { FocusRequester() }
   val gridFocusRequester = remember { FocusRequester() }
   val gridState = rememberLazyGridState()
 
@@ -86,6 +95,7 @@ internal fun ShortDramaScreen(
   var query by rememberSaveable { mutableStateOf("") }
   var searchActive by rememberSaveable { mutableStateOf(false) }
   var dramas by remember { mutableStateOf<List<ShortDrama>>(emptyList()) }
+  var continueWatching by remember { mutableStateOf<List<WatchHistoryEntry>>(emptyList()) }
   var loading by remember { mutableStateOf(true) }
   var errorMessage by remember { mutableStateOf<String?>(null) }
 
@@ -125,7 +135,9 @@ internal fun ShortDramaScreen(
     load(trimmed)
   }
 
+  // Re-read on every entry so a drama just left in the player shows its place again.
   LaunchedEffect(Unit) {
+    continueWatching = historyStore.continueWatching(shortForm = true)
     load(DEFAULT_DRAMA_KEYWORDS[keywordIndex])
     backFocusRequester.requestFocus()
   }
@@ -153,7 +165,14 @@ internal fun ShortDramaScreen(
   ) {
     val narrow = maxWidth < 600.dp
     val compact = maxHeight < 600.dp
-    val bodyFocusRequester = gridFocusRequester.takeIf { dramas.isNotEmpty() }
+    // A search is a fresh question, so the row of half-watched dramas steps aside for its answer.
+    val showContinueRow = continueWatching.isNotEmpty() && !searchActive
+    val bodyFocusRequester =
+      when {
+        showContinueRow -> continueRowFocusRequester
+        dramas.isNotEmpty() -> gridFocusRequester
+        else -> null
+      }
 
     Column(
       modifier =
@@ -209,7 +228,8 @@ internal fun ShortDramaScreen(
               load(if (searchActive) query.trim() else DEFAULT_DRAMA_KEYWORDS[keywordIndex])
             },
           )
-        dramas.isEmpty() -> StatusPanel("Nothing found. Try another title.", Modifier.weight(1f))
+        dramas.isEmpty() && !showContinueRow ->
+          StatusPanel("Nothing found. Try another title.", Modifier.weight(1f))
         else ->
           LazyVerticalGrid(
             state = gridState,
@@ -219,6 +239,19 @@ internal fun ShortDramaScreen(
             horizontalArrangement = Arrangement.spacedBy(if (narrow) 12.dp else 18.dp),
             verticalArrangement = Arrangement.spacedBy(if (narrow) 16.dp else 22.dp),
           ) {
+            if (showContinueRow) {
+              item(span = { GridItemSpan(maxLineSpan) }) {
+                ContinueWatchingSection(
+                  entries = continueWatching,
+                  onResume = { entry -> onResume(entry.toShortDramaPlayback()) },
+                  firstCardFocusRequester = continueRowFocusRequester,
+                  up = searchButtonFocusRequester,
+                  down = gridFocusRequester,
+                  hasGrid = dramas.isNotEmpty(),
+                )
+              }
+            }
+            if (dramas.isNotEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }) {
               Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -259,11 +292,29 @@ internal fun ShortDramaScreen(
                   },
               )
             }
+            }
           }
       }
     }
   }
 }
+
+/**
+ * Rebuilds enough context to drop back into a half-watched episode.
+ *
+ * The playlist that carried the run is gone once the player is left, so resuming plays the one
+ * episode; the drama's own page is where the rest of the run is picked up again. [shortForm] has to
+ * survive, or the player would turn a phone on its side for a portrait picture.
+ */
+private fun WatchHistoryEntry.toShortDramaPlayback(): PlaybackContext =
+  PlaybackContext(
+    pageUrl = pageUrl,
+    title = title,
+    subtitle = subtitle,
+    posterUrl = posterUrl,
+    episodeNumber = episodeNumber,
+    shortForm = true,
+  )
 
 /** Keyword chips and the search box share one line, matching the movie catalog. */
 @Composable
