@@ -2,6 +2,8 @@ package com.example.auroratv.ui.player
 
 import android.view.ContextThemeWrapper
 import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
+import android.util.Rational
 import androidx.test.core.app.ActivityScenario
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -513,6 +515,77 @@ class HlsPlaybackTest {
     assertEquals(100L, adjustSubtitleSync(0L, 100L))
     assertEquals(10_000L, adjustSubtitleSync(9_900L, 500L))
     assertEquals(-10_000L, adjustSubtitleSync(-9_900L, -500L))
+  }
+
+  @Test
+  fun pictureInPicture_takesTheShapeOfTheVideoWithinTheSystemLimits() {
+    assertEquals(Rational(16, 9), pictureInPictureAspectRatio(1920, 1080))
+    // A short drama is shot 9:16 and the window follows it upright.
+    assertEquals(Rational(9, 16), pictureInPictureAspectRatio(1080, 1920))
+    // Nothing measured yet, so the window opens widescreen rather than being refused.
+    assertEquals(Rational(16, 9), pictureInPictureAspectRatio(0, 0))
+    // Beyond what the system accepts either way, nudged back to the limit.
+    assertEquals(Rational(239, 100), pictureInPictureAspectRatio(3000, 500))
+    assertEquals(Rational(100, 239), pictureInPictureAspectRatio(500, 3000))
+  }
+
+  @Test
+  fun pictureInPicture_staysOutOfTheWayOfCastingAndFailedStreams() {
+    assertTrue(
+      shouldEnterPictureInPicture(
+        supported = true,
+        isCasting = false,
+        hasError = false,
+        playbackFinished = false,
+      )
+    )
+    // The television is already showing it.
+    assertFalse(
+      shouldEnterPictureInPicture(
+        supported = true,
+        isCasting = true,
+        hasError = false,
+        playbackFinished = false,
+      )
+    )
+    // Nothing to float: no picture, or the episode is over.
+    assertFalse(
+      shouldEnterPictureInPicture(
+        supported = true,
+        isCasting = false,
+        hasError = true,
+        playbackFinished = false,
+      )
+    )
+    assertFalse(
+      shouldEnterPictureInPicture(
+        supported = true,
+        isCasting = false,
+        hasError = false,
+        playbackFinished = true,
+      )
+    )
+    assertFalse(
+      shouldEnterPictureInPicture(
+        supported = false,
+        isCasting = false,
+        hasError = false,
+        playbackFinished = false,
+      )
+    )
+  }
+
+  @Test
+  fun pictureInPicture_isOfferedOnPhonesAndLeftAloneOnTelevisions() {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    val packageManager = context.packageManager
+    val isTelevision = packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+    val hasWindows = packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+
+    assertEquals(
+      !isTelevision && hasWindows && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O,
+      context.supportsPictureInPicture(),
+    )
   }
 
   @Test

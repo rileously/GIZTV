@@ -111,6 +111,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
+import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.cast.CastPlayer
 import androidx.media3.cast.MediaRouteButtonFactory
@@ -283,6 +284,8 @@ internal fun HlsPlayerScreen(
   var playbackSpeed by remember(request) { mutableStateOf(1f) }
   var videoResize by remember(request) { mutableStateOf(VideoResizeOption.FIT) }
   var isCasting by remember(request) { mutableStateOf(false) }
+  var videoSize by remember(request) { mutableStateOf(VideoSize.UNKNOWN) }
+  var inPictureInPicture by remember { mutableStateOf(false) }
   var selectedQuality by remember(request, compatibilityMode) { mutableStateOf(VideoQualityOption("Auto")) }
   var selectedAudio by remember(request, compatibilityMode) { mutableStateOf(AudioTrackOption("Auto English")) }
   var selectedSubtitle by remember(request, compatibilityMode) { mutableStateOf(SubtitleTrackOption("Auto English")) }
@@ -412,7 +415,12 @@ internal fun HlsPlayerScreen(
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
           isVideoPlaying = isPlaying
-          if (!isPlaying) controlsVisible = true
+          // A floating window is too small for the controls, and the viewer is looking elsewhere.
+          if (!isPlaying && !inPictureInPicture) controlsVisible = true
+        }
+
+        override fun onVideoSizeChanged(size: VideoSize) {
+          videoSize = size
         }
 
         override fun onPlayerError(playerError: PlaybackException) {
@@ -513,6 +521,36 @@ internal fun HlsPlayerScreen(
     }
   }
 
+  // Leaving the app hands the video to a floating window instead of stopping it.
+  val pictureInPictureSupported = remember(context) { context.supportsPictureInPicture() }
+  PictureInPictureEffect(
+    enabled =
+      shouldEnterPictureInPicture(
+        supported = pictureInPictureSupported,
+        isCasting = isCasting,
+        hasError = error != null,
+        playbackFinished = playbackFinished,
+      ),
+    isPlaying = isVideoPlaying,
+    aspectRatio =
+      remember(videoSize) {
+        pictureInPictureAspectRatio(
+          videoWidth = (videoSize.width * videoSize.pixelWidthHeightRatio).roundToInt(),
+          videoHeight = videoSize.height,
+        )
+      },
+    onPlayPause = { play -> if (play) player.play() else player.pause() },
+    onModeChanged = { inPictureInPicture = it },
+  )
+
+  // The window is only large enough for the picture itself, so everything drawn over it stands
+  // down; a settings panel left open would otherwise come back covering the video on return.
+  LaunchedEffect(inPictureInPicture) {
+    if (!inPictureInPicture) return@LaunchedEffect
+    activeDialog = null
+    controlsVisible = false
+  }
+
   val revealControlsKeys =
     remember {
       setOf(
@@ -575,7 +613,7 @@ internal fun HlsPlayerScreen(
     )
 
     AnimatedVisibility(
-      visible = controlsVisible && !settingsOpen,
+      visible = controlsVisible && !settingsOpen && !inPictureInPicture,
       enter = fadeIn(),
       exit = fadeOut(),
     ) {
@@ -606,7 +644,7 @@ internal fun HlsPlayerScreen(
     }
 
     // Nothing to offer when the next episode is already starting; the card would only flash.
-    if (nextPromptVisible && nextEntry != null && error == null && !shortForm) {
+    if (nextPromptVisible && nextEntry != null && error == null && !shortForm && !inPictureInPicture) {
       NextEpisodePrompt(
         label = request.context?.nextLabel ?: "Next episode",
         secondsRemaining = autoAdvanceSeconds,
@@ -616,7 +654,7 @@ internal fun HlsPlayerScreen(
       )
     }
 
-    error?.let {
+    error?.takeIf { !inPictureInPicture }?.let {
       Column(
         modifier =
           Modifier.align(Alignment.Center).background(DeepSpace.copy(alpha = .94f), RoundedCornerShape(18.dp))
