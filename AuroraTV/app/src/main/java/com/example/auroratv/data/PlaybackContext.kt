@@ -40,6 +40,14 @@ internal data class PlaybackContext(
    * next one, and on a phone it stays portrait instead of turning a 9:16 picture on its side.
    */
   val shortForm: Boolean = false,
+  /**
+   * What to call this on the loading page's badge, when "MOVIE" or "EPISODE" will not do.
+   *
+   * A film and an episode name themselves from what is already here. A live fixture cannot: it is
+   * neither, and only the listing it came from knows whether the match is on now, already over, or
+   * still to come.
+   */
+  val kindLabel: String? = null,
 ) {
   // Short dramas are numbered straight through with no seasons, so an episode is anything that
   // carries an episode number.

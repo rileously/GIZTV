@@ -189,8 +189,9 @@ internal fun ChipRow(
   up: FocusRequester? = null,
   down: FocusRequester? = null,
   compactChips: Boolean = false,
+  modifier: Modifier = Modifier,
 ) {
-  Row(modifier = Modifier.focusGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+  Row(modifier = modifier.focusGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
     labels.forEachIndexed { index, label ->
       val chipModifier =
         Modifier.focusProperties {

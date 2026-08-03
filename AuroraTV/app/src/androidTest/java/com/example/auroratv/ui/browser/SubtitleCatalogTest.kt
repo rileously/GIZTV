@@ -45,6 +45,19 @@ class SubtitleCatalogTest {
   }
 
   @Test
+  fun hoofootLiveMatch_isDetectedAsHlsDespiteHavingNoExtension() {
+    // A live match arrives from /ltv with no extension and an "application/text" content type, so
+    // only the host and path say it is a playlist at all.
+    assertTrue(isHlsUrl("https://hoofoot.ru/ltv?id=26893297"))
+    assertTrue(isHlsUrl("https://www.hoofoot.ru/ltv?id=26893297"))
+    // The pages around it are still pages, not streams.
+    assertTrue(!isHlsUrl("https://hoofoot.ru/iptv/live-player?id=348291095"))
+    assertTrue(!isHlsUrl("https://hoofoot.ru/api/main-server?id=348291095"))
+    // Another site's /ltv is not hoofoot's.
+    assertTrue(!isHlsUrl("https://example.com/ltv?id=26893297"))
+  }
+
+  @Test
   fun attackerEmbeddedPlayers_produceTheMovieSubtitleCatalogUrl() {
     val expected = listOf("https://sub.vdrk.site/v1/movie/1481343")
 

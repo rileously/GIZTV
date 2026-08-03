@@ -484,7 +484,7 @@ private fun PreparingOverlay(
                 .border(1.dp, SoftWhite.copy(alpha = .16f), RoundedCornerShape(20.dp)),
           )
           Text(
-            if (playback.isEpisode) "EPISODE" else "MOVIE",
+            playback.kindLabel ?: if (playback.isEpisode) "EPISODE" else "MOVIE",
             color = DeepSpace,
             fontWeight = FontWeight.Black,
             fontSize = 10.sp,
@@ -1097,8 +1097,19 @@ internal fun isHlsUrl(url: String): Boolean {
 
   // VixCloud serves its HLS master without a .m3u8 extension. Only capture the
   // master; its type=video/audio/subtitle children must stay inside Media3.
-  return (host == "vixsrc.to" || host.endsWith(".vixsrc.to")) &&
-    path.startsWith("/playlist/") && renditionType.isNullOrBlank()
+  if (
+    (host == "vixsrc.to" || host.endsWith(".vixsrc.to")) &&
+      path.startsWith("/playlist/") &&
+      renditionType.isNullOrBlank()
+  ) {
+    return true
+  }
+
+  // hoofoot hands a live match out from /ltv with no extension at all and calls it "application/
+  // text", so nothing about the URL or the response says HLS — only the host and path do. What
+  // comes back is an ordinary media playlist, and the player is told the mime type outright, so
+  // Media3 never has to guess either.
+  return (host == "hoofoot.ru" || host.endsWith(".hoofoot.ru")) && path.startsWith("/ltv")
 }
 
 private fun isExternalSubtitleUrl(url: String): Boolean = subtitleMimeType(url) != null

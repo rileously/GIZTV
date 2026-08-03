@@ -20,6 +20,7 @@ import com.example.auroratv.ui.drama.ShortDrama
 import com.example.auroratv.ui.drama.ShortDramaDetailScreen
 import com.example.auroratv.ui.drama.ShortDramaScreen
 import com.example.auroratv.ui.main.AuroraTvApp
+import com.example.auroratv.ui.sports.SportsScreen
 import com.example.auroratv.ui.player.HlsPlayerScreen
 import com.example.auroratv.ui.player.HlsStreamRequest
 import com.example.auroratv.ui.update.AppUpdateController
@@ -31,6 +32,7 @@ private enum class Destination {
   SHOW_DETAIL,
   SHORT_DRAMAS,
   DRAMA_DETAIL,
+  SPORTS,
   WEB_HOME,
   BROWSER,
   PLAYER,
@@ -62,11 +64,14 @@ fun AuroraTvRoot(initialStreamUrl: String? = null, initialBrowserUrl: String? = 
   var prefetchTarget by remember { mutableStateOf<PlaybackContext?>(null) }
   var prefetched by remember { mutableStateOf<Pair<String, HlsStreamRequest>?>(null) }
 
-  // One stable handler for both drama destinations. Registering a BackHandler inside each screen
-  // instead would hand the press that leaves the detail page to the listing page as well, dropping
-  // the viewer two levels at once.
+  // One stable handler for the drama destinations and the sports page. Registering a BackHandler
+  // inside each screen instead would hand the press that leaves the detail page to the listing page
+  // as well, dropping the viewer two levels at once.
   BackHandler(
-    enabled = destination == Destination.SHORT_DRAMAS || destination == Destination.DRAMA_DETAIL
+    enabled =
+      destination == Destination.SHORT_DRAMAS ||
+        destination == Destination.DRAMA_DETAIL ||
+        destination == Destination.SPORTS
   ) {
     destination =
       if (destination == Destination.DRAMA_DETAIL) Destination.SHORT_DRAMAS else Destination.CATALOG
@@ -98,6 +103,7 @@ fun AuroraTvRoot(initialStreamUrl: String? = null, initialBrowserUrl: String? = 
       },
       onOpenWeb = { destination = Destination.WEB_HOME },
       onOpenShortDramas = { destination = Destination.SHORT_DRAMAS },
+      onOpenSports = { destination = Destination.SPORTS },
     )
   }
 
@@ -145,6 +151,11 @@ fun AuroraTvRoot(initialStreamUrl: String? = null, initialBrowserUrl: String? = 
           Catalog()
         }
       }
+      Destination.SPORTS ->
+        SportsScreen(
+          onPlay = { context -> openForPlayback(context, Destination.SPORTS) },
+          onBack = { destination = Destination.CATALOG },
+        )
       Destination.WEB_HOME ->
         AuroraTvApp(
           onOpenBrowser = { url ->

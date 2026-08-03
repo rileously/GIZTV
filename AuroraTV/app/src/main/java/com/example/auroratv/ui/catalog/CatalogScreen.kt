@@ -108,6 +108,7 @@ internal fun CatalogScreen(
   onOpenShow: (TmdbShow) -> Unit,
   onOpenWeb: () -> Unit,
   onOpenShortDramas: () -> Unit,
+  onOpenSports: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -121,6 +122,7 @@ internal fun CatalogScreen(
   val keyboardController = LocalSoftwareKeyboardController.current
   val openWebFocusRequester = remember { FocusRequester() }
   val shortDramasFocusRequester = remember { FocusRequester() }
+  val sportsFocusRequester = remember { FocusRequester() }
   val firstTabFocusRequester = remember { FocusRequester() }
   val searchFieldFocusRequester = remember { FocusRequester() }
   val searchButtonFocusRequester = remember { FocusRequester() }
@@ -379,6 +381,7 @@ internal fun CatalogScreen(
         narrow = narrow,
         onOpenWeb = { dismissKeyboard(); onOpenWeb() },
         onOpenShortDramas = { dismissKeyboard(); onOpenShortDramas() },
+        onOpenSports = { dismissKeyboard(); onOpenSports() },
         openWebModifier =
           Modifier.focusRequester(openWebFocusRequester).focusProperties {
             left = shortDramasFocusRequester
@@ -386,8 +389,14 @@ internal fun CatalogScreen(
           },
         shortDramasModifier =
           Modifier.focusRequester(shortDramasFocusRequester).focusProperties {
-            left = firstTabFocusRequester
+            left = sportsFocusRequester
             right = openWebFocusRequester
+            down = if (browsing) searchButtonFocusRequester else firstBodyFocusRequester
+          },
+        sportsModifier =
+          Modifier.focusRequester(sportsFocusRequester).focusProperties {
+            left = firstTabFocusRequester
+            right = shortDramasFocusRequester
             down = if (browsing) searchButtonFocusRequester else firstBodyFocusRequester
           },
         tabs = {
@@ -753,12 +762,15 @@ private fun CatalogTopBar(
   narrow: Boolean,
   onOpenWeb: () -> Unit,
   onOpenShortDramas: () -> Unit,
+  onOpenSports: () -> Unit,
   openWebModifier: Modifier,
   shortDramasModifier: Modifier,
+  sportsModifier: Modifier,
   tabs: @Composable () -> Unit,
 ) {
   val actions: @Composable () -> Unit = {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+      CatalogButton(label = "Sports", onClick = onOpenSports, modifier = sportsModifier)
       CatalogButton(label = "Short dramas", onClick = onOpenShortDramas, modifier = shortDramasModifier)
       CatalogButton(label = "Open web", onClick = onOpenWeb, modifier = openWebModifier)
     }
