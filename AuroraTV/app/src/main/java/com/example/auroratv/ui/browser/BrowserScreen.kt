@@ -32,6 +32,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -464,34 +466,38 @@ private fun PreparingOverlay(
           )
         ),
   ) {
-    val compact = maxHeight < 600.dp || maxWidth < 900.dp
+    // A phone held upright has no room for a poster beside the text: side by side it left the
+    // words a third of the screen wide, wrapping the title and breaking the stage labels in half.
+    // So the poster goes above them and the text gets the full width.
+    val portrait = maxWidth < 560.dp
+    val compact = portrait || maxHeight < 600.dp || maxWidth < 900.dp
     val posterWidth = if (compact) 150.dp else 196.dp
     val contentGap = if (compact) 28.dp else 42.dp
-    Row(
-      verticalAlignment = Alignment.CenterVertically,
-      modifier = Modifier.align(Alignment.Center).widthIn(max = 1_120.dp).padding(horizontal = 48.dp),
-    ) {
-      Box {
-        TmdbArtwork(
-          url = playback.posterUrl,
-          contentDescription = "${playback.title} poster",
-          modifier =
-            Modifier.width(posterWidth).aspectRatio(2f / 3f).clip(RoundedCornerShape(20.dp))
-              .border(1.dp, SoftWhite.copy(alpha = .16f), RoundedCornerShape(20.dp)),
-        )
-        Text(
-          if (playback.isEpisode) "EPISODE" else "MOVIE",
-          color = DeepSpace,
-          fontWeight = FontWeight.Black,
-          fontSize = 10.sp,
-          letterSpacing = 1.sp,
-          modifier =
-            Modifier.align(Alignment.TopStart).padding(12.dp).clip(RoundedCornerShape(99.dp))
-              .background(AuroraMint).padding(horizontal = 10.dp, vertical = 5.dp),
-        )
+    val poster =
+      @Composable {
+        Box {
+          TmdbArtwork(
+            url = playback.posterUrl,
+            contentDescription = "${playback.title} poster",
+            modifier =
+              Modifier.width(posterWidth).aspectRatio(2f / 3f).clip(RoundedCornerShape(20.dp))
+                .border(1.dp, SoftWhite.copy(alpha = .16f), RoundedCornerShape(20.dp)),
+          )
+          Text(
+            if (playback.isEpisode) "EPISODE" else "MOVIE",
+            color = DeepSpace,
+            fontWeight = FontWeight.Black,
+            fontSize = 10.sp,
+            letterSpacing = 1.sp,
+            modifier =
+              Modifier.align(Alignment.TopStart).padding(12.dp).clip(RoundedCornerShape(99.dp))
+                .background(AuroraMint).padding(horizontal = 10.dp, vertical = 5.dp),
+          )
+        }
       }
-      Spacer(Modifier.width(contentGap))
-      Column(modifier = Modifier.weight(1f).widthIn(max = 760.dp)) {
+    val detailsColumn =
+      @Composable { modifier: Modifier ->
+      Column(modifier = modifier) {
         Text(
           if (failed) "Couldn't start this title" else "GETTING IT READY",
           color = AuroraMint,
@@ -504,10 +510,11 @@ private fun PreparingOverlay(
           playback.title,
           color = SoftWhite,
           fontWeight = FontWeight.Black,
-          fontSize = if (compact) 30.sp else 38.sp,
-          maxLines = 2,
+          fontSize = if (portrait) 27.sp else if (compact) 30.sp else 38.sp,
+          // A long title has the width to spell itself out upright rather than trailing off.
+          maxLines = if (portrait) 3 else 2,
           overflow = TextOverflow.Ellipsis,
-          lineHeight = if (compact) 35.sp else 43.sp,
+          lineHeight = if (portrait) 32.sp else if (compact) 35.sp else 43.sp,
         )
         displaySubtitle?.let {
           Spacer(Modifier.height(5.dp))
@@ -575,6 +582,31 @@ private fun PreparingOverlay(
           Spacer(Modifier.height(12.dp))
           Text("Press Back to cancel", color = MutedBlue.copy(alpha = .8f), fontSize = 11.sp)
         }
+      }
+    }
+
+    if (portrait) {
+      Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+        // Scrollable because a small phone with a long title and a cast list runs past the
+        // bottom, and the way to cancel must stay reachable.
+        modifier =
+          Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            .padding(horizontal = 22.dp, vertical = 28.dp),
+      ) {
+        poster()
+        Spacer(Modifier.height(22.dp))
+        detailsColumn(Modifier.fillMaxWidth())
+      }
+    } else {
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.align(Alignment.Center).widthIn(max = 1_120.dp).padding(horizontal = 48.dp),
+      ) {
+        poster()
+        Spacer(Modifier.width(contentGap))
+        detailsColumn(Modifier.weight(1f).widthIn(max = 760.dp))
       }
     }
   }
@@ -686,6 +718,9 @@ private fun PreparationStageTrack(stage: PreparationStage, sweep: Float) {
           color = if (index <= stage.ordinal) SoftWhite else MutedBlue.copy(alpha = .65f),
           fontWeight = FontWeight.Black,
           fontSize = 9.sp,
+          // Broken over two lines these run into the stage beside them, so a squeezed one is cut.
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
         )
       }
     }
