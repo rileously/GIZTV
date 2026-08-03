@@ -521,6 +521,14 @@ internal fun HlsPlayerScreen(
     }
   }
 
+  // What is playing reaches the notification shade and the lock screen, so it can be paused and
+  // seeked from there. Casting is left alone: the Cast notification already controls that.
+  MediaControlsEffect(
+    player = player,
+    request = request,
+    enabled = remember(context) { context.supportsMediaNotification() } && !isCasting,
+  )
+
   // Leaving the app hands the video to a floating window instead of stopping it.
   val pictureInPictureSupported = remember(context) { context.supportsPictureInPicture() }
   PictureInPictureEffect(

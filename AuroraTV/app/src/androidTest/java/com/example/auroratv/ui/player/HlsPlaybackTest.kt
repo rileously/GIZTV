@@ -1,9 +1,16 @@
 package com.example.auroratv.ui.player
 
+import android.app.NotificationManager
 import android.view.ContextThemeWrapper
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.util.Rational
+import androidx.media3.ui.PlayerNotificationManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import org.junit.Assert.assertNotNull
 import androidx.test.core.app.ActivityScenario
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -691,6 +698,78 @@ class HlsPlaybackTest {
       assertNull("Playback with separate subtitle failed: ${playbackError.get()?.message}", playbackError.get())
     } finally {
       instrumentation.runOnMainSync { player.release() }
+    }
+  }
+
+  @Test
+  fun mediaControls_areOfferedOnPhonesAndLeftOffTelevisions() {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    val isTelevision = context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+
+    assertEquals(!isTelevision, context.supportsMediaNotification())
+  }
+
+  @Test
+  fun mediaControls_reachTheShadeOncePlaybackStarts() {
+    val instrumentation = InstrumentationRegistry.getInstrumentation()
+    val context = instrumentation.targetContext
+    instrumentation.uiAutomation.grantRuntimePermission(
+      context.packageName,
+      "android.permission.POST_NOTIFICATIONS",
+    )
+    val notificationManager = context.getSystemService(NotificationManager::class.java)
+    val artworkScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    lateinit var player: ExoPlayer
+    lateinit var notifications: PlayerNotificationManager
+    var sessionToken: Any? = null
+
+    instrumentation.runOnMainSync {
+      player = createHlsPlayer(context, HlsStreamRequest(TEST_HLS_URL, emptyMap()))
+      // The player the screen really hands over is wrapped for casting, and a session has to be
+      // able to take that wrapper, not just a plain ExoPlayer.
+      val castAware = createCastAwarePlayer(context, player, isTelevision = false)
+      val session = createMediaSession(context, castAware, "giztv_test_session")
+      sessionToken = session?.platformToken
+      notifications =
+        createMediaNotificationManager(
+          context = context,
+          title = "Big Buck Bunny",
+          subtitle = "Season 1 · Episode 2",
+          artworkUrl = null,
+          artworkScope = artworkScope,
+          onDismissed = {},
+        )
+      sessionToken?.let { notifications.setMediaSessionToken(it as android.media.session.MediaSession.Token) }
+      notifications.setPlayer(castAware)
+      player.prepare()
+      player.playWhenReady = true
+    }
+
+    try {
+      assertNotNull("A media session could not be opened for the player", sessionToken)
+      val posted = AtomicReference<android.app.Notification?>(null)
+      val deadline = System.currentTimeMillis() + 45_000L
+      while (System.currentTimeMillis() < deadline && posted.get() == null) {
+        notificationManager.activeNotifications
+          .firstOrNull { it.id == MEDIA_NOTIFICATION_ID }
+          ?.let { posted.set(it.notification) }
+        if (posted.get() == null) Thread.sleep(500L)
+      }
+
+      val notification = posted.get()
+      assertNotNull("No media notification was posted within 45 seconds", notification)
+      assertEquals(
+        "Big Buck Bunny",
+        notification?.extras?.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString(),
+      )
+      // Pause and play at minimum, so the shade is worth pulling down.
+      assertTrue("The notification carried no controls", (notification?.actions?.size ?: 0) > 0)
+    } finally {
+      instrumentation.runOnMainSync {
+        notifications.setPlayer(null)
+        player.release()
+      }
+      artworkScope.cancel()
     }
   }
 
