@@ -42,8 +42,20 @@ internal fun playbackProgressKey(request: HlsStreamRequest): String {
   return digest.joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) }
 }
 
+/**
+ * What a resume position belongs to.
+ *
+ * A catalog title is identified by the page the catalog built, which is the same every time it is
+ * opened and the same one Continue watching files it under. The page the stream was finally found
+ * on is not: it is wherever the embedded player had redirected to, carrying whatever session the
+ * site handed out that evening, so keying on it wrote a new entry per play and every title started
+ * from the beginning. Streams found by browsing have no catalog page and still use it.
+ */
 internal fun playbackProgressIdentity(request: HlsStreamRequest): String {
-  val identity = request.sourcePageUrl?.takeIf { it.isNotBlank() } ?: request.url
+  val identity =
+    request.context?.pageUrl?.takeIf { it.isNotBlank() }
+      ?: request.sourcePageUrl?.takeIf { it.isNotBlank() }
+      ?: request.url
   return runCatching { identity.toUri().buildUpon().fragment(null).build().toString() }
     .getOrDefault(identity.substringBefore('#'))
 }

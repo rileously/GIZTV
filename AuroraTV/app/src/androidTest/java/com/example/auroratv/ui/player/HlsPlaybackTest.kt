@@ -24,6 +24,7 @@ import com.example.auroratv.R
 import com.example.auroratv.MainActivity
 import com.example.auroratv.gizTvOrientation
 import com.example.auroratv.data.PlaybackContext
+import com.example.auroratv.data.watchHistoryKey
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -142,6 +143,35 @@ class HlsPlaybackTest {
 
     assertEquals("https://example.com/watch/movie/42", playbackProgressIdentity(first))
     assertEquals(playbackProgressKey(first), playbackProgressKey(second))
+  }
+
+  @Test
+  fun playbackProgress_survivesTheEmbeddedPlayerLandingSomewhereElseEachTime() {
+    // The catalog builds the same page every time. Where the embedded player ends up by the time
+    // it asks for the video does not repeat: a fresh session lands on a different URL, and keying
+    // on that filed every play separately, so Continue watching offered a position the player
+    // then never found and the title started from the beginning.
+    val context =
+      PlaybackContext(pageUrl = "https://vidfast.vc/movie/42?autoPlay=true", title = "A Movie")
+    val firstPlay =
+      HlsStreamRequest(
+        url = "https://cdn.example.com/one.m3u8",
+        headers = emptyMap(),
+        sourcePageUrl = "https://player.example/embed?session=aaa",
+        context = context,
+      )
+    val secondPlay =
+      HlsStreamRequest(
+        url = "https://cdn.example.com/two.m3u8",
+        headers = emptyMap(),
+        sourcePageUrl = "https://player.example/embed?session=bbb",
+        context = context,
+      )
+
+    assertEquals("https://vidfast.vc/movie/42?autoPlay=true", playbackProgressIdentity(firstPlay))
+    assertEquals(playbackProgressKey(firstPlay), playbackProgressKey(secondPlay))
+    // The same identity Continue watching files it under, so the two agree on where it got to.
+    assertEquals(watchHistoryKey(context.pageUrl), watchHistoryKey(playbackProgressIdentity(firstPlay)))
   }
 
   @Test
@@ -721,7 +751,7 @@ class HlsPlaybackTest {
     val artworkScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     lateinit var player: ExoPlayer
     lateinit var notifications: PlayerNotificationManager
-    var sessionToken: Any? = null
+    var sessionToken: android.media.session.MediaSession.Token? = null
 
     instrumentation.runOnMainSync {
       player = createHlsPlayer(context, HlsStreamRequest(TEST_HLS_URL, emptyMap()))
@@ -739,7 +769,7 @@ class HlsPlaybackTest {
           artworkScope = artworkScope,
           onDismissed = {},
         )
-      sessionToken?.let { notifications.setMediaSessionToken(it as android.media.session.MediaSession.Token) }
+      sessionToken?.let { notifications.setMediaSessionToken(it) }
       notifications.setPlayer(castAware)
       player.prepare()
       player.playWhenReady = true

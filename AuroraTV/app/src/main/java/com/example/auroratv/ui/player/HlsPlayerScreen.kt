@@ -258,7 +258,20 @@ internal fun HlsPlayerScreen(
   val playerPreferences = remember(context) { PlayerPreferencesStore(context) }
   val progressKey = remember(request) { playbackProgressKey(request) }
   val subtitleSyncKey = remember(request) { subtitleSyncKey(request) }
-  val savedProgressMs = remember(progressKey) { progressStore.load(progressKey) }
+  // Continue watching keeps its own position against the catalog page, and it is the one the
+  // viewer was just shown. It stands in when the progress store has nothing under this key —
+  // which is every catalog title carried over from a build that keyed them by the page the stream
+  // happened to be found on.
+  val savedProgressMs =
+    remember(progressKey) {
+      progressStore.load(progressKey).takeIf { it > 0L }
+        ?: request.context
+          ?.let { historyStore.find(it.pageUrl) }
+          ?.takeIf { !it.completed }
+          ?.positionMs
+          ?.coerceAtLeast(0L)
+        ?: 0L
+    }
   val isTelevision = remember(context) { context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK) }
   val activity = remember(context) { context.findActivity() }
   var status by remember(request.url) { mutableStateOf("Starting smoothly in low quality…") }
