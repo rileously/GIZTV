@@ -12,6 +12,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.example.auroratv.data.PlaybackContext
 import com.example.auroratv.ui.browser.BrowserScreen
+import com.example.auroratv.ui.browser.StreamPrefetcher
 import com.example.auroratv.ui.catalog.CatalogScreen
 import com.example.auroratv.ui.catalog.TmdbShow
 import com.example.auroratv.ui.catalog.TvShowDetailScreen
@@ -57,6 +58,9 @@ fun AuroraTvRoot(initialStreamUrl: String? = null, initialBrowserUrl: String? = 
   var streamRequest by remember {
     mutableStateOf(initialStreamUrl?.let { HlsStreamRequest(url = it, headers = emptyMap()) })
   }
+  // The next episode, being resolved behind the player while its countdown runs.
+  var prefetchTarget by remember { mutableStateOf<PlaybackContext?>(null) }
+  var prefetched by remember { mutableStateOf<Pair<String, HlsStreamRequest>?>(null) }
 
   // One stable handler for both drama destinations. Registering a BackHandler inside each screen
   // instead would hand the press that leaves the detail page to the listing page as well, dropping
@@ -72,6 +76,15 @@ fun AuroraTvRoot(initialStreamUrl: String? = null, initialBrowserUrl: String? = 
     pendingContext = context
     browserUrl = context.pageUrl
     browserReturnDestination = returnTo
+    // Already found while the last episode was finishing, so the loading page is skipped entirely.
+    val ready = prefetched?.takeIf { (pageUrl, _) -> pageUrl == context.pageUrl }?.second
+    prefetchTarget = null
+    prefetched = null
+    if (ready != null) {
+      streamRequest = ready.copy(context = context)
+      destination = Destination.PLAYER
+      return
+    }
     destination = Destination.BROWSER
   }
 
@@ -89,6 +102,14 @@ fun AuroraTvRoot(initialStreamUrl: String? = null, initialBrowserUrl: String? = 
   }
 
   Box(Modifier.fillMaxSize()) {
+    // First in the box, so the player paints over it. Only ever alive while the player is up.
+    if (destination == Destination.PLAYER) {
+      StreamPrefetcher(
+        target = prefetchTarget,
+        onResolved = { context, stream -> prefetched = context.pageUrl to stream },
+      )
+    }
+
     when (destination) {
       Destination.CATALOG -> Catalog()
       Destination.SHOW_DETAIL -> {
@@ -157,6 +178,7 @@ fun AuroraTvRoot(initialStreamUrl: String? = null, initialBrowserUrl: String? = 
                 if (request.context != null) browserReturnDestination else Destination.BROWSER
             },
             onPlayNext = { next -> openForPlayback(next, browserReturnDestination) },
+            onPrepareNext = { next -> prefetchTarget = next },
           )
         } else {
           Catalog()

@@ -247,12 +247,15 @@ internal fun HlsPlayerScreen(
   request: HlsStreamRequest,
   onExit: () -> Unit,
   onPlayNext: (PlaybackContext) -> Unit = {},
+  /** Said once the episode is over, while the countdown is the only thing left to wait for. */
+  onPrepareNext: (PlaybackContext) -> Unit = {},
 ) {
   val context = LocalContext.current
   val lifecycleOwner = LocalLifecycleOwner.current
   val progressStore = remember(context) { PlaybackProgressStore(context) }
   val historyStore = remember(context) { WatchHistoryStore(context) }
   val subtitleSyncStore = remember(context) { SubtitleSyncStore(context) }
+  val playerPreferences = remember(context) { PlayerPreferencesStore(context) }
   val progressKey = remember(request) { playbackProgressKey(request) }
   val subtitleSyncKey = remember(request) { subtitleSyncKey(request) }
   val savedProgressMs = remember(progressKey) { progressStore.load(progressKey) }
@@ -276,19 +279,19 @@ internal fun HlsPlayerScreen(
   var activeDialog by remember(request) { mutableStateOf<PlayerControlDialog?>(null) }
   val settingsOpen = activeDialog != null
   var resumePlayWhenReady by remember(request) { mutableStateOf(true) }
-  var subtitleSize by remember(request) { mutableStateOf(SubtitleSizeOption.NORMAL) }
-  var subtitlePosition by remember(request) { mutableStateOf(SubtitlePositionOption.BOTTOM) }
-  var subtitleStyle by remember(request) { mutableStateOf(SubtitleStyleOption.OUTLINE) }
+  var subtitleSize by remember(request) { mutableStateOf(playerPreferences.subtitleSize()) }
+  var subtitlePosition by remember(request) { mutableStateOf(playerPreferences.subtitlePosition()) }
+  var subtitleStyle by remember(request) { mutableStateOf(playerPreferences.subtitleStyle()) }
   // Read before the player is built, so the stream starts already in sync rather than reloading.
   var subtitleOffsetMs by remember(subtitleSyncKey) { mutableLongStateOf(subtitleSyncStore.load(subtitleSyncKey)) }
-  var playbackSpeed by remember(request) { mutableStateOf(1f) }
+  var playbackSpeed by remember(request) { mutableStateOf(playerPreferences.playbackSpeed()) }
   var videoResize by remember(request) { mutableStateOf(VideoResizeOption.FIT) }
   var isCasting by remember(request) { mutableStateOf(false) }
   var videoSize by remember(request) { mutableStateOf(VideoSize.UNKNOWN) }
   var inPictureInPicture by remember { mutableStateOf(false) }
   var selectedQuality by remember(request, compatibilityMode) { mutableStateOf(VideoQualityOption("Auto")) }
-  var selectedAudio by remember(request, compatibilityMode) { mutableStateOf(AudioTrackOption("Auto English")) }
-  var selectedSubtitle by remember(request, compatibilityMode) { mutableStateOf(SubtitleTrackOption("Auto English")) }
+  var selectedAudio by remember(request, compatibilityMode) { mutableStateOf(playerPreferences.audioTrack()) }
+  var selectedSubtitle by remember(request, compatibilityMode) { mutableStateOf(playerPreferences.subtitleTrack()) }
   val localPlayer =
     remember(request, compatibilityMode) {
       createHlsPlayer(context, request, compatibilityMode, subtitleOffsetMs)
@@ -345,14 +348,20 @@ internal fun HlsPlayerScreen(
 
   // Roll into the next episode once one finishes, unless the viewer steps in first.
   LaunchedEffect(nextPromptVisible) {
+    // Both are known here: the prompt is only visible when there is a next episode to show, and
+    // there is only a next episode when the catalog gave this playback a context.
     if (!nextPromptVisible) return@LaunchedEffect
+    val playbackContext = request.context
+    val next = nextEntry
+    // Nothing is being decoded now the episode is over, so finding the next stream can start while
+    // the countdown runs instead of after it.
+    onPrepareNext(playbackContext.advanceTo(next))
     autoAdvanceSeconds = autoAdvanceDelaySeconds
     while (autoAdvanceSeconds > 0) {
       delay(1_000L)
       autoAdvanceSeconds--
     }
-    val playbackContext = request.context
-    if (playbackContext != null && nextEntry != null) onPlayNext(playbackContext.advanceTo(nextEntry))
+    onPlayNext(playbackContext.advanceTo(next))
   }
 
   fun openSettings(dialog: PlayerControlDialog) {
@@ -399,7 +408,9 @@ internal fun HlsPlayerScreen(
           qualityOptions = videoQualityOptions(tracks, compatibilityMode)
           if (selectedQuality !in qualityOptions) selectedQuality = qualityOptions.first()
           audioOptions = audioTrackOptions(tracks)
-          if (audioOptions.none { it.label == selectedAudio.label }) selectedAudio = audioOptions.first()
+          // Matching by label alone is not enough: the option carrying the override is what
+          // actually switches the track, and a remembered label arrives without one.
+          selectedAudio = audioOptions.firstOrNull { it.label == selectedAudio.label } ?: audioOptions.first()
           subtitleOptions = subtitleTrackOptions(tracks)
           selectedSubtitle =
             subtitleOptions.firstOrNull { it.label == selectedSubtitle.label } ?: subtitleOptions.first()
@@ -652,11 +663,14 @@ internal fun HlsPlayerScreen(
     }
 
     // Nothing to offer when the next episode is already starting; the card would only flash.
-    if (nextPromptVisible && nextEntry != null && error == null && !shortForm && !inPictureInPicture) {
+    if (nextPromptVisible && error == null && !shortForm && !inPictureInPicture) {
+      // The prompt is only ever visible with both of these in hand.
+      val next = nextEntry
+      val playbackContext = request.context
       NextEpisodePrompt(
-        label = request.context?.nextLabel ?: "Next episode",
+        label = playbackContext.nextLabel ?: "Next episode",
         secondsRemaining = autoAdvanceSeconds,
-        onPlayNow = { request.context?.let { onPlayNext(it.advanceTo(nextEntry)) } },
+        onPlayNow = { onPlayNext(playbackContext.advanceTo(next)) },
         onDismiss = { playbackFinished = false },
         modifier = Modifier.align(Alignment.BottomCenter),
       )
@@ -698,15 +712,26 @@ internal fun HlsPlayerScreen(
         },
         onAudioSelected = { option ->
           selectedAudio = option
+          playerPreferences.setAudioTrack(option)
           selectAudioTrack(player, option)
         },
         onSubtitleSelected = { option ->
           selectedSubtitle = option
+          playerPreferences.setSubtitleTrack(option)
           selectSubtitleTrack(player, option)
         },
-        onSubtitleSizeSelected = { subtitleSize = it },
-        onSubtitlePositionSelected = { subtitlePosition = it },
-        onSubtitleStyleSelected = { subtitleStyle = it },
+        onSubtitleSizeSelected = {
+          subtitleSize = it
+          playerPreferences.setSubtitleSize(it)
+        },
+        onSubtitlePositionSelected = {
+          subtitlePosition = it
+          playerPreferences.setSubtitlePosition(it)
+        },
+        onSubtitleStyleSelected = {
+          subtitleStyle = it
+          playerPreferences.setSubtitleStyle(it)
+        },
         onSubtitleOffsetSelected = { offsetMs ->
           if (offsetMs != subtitleOffsetMs && !isCasting) {
             val currentPositionMs = player.currentPosition.coerceAtLeast(0L)
@@ -722,6 +747,7 @@ internal fun HlsPlayerScreen(
         },
         onPlaybackSpeedSelected = { speed ->
           playbackSpeed = speed
+          playerPreferences.setPlaybackSpeed(speed)
           player.setPlaybackSpeed(speed)
         },
         onResizeSelected = { videoResize = it },

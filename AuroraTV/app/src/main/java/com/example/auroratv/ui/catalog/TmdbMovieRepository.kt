@@ -36,6 +36,10 @@ internal class TmdbMovieRepository(private val apiKey: String) {
   suspend fun searchMovies(query: String): List<TmdbMovie> =
     requestMovies(path = "search/movie", query = query.trim())
 
+  /** What TMDB says goes with a title the viewer already got through. */
+  suspend fun recommendations(movieId: Int): List<TmdbMovie> =
+    requestMovies(path = "movie/$movieId/recommendations")
+
   private suspend fun requestMovies(path: String, query: String? = null): List<TmdbMovie> =
     tmdbRequest(
       apiKey = apiKey,
@@ -72,19 +76,33 @@ internal suspend fun <T> tmdbRequest(
         .apply { params.forEach { (name, value) -> appendQueryParameter(name, value) } }
         .build()
 
-    val connection = (URL(uri.toString()).openConnection() as HttpURLConnection)
-    try {
-      connection.requestMethod = "GET"
-      connection.setRequestProperty("Accept", "application/json")
-      connection.connectTimeout = 12_000
-      connection.readTimeout = 15_000
-      val status = connection.responseCode
-      if (status !in 200..299) throw IOException("TMDB returned HTTP $status")
-      parse(connection.inputStream.bufferedReader().use { it.readText() })
-    } finally {
-      connection.disconnect()
-    }
+    runCatching { readTmdb(uri.toString(), parse) ?: throw IOException("TMDB returned no body") }
+      // Nothing on the wire, so the last copy of this listing is better than an empty rail. A
+      // listing a few days old still opens the right title.
+      .getOrElse { error -> readTmdb(uri.toString(), parse, cacheOnly = true) ?: throw error }
   }
+
+private fun <T> readTmdb(url: String, parse: (String) -> T, cacheOnly: Boolean = false): T? {
+  val connection = (URL(url).openConnection() as HttpURLConnection)
+  try {
+    connection.requestMethod = "GET"
+    connection.setRequestProperty("Accept", "application/json")
+    if (cacheOnly) {
+      connection.setRequestProperty("Cache-Control", "only-if-cached, max-stale=$TMDB_MAX_STALE_SECONDS")
+    }
+    connection.connectTimeout = 12_000
+    connection.readTimeout = 15_000
+    val status = connection.responseCode
+    // A cache-only request with nothing stored answers 504 rather than reaching the network.
+    if (cacheOnly && status !in 200..299) return null
+    if (status !in 200..299) throw IOException("TMDB returned HTTP $status")
+    return parse(connection.inputStream.bufferedReader().use { it.readText() })
+  } finally {
+    connection.disconnect()
+  }
+}
+
+private const val TMDB_MAX_STALE_SECONDS = 60 * 60 * 24 * 7
 
 internal fun parseTmdbMovies(json: String): List<TmdbMovie> {
   val results = JSONObject(json).optJSONArray("results") ?: return emptyList()

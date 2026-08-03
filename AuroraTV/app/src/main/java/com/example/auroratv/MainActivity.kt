@@ -6,11 +6,14 @@ import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.net.toUri
+import com.example.auroratv.data.flushHttpResponseCache
+import com.example.auroratv.data.installHttpResponseCache
 import com.example.auroratv.theme.AuroraTVTheme
 import com.example.auroratv.ui.AuroraTvRoot
 
 class MainActivity : AppCompatActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
+    installHttpResponseCache(this)
     requestedOrientation =
       gizTvOrientation(
         isTelevision = packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK),
@@ -32,6 +35,11 @@ class MainActivity : AppCompatActivity() {
         AuroraTvRoot(initialStreamUrl = launchStreamUrl, initialBrowserUrl = launchBrowserUrl)
       }
     }
+  }
+
+  override fun onStop() {
+    super.onStop()
+    flushHttpResponseCache()
   }
 }
 

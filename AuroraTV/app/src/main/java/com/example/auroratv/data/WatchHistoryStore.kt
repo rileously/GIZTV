@@ -101,12 +101,14 @@ internal class WatchHistoryStore(context: Context) {
     shortForm: Boolean = false,
     limit: Int = CONTINUE_WATCHING_LIMIT,
   ): List<WatchHistoryEntry> =
+    all().filter { !it.completed && it.positionMs > 0L && it.shortForm == shortForm }.take(limit)
+
+  /** Everything watched, finished or not, most recent first. */
+  fun all(): List<WatchHistoryEntry> =
     preferences.all.values
       .filterIsInstance<String>()
       .mapNotNull(::decodeEntry)
-      .filter { !it.completed && it.positionMs > 0L && it.shortForm == shortForm }
       .sortedByDescending { it.updatedAtMs }
-      .take(limit)
 }
 
 /** Page URLs carry throwaway fragments, so they are normalised before being used as a key. */

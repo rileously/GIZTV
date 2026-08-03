@@ -53,6 +53,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -81,6 +82,8 @@ import androidx.media3.common.MimeTypes
 import androidx.tv.material3.Text
 import com.example.auroratv.BuildConfig
 import com.example.auroratv.data.PlaybackContext
+import com.example.auroratv.data.StreamResolutionStore
+import com.example.auroratv.data.streamResolutionTimeoutMs
 import com.example.auroratv.theme.AuroraBlue
 import com.example.auroratv.theme.AuroraMint
 import com.example.auroratv.theme.DeepSpace
@@ -112,7 +115,8 @@ private const val HOME_URL = "https://skyflix.to/"
 private const val SUBTITLE_DISCOVERY_DELAY_MS = 2_500L
 private const val MAX_SUBTITLE_CATALOG_WAIT_MS = 8_000L
 private const val SUBTITLE_CATALOG_POLL_MS = 250L
-private const val PREPARE_TIMEOUT_MS = 30_000L
+/** Silent attempts before the viewer is told anything went wrong. */
+private const val AUTOMATIC_RETRY_ATTEMPTS = 1
 
 private val blockedHosts =
   setOf(
@@ -232,6 +236,9 @@ internal fun BrowserScreen(
   var stage by remember { mutableStateOf(PreparationStage.OPENING) }
   var preparationFailed by remember { mutableStateOf(false) }
   var preparationAttempt by remember { mutableIntStateOf(0) }
+  val resolutionStore = remember(context) { StreamResolutionStore(context) }
+  var automaticRetries by remember(playback) { mutableIntStateOf(0) }
+  var attemptStartedAtMs by remember(playback) { mutableLongStateOf(SystemClock.elapsedRealtime()) }
   // The viewer can drop out of the branded wait and drive the page by hand.
   var pageRevealed by remember { mutableStateOf(false) }
   val showChrome = playback == null || pageRevealed
@@ -240,9 +247,20 @@ internal fun BrowserScreen(
   // bounded wait and must not briefly show an error before handing off to the native player.
   LaunchedEffect(playback, preparationAttempt, stage) {
     if (playback == null || !stage.canTimeOut) return@LaunchedEffect
-    delay(PREPARE_TIMEOUT_MS)
+    delay(streamResolutionTimeoutMs(resolutionStore.lastSuccessMs(playback.pageUrl)))
     activeWebViewClient?.suspendStreamDispatch()
-    preparationFailed = true
+    // Most of what goes wrong here is a page that loaded badly once. Starting it over costs the
+    // viewer nothing but the wait they were already having, so it happens before the apology.
+    if (automaticRetries < AUTOMATIC_RETRY_ATTEMPTS) {
+      automaticRetries += 1
+      preparationAttempt += 1
+      stage = PreparationStage.OPENING
+      status = "Taking longer than usual · starting over"
+      attemptStartedAtMs = SystemClock.elapsedRealtime()
+      webView?.loadUrl(initialUrl)
+    } else {
+      preparationFailed = true
+    }
   }
 
   BackHandler {
@@ -322,7 +340,16 @@ internal fun BrowserScreen(
                 },
                 onStatus = { status = it },
                 onStage = { stage = it },
-                onStreamDetected = { latestStreamDetected.value(it) },
+                onStreamDetected = { stream ->
+                  // What this title actually costs to resolve, so the next attempt waits for it.
+                  playback?.let {
+                    resolutionStore.recordSuccess(
+                      pageUrl = it.pageUrl,
+                      elapsedMs = SystemClock.elapsedRealtime() - attemptStartedAtMs,
+                    )
+                  }
+                  latestStreamDetected.value(stream)
+                },
                 onRendererGone = { rendererGeneration += 1 },
               )
             webViewClient = client
@@ -365,7 +392,10 @@ internal fun BrowserScreen(
         onRetry = {
           preparationFailed = false
           preparationAttempt += 1
+          // Asking by hand earns a fresh set of automatic attempts.
+          automaticRetries = 0
           stage = PreparationStage.OPENING
+          attemptStartedAtMs = SystemClock.elapsedRealtime()
           webView?.loadUrl(initialUrl)
         },
         onShowPage = { pageRevealed = true },
@@ -673,7 +703,7 @@ internal enum class PreparationStage(val label: String, val shortLabel: String) 
   val canTimeOut: Boolean get() = this != LOADING_SUBTITLES
 }
 
-private class AdBlockingWebViewClient(
+internal class AdBlockingWebViewClient(
   private val userAgent: String,
   private val onPageState: (String, String, Int, Boolean) -> Unit,
   private val onStatus: (String) -> Unit,

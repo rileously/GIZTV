@@ -13,7 +13,13 @@ import java.net.URL
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Loads a TMDB poster or still, serving repeat requests from an in-memory cache. */
+/**
+ * Loads a TMDB poster or still, serving repeat requests from an in-memory cache.
+ *
+ * The bytes behind it survive the process too: this goes through `HttpURLConnection`, so the
+ * response cache installed at startup keeps the poster on disk and a cold start does not refetch
+ * every image on the screen.
+ */
 @Composable
 internal fun rememberTmdbImage(url: String?): ImageBitmap? {
   val bitmap by produceState<ImageBitmap?>(initialValue = url?.let(TmdbImageCache::get), key1 = url) {

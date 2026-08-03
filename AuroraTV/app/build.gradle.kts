@@ -121,6 +121,10 @@ dependencies {
   androidTestImplementation(libs.androidx.compose.ui.test.junit4)
   debugImplementation(libs.androidx.compose.ui.test.manifest)
 
+  // Unit tests: everything that needs no device, so the loop is seconds rather than an emulator
+  testImplementation(libs.junit)
+  testImplementation(libs.json)
+
   // Instrumented tests: jUnit rules and runners
   androidTestImplementation(libs.androidx.test.core)
   androidTestImplementation(libs.androidx.test.ext.junit)

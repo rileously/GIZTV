@@ -144,6 +144,10 @@ internal fun CatalogScreen(
   var shows by remember { mutableStateOf<List<TmdbShow>>(emptyList()) }
   var savedItems by remember { mutableStateOf<List<LibraryItem>>(emptyList()) }
   var continueWatching by remember { mutableStateOf<List<WatchHistoryEntry>>(emptyList()) }
+  var recommendedMovies by remember { mutableStateOf<List<TmdbMovie>>(emptyList()) }
+  var recommendedShows by remember { mutableStateOf<List<TmdbShow>>(emptyList()) }
+  var recommendationSeeds by remember { mutableStateOf<List<RecommendationSeed>>(emptyList()) }
+  val recommendedFocusRequester = remember { FocusRequester() }
   var loading by remember { mutableStateOf(true) }
   var errorMessage by remember { mutableStateOf<String?>(null) }
 
@@ -251,6 +255,49 @@ internal fun CatalogScreen(
     firstTabFocusRequester.requestFocus()
   }
 
+  /**
+   * A rail built from what this viewer has actually watched.
+   *
+   * It loads on its own rather than as part of [runLoad], so a slow or empty answer never holds up
+   * the listings everyone gets. Someone with no history yet simply sees the fixed rails.
+   */
+  LaunchedEffect(tab, searchActive) {
+    if (searchActive || tab == CatalogTab.MY_LIST) return@LaunchedEffect
+    val forShows = tab == CatalogTab.SHOWS
+    val watched = historyStore.all()
+    val seeds = recommendationSeeds(watched, forShows = forShows)
+    recommendationSeeds = seeds
+    if (seeds.isEmpty()) {
+      if (forShows) recommendedShows = emptyList() else recommendedMovies = emptyList()
+      return@LaunchedEffect
+    }
+    val watchedIds =
+      watched.mapNotNull { if (forShows) it.showId else tmdbMovieIdFromPageUrl(it.pageUrl) }.toSet()
+    runCatching {
+        coroutineScope {
+          // One seed failing is not the rail failing; the others still have answers.
+          if (forShows) {
+            val answers =
+              seeds
+                .map { seed ->
+                  async { runCatching { tvRepository.recommendations(seed.id) }.getOrDefault(emptyList()) }
+                }
+                .awaitAll()
+            recommendedShows = mergeRecommendations(answers, TmdbShow::id, watchedIds)
+          } else {
+            val answers =
+              seeds
+                .map { seed ->
+                  async { runCatching { movieRepository.recommendations(seed.id) }.getOrDefault(emptyList()) }
+                }
+                .awaitAll()
+            recommendedMovies = mergeRecommendations(answers, TmdbMovie::id, watchedIds)
+          }
+        }
+      }
+      .onFailure { Log.e("GizTvTmdb", "Recommendations failed", it) }
+  }
+
   // Switching tab should start at the top, not wherever the last list was scrolled to.
   LaunchedEffect(tab, searchActive, loading) {
     if (!loading && gridState.layoutInfo.totalItemsCount > 0) gridState.scrollToItem(0)
@@ -282,6 +329,24 @@ internal fun CatalogScreen(
       searchActive -> "Results for “${query.trim()}”"
       else -> "My List"
     }
+  val recommended = if (tab == CatalogTab.MOVIES) recommendedMovies.size else recommendedShows.size
+  val showRecommendedRail = showRails && recommended > 0
+  // Rails past the fold are not composed, and neither a FocusRequester nor focus search can reach a
+  // node that does not exist yet. So the move is driven: scroll the neighbour into view first, then
+  // hand it the focus. Hoisted because the personalized rail moves into the fixed ones too.
+  val leadingRailItems = (if (showContinueRow) 1 else 0) + (if (showRecommendedRail) 1 else 0)
+  val moveToRail: (Int) -> Unit = { target ->
+    scope.launch {
+      railState.scrollToItem(target + leadingRailItems)
+      runCatching { railFocusRequesters[target].requestFocus() }
+        .onFailure {
+          // One frame later the rail has certainly been placed.
+          withFrameNanos {}
+          runCatching { railFocusRequesters[target].requestFocus() }
+        }
+    }
+    Unit
+  }
   val firstRailFocusRequester = railFocusRequesters.first()
   val firstBodyFocusRequester =
     when {
@@ -384,9 +449,64 @@ internal fun CatalogScreen(
                   onResume = { entry -> onPlay(entry.toPlaybackContext()) },
                   firstCardFocusRequester = continueRowFocusRequester,
                   up = searchButtonFocusRequester,
-                  down = firstRailFocusRequester,
-                  hasGrid = sections.isNotEmpty(),
+                  down = if (showRecommendedRail) recommendedFocusRequester else firstRailFocusRequester,
+                  hasGrid = sections.isNotEmpty() || showRecommendedRail,
                 )
+              }
+            }
+
+            // Above the fixed listings, because it is the one rail built for this viewer.
+            if (showRecommendedRail) {
+              item(key = "recommended") {
+                val up = if (showContinueRow) continueRowFocusRequester else searchButtonFocusRequester
+                if (tab == CatalogTab.MOVIES) {
+                  CatalogRail(
+                    heading = recommendationHeading(recommendationSeeds),
+                    items = recommendedMovies,
+                    key = { it.id },
+                    narrow = narrow,
+                    attribution = false,
+                    firstCardFocusRequester = recommendedFocusRequester,
+                    up = up,
+                    down = null,
+                    onMoveDown = { moveToRail(0) },
+                    onMoveUp = null,
+                  ) { movie, cardModifier ->
+                    PosterCard(
+                      title = movie.title,
+                      subtitle = movie.year ?: "—",
+                      rating = movie.voteAverage,
+                      posterUrl = movie.posterUrl,
+                      actionLabel = "Play ${movie.title}",
+                      watched = historyStore.find(vidfastMovieUrl(movie.id))?.completed == true,
+                      onClick = { onPlay(movie.toPlaybackContext()) },
+                      modifier = cardModifier,
+                    )
+                  }
+                } else {
+                  CatalogRail(
+                    heading = recommendationHeading(recommendationSeeds),
+                    items = recommendedShows,
+                    key = { it.id },
+                    narrow = narrow,
+                    attribution = false,
+                    firstCardFocusRequester = recommendedFocusRequester,
+                    up = up,
+                    down = null,
+                    onMoveDown = { moveToRail(0) },
+                    onMoveUp = null,
+                  ) { show, cardModifier ->
+                    PosterCard(
+                      title = show.name,
+                      subtitle = show.year ?: "—",
+                      rating = show.voteAverage,
+                      posterUrl = show.posterUrl,
+                      actionLabel = "Open ${show.name}",
+                      onClick = { onOpenShow(show) },
+                      modifier = cardModifier,
+                    )
+                  }
+                }
               }
             }
             itemsIndexed(items = sections, key = { _, (category, _) -> category.name }) {
@@ -399,26 +519,15 @@ internal fun CatalogScreen(
               // next one into view as it goes.
               val up =
                 if (index == 0) {
-                  if (showContinueRow) continueRowFocusRequester else searchButtonFocusRequester
+                  when {
+                    showRecommendedRail -> recommendedFocusRequester
+                    showContinueRow -> continueRowFocusRequester
+                    else -> searchButtonFocusRequester
+                  }
                 } else {
                   null
                 }
               val down: FocusRequester? = null
-              // Rails past the fold are not composed, and neither a FocusRequester nor focus search
-              // can reach a node that does not exist yet. So the move is driven: scroll the
-              // neighbour into view first, then hand it the focus.
-              val moveToRail: (Int) -> Unit = { target ->
-                scope.launch {
-                  railState.scrollToItem(target + if (showContinueRow) 1 else 0)
-                  runCatching { railFocusRequesters[target].requestFocus() }
-                    .onFailure {
-                      // One frame later the rail has certainly been placed.
-                      withFrameNanos {}
-                      runCatching { railFocusRequesters[target].requestFocus() }
-                    }
-                }
-                Unit
-              }
               val railHeading =
                 if (tab == CatalogTab.MOVIES) "${category.label} movies"
                 else "${category.label} TV shows"
