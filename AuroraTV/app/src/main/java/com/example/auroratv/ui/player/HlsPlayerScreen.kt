@@ -251,7 +251,9 @@ internal fun HlsPlayerScreen(
   val lifecycleOwner = LocalLifecycleOwner.current
   val progressStore = remember(context) { PlaybackProgressStore(context) }
   val historyStore = remember(context) { WatchHistoryStore(context) }
+  val subtitleSyncStore = remember(context) { SubtitleSyncStore(context) }
   val progressKey = remember(request) { playbackProgressKey(request) }
+  val subtitleSyncKey = remember(request) { subtitleSyncKey(request) }
   val savedProgressMs = remember(progressKey) { progressStore.load(progressKey) }
   val isTelevision = remember(context) { context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK) }
   val activity = remember(context) { context.findActivity() }
@@ -276,7 +278,8 @@ internal fun HlsPlayerScreen(
   var subtitleSize by remember(request) { mutableStateOf(SubtitleSizeOption.NORMAL) }
   var subtitlePosition by remember(request) { mutableStateOf(SubtitlePositionOption.BOTTOM) }
   var subtitleStyle by remember(request) { mutableStateOf(SubtitleStyleOption.OUTLINE) }
-  var subtitleOffsetMs by remember(request) { mutableLongStateOf(0L) }
+  // Read before the player is built, so the stream starts already in sync rather than reloading.
+  var subtitleOffsetMs by remember(subtitleSyncKey) { mutableLongStateOf(subtitleSyncStore.load(subtitleSyncKey)) }
   var playbackSpeed by remember(request) { mutableStateOf(1f) }
   var videoResize by remember(request) { mutableStateOf(VideoResizeOption.FIT) }
   var isCasting by remember(request) { mutableStateOf(false) }
@@ -663,6 +666,7 @@ internal fun HlsPlayerScreen(
             val currentPositionMs = player.currentPosition.coerceAtLeast(0L)
             val keepPlaying = player.playWhenReady
             subtitleOffsetMs = offsetMs
+            subtitleSyncStore.save(subtitleSyncKey, offsetMs)
             resumePositionMs = currentPositionMs
             resumePlayWhenReady = keepPlaying
             localPlayer.setMediaSource(createHlsMediaSource(context, request, offsetMs), currentPositionMs)

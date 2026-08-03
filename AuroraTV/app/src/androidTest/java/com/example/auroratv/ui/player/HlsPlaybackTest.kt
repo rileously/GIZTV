@@ -14,6 +14,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.example.auroratv.R
 import com.example.auroratv.MainActivity
 import com.example.auroratv.gizTvOrientation
+import com.example.auroratv.data.PlaybackContext
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -24,6 +25,7 @@ import androidx.media3.extractor.text.CuesWithTiming
 import com.google.android.gms.cast.MediaTrack
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -511,6 +513,61 @@ class HlsPlaybackTest {
     assertEquals(100L, adjustSubtitleSync(0L, 100L))
     assertEquals(10_000L, adjustSubtitleSync(9_900L, 500L))
     assertEquals(-10_000L, adjustSubtitleSync(-9_900L, -500L))
+  }
+
+  @Test
+  fun subtitleSync_isStillThereAfterThePlayerCloses() {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    val request =
+      HlsStreamRequest(
+        url = "https://cdn.example.com/video.m3u8?token=first",
+        headers = emptyMap(),
+        sourcePageUrl = "https://example.com/watch/movie/77",
+      )
+    val key = subtitleSyncKey(request)
+    SubtitleSyncStore(context).save(key, 0L)
+
+    SubtitleSyncStore(context).save(key, -1_200L)
+    // A fresh store stands in for the player being opened again later.
+    assertEquals(-1_200L, SubtitleSyncStore(context).load(key))
+
+    // Back on the source timing there is nothing left to remember.
+    SubtitleSyncStore(context).save(key, 0L)
+    assertEquals(0L, SubtitleSyncStore(context).load(key))
+  }
+
+  @Test
+  fun subtitleSync_isSharedByEpisodesOfOneShowAndKeptApartFromOtherTitles() {
+    val episodeOne = episodeRequest(showId = 12, episodeNumber = 1)
+    val episodeTwo = episodeRequest(showId = 12, episodeNumber = 2)
+    val otherShow = episodeRequest(showId = 13, episodeNumber = 1)
+    val movie =
+      HlsStreamRequest(
+        url = "https://cdn.example.com/movie.m3u8",
+        headers = emptyMap(),
+        sourcePageUrl = "https://example.com/watch/movie/77",
+      )
+
+    assertEquals(subtitleSyncKey(episodeOne), subtitleSyncKey(episodeTwo))
+    assertNotEquals(subtitleSyncKey(episodeOne), subtitleSyncKey(otherShow))
+    assertNotEquals(subtitleSyncKey(episodeOne), subtitleSyncKey(movie))
+  }
+
+  private fun episodeRequest(showId: Int, episodeNumber: Int): HlsStreamRequest {
+    val pageUrl = "https://example.com/watch/tv/$showId/1/$episodeNumber"
+    return HlsStreamRequest(
+      url = "https://cdn.example.com/episode-$episodeNumber.m3u8",
+      headers = emptyMap(),
+      sourcePageUrl = pageUrl,
+      context =
+        PlaybackContext(
+          pageUrl = pageUrl,
+          title = "Show $showId",
+          showId = showId,
+          seasonNumber = 1,
+          episodeNumber = episodeNumber,
+        ),
+    )
   }
 
   @Test
