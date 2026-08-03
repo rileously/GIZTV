@@ -33,6 +33,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,6 +51,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -144,6 +148,180 @@ internal fun CatalogButton(label: String, onClick: () -> Unit, modifier: Modifie
     contentAlignment = Alignment.Center,
   ) {
     Text(label, color = DeepSpace, fontWeight = FontWeight.Black, fontSize = 12.sp, textAlign = TextAlign.Center)
+  }
+}
+
+/**
+ * A destination in the top bar: Sports, Short dramas, the web browser.
+ *
+ * Deliberately quieter than the tabs. Three filled buttons beside a row of filled tabs read as six
+ * equal choices with nothing to tell them apart; an outline keeps the ranking legible — where you
+ * are first, where else you could go second.
+ */
+@Composable
+internal fun CatalogActionButton(
+  label: String,
+  icon: ImageVector,
+  showLabel: Boolean,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  var focused by remember { mutableStateOf(false) }
+  val scale by animateFloatAsState(if (focused) 1.06f else 1f, label = "$label scale")
+  val background by
+    animateColorAsState(
+      if (focused) AuroraMint else SoftWhite.copy(alpha = .07f),
+      label = "$label background",
+    )
+  val outline by
+    animateColorAsState(
+      if (focused) SoftWhite else SoftWhite.copy(alpha = .16f),
+      label = "$label outline",
+    )
+  val content by
+    animateColorAsState(
+      if (focused) DeepSpace else SoftWhite.copy(alpha = .88f),
+      label = "$label content",
+    )
+  Row(
+    modifier =
+      modifier.height(38.dp).graphicsLayer { scaleX = scale; scaleY = scale }
+        .clip(RoundedCornerShape(19.dp)).background(background)
+        .border(if (focused) 2.dp else 1.dp, outline, RoundedCornerShape(19.dp))
+        .onFocusChanged { focused = it.isFocused }.clickable(onClick = onClick)
+        .semantics { role = Role.Button; contentDescription = label }
+        // Icon-only is narrower than the label ever could be, which is what lets all three fit
+        // beside the wordmark on a phone instead of spilling off the edge.
+        .padding(horizontal = if (showLabel) 15.dp else 10.dp),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(7.dp),
+  ) {
+    Icon(icon, contentDescription = null, tint = content, modifier = Modifier.size(17.dp))
+    if (showLabel) {
+      Text(label, color = content, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
+    }
+  }
+}
+
+/** A round button carrying only an icon, for actions whose shape already says what they do. */
+@Composable
+internal fun CatalogIconButton(
+  label: String,
+  icon: ImageVector,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  var focused by remember { mutableStateOf(false) }
+  val scale by animateFloatAsState(if (focused) 1.08f else 1f, label = "$label scale")
+  val background by
+    animateColorAsState(
+      if (focused) AuroraMint else AuroraMint.copy(alpha = .16f),
+      label = "$label background",
+    )
+  val outline by
+    animateColorAsState(
+      if (focused) SoftWhite else AuroraMint.copy(alpha = .45f),
+      label = "$label outline",
+    )
+  val content by animateColorAsState(if (focused) DeepSpace else AuroraMint, label = "$label content")
+  Box(
+    modifier =
+      modifier.size(40.dp).graphicsLayer { scaleX = scale; scaleY = scale }.clip(CircleShape)
+        .background(background).border(if (focused) 2.dp else 1.dp, outline, CircleShape)
+        .onFocusChanged { focused = it.isFocused }.clickable(onClick = onClick)
+        .semantics { role = Role.Button; contentDescription = label },
+    contentAlignment = Alignment.Center,
+  ) {
+    Icon(icon, contentDescription = null, tint = content, modifier = Modifier.size(19.dp))
+  }
+}
+
+/**
+ * The primary tabs, drawn on one shared track rather than as loose pills.
+ *
+ * The track is what says these three are a single choice. As separate pills they were three more
+ * buttons in a bar that already had plenty, and nothing in the shape said which ones changed the
+ * page under them and which ones left it.
+ */
+@Composable
+internal fun SegmentedTabs(
+  labels: List<String>,
+  selectedIndex: Int,
+  onSelect: (Int) -> Unit,
+  firstTabFocusRequester: FocusRequester,
+  down: FocusRequester?,
+  modifier: Modifier = Modifier,
+) {
+  Row(
+    modifier =
+      modifier.focusGroup().clip(RoundedCornerShape(21.dp)).background(DeepSpace.copy(alpha = .55f))
+        .border(1.dp, SoftWhite.copy(alpha = .08f), RoundedCornerShape(21.dp)).padding(3.dp)
+  ) {
+    labels.forEachIndexed { index, label ->
+      SegmentedTab(
+        label = label,
+        selected = index == selectedIndex,
+        onSelect = { onSelect(index) },
+        modifier =
+          Modifier.focusProperties { if (down != null) this.down = down }
+            .let { if (index == 0) it.focusRequester(firstTabFocusRequester) else it },
+      )
+    }
+  }
+}
+
+@Composable
+private fun SegmentedTab(
+  label: String,
+  selected: Boolean,
+  onSelect: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  var focused by remember { mutableStateOf(false) }
+  val background by
+    animateColorAsState(
+      when {
+        selected -> AuroraMint
+        focused -> SoftWhite.copy(alpha = .16f)
+        else -> Color.Transparent
+      },
+      label = "$label background",
+    )
+  val content by
+    animateColorAsState(
+      when {
+        selected -> DeepSpace
+        focused -> SoftWhite
+        else -> MutedBlue
+      },
+      label = "$label content",
+    )
+  // No scale on focus here: a segment growing out of its own track looks like a bug rather than a
+  // highlight, so the ring and the fill carry it instead.
+  Box(
+    modifier =
+      modifier.height(34.dp).clip(RoundedCornerShape(17.dp)).background(background)
+        .border(
+          if (focused) 2.dp else 0.dp,
+          if (focused) SoftWhite else Color.Transparent,
+          RoundedCornerShape(17.dp),
+        )
+        .onFocusChanged { focused = it.isFocused }.clickable(onClick = onSelect)
+        .semantics {
+          role = Role.Tab
+          this.selected = selected
+          contentDescription = label
+        }
+        .padding(horizontal = 17.dp),
+    contentAlignment = Alignment.Center,
+  ) {
+    Text(
+      label,
+      color = content,
+      fontWeight = if (selected) FontWeight.Black else FontWeight.Bold,
+      fontSize = 12.sp,
+      maxLines = 1,
+    )
   }
 }
 
@@ -269,8 +447,8 @@ internal fun CatalogSearchField(
     value = value,
     onValueChange = onValueChanged,
     modifier =
-      modifier.height(38.dp).clip(RoundedCornerShape(19.dp)).background(NightSurface)
-        .border(if (focused) 2.dp else 1.dp, border, RoundedCornerShape(19.dp))
+      modifier.height(40.dp).clip(RoundedCornerShape(20.dp)).background(DeepSpace.copy(alpha = .55f))
+        .border(if (focused) 2.dp else 1.dp, border, RoundedCornerShape(20.dp))
         .onFocusChanged { focused = it.isFocused }
         .semantics { contentDescription = "Catalog search" },
     textStyle = TextStyle(color = SoftWhite, fontSize = 13.sp, fontWeight = FontWeight.Medium),
@@ -279,9 +457,21 @@ internal fun CatalogSearchField(
     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
     keyboardActions = KeyboardActions(onSearch = { onSearch() }),
     decorationBox = { inner ->
-      Box(Modifier.fillMaxSize().padding(horizontal = 16.dp), contentAlignment = Alignment.CenterStart) {
-        if (value.isBlank()) Text(placeholder, color = MutedBlue, fontSize = 13.sp)
-        inner()
+      Row(
+        modifier = Modifier.fillMaxSize().padding(start = 14.dp, end = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Icon(
+          Icons.Filled.Search,
+          contentDescription = null,
+          tint = if (focused) AuroraBlue else MutedBlue,
+          modifier = Modifier.size(17.dp),
+        )
+        Spacer(Modifier.width(10.dp))
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+          if (value.isBlank()) Text(placeholder, color = MutedBlue, fontSize = 13.sp)
+          inner()
+        }
       }
     },
   )

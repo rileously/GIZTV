@@ -34,6 +34,11 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SportsBasketball
+import androidx.compose.material.icons.filled.Theaters
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -62,7 +67,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -379,6 +383,7 @@ internal fun CatalogScreen(
     ) {
       CatalogTopBar(
         narrow = narrow,
+        compact = compact,
         onOpenWeb = { dismissKeyboard(); onOpenWeb() },
         onOpenShortDramas = { dismissKeyboard(); onOpenShortDramas() },
         onOpenSports = { dismissKeyboard(); onOpenSports() },
@@ -400,30 +405,34 @@ internal fun CatalogScreen(
             down = if (browsing) searchButtonFocusRequester else firstBodyFocusRequester
           },
         tabs = {
-          ChipRow(
+          SegmentedTabs(
             labels = CatalogTab.entries.map { it.label },
             selectedIndex = CatalogTab.entries.indexOf(tab),
             onSelect = { selectTab(CatalogTab.entries[it]) },
-            firstChipFocusRequester = firstTabFocusRequester,
+            firstTabFocusRequester = firstTabFocusRequester,
             down = if (browsing) searchButtonFocusRequester else firstBodyFocusRequester,
-            semanticsRole = Role.Tab,
           )
         },
+        search =
+          if (!browsing) null
+          else {
+            {
+              CatalogSearchRow(
+                narrow = narrow,
+                query = query,
+                placeholder = if (tab == CatalogTab.MOVIES) "Search movies…" else "Search shows…",
+                onQueryChanged = { query = it },
+                onSearch = ::runSearch,
+                searchFieldFocusRequester = searchFieldFocusRequester,
+                searchButtonFocusRequester = searchButtonFocusRequester,
+                tabFocusRequester = firstTabFocusRequester,
+                bodyFocusRequester =
+                  firstBodyFocusRequester.takeIf { itemCount > 0 || showContinueRow },
+              )
+            }
+          },
       )
-      if (browsing) {
-        Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
-        CatalogSearchRow(
-          query = query,
-          placeholder = if (tab == CatalogTab.MOVIES) "Search movies…" else "Search shows…",
-          onQueryChanged = { query = it },
-          onSearch = ::runSearch,
-          searchFieldFocusRequester = searchFieldFocusRequester,
-          searchButtonFocusRequester = searchButtonFocusRequester,
-          tabFocusRequester = firstTabFocusRequester,
-          bodyFocusRequester = firstBodyFocusRequester.takeIf { itemCount > 0 || showContinueRow },
-        )
-      }
-      Spacer(Modifier.height(if (compact) 8.dp else 14.dp))
+      Spacer(Modifier.height(if (compact) 10.dp else 16.dp))
 
       when {
         // Only when there is nothing to show. Typing would otherwise replace the results with a
@@ -752,14 +761,17 @@ private fun SectionHeading(
 
 
 /**
- * Wordmark, tabs and the web button on one line.
+ * Wordmark, tabs, destinations and the search box, gathered into one header surface.
  *
  * Stacking these separately cost four rows of chrome before any artwork; on a 10-foot layout that
- * pushed the catalog itself under the fold.
+ * pushed the catalog itself under the fold. The surface behind them is what makes the row read as a
+ * header rather than as loose buttons scattered over the artwork, and it gives the three groups
+ * inside it — who you are, where you are, where else you could go — somewhere to sit.
  */
 @Composable
 private fun CatalogTopBar(
   narrow: Boolean,
+  compact: Boolean,
   onOpenWeb: () -> Unit,
   onOpenShortDramas: () -> Unit,
   onOpenSports: () -> Unit,
@@ -767,48 +779,97 @@ private fun CatalogTopBar(
   shortDramasModifier: Modifier,
   sportsModifier: Modifier,
   tabs: @Composable () -> Unit,
+  search: (@Composable () -> Unit)?,
 ) {
+  val shape = RoundedCornerShape(if (narrow) 20.dp else 24.dp)
+  // Labels do not fit beside the wordmark on a phone, and a clipped label helps nobody; the icon
+  // carries it there and the spoken label stays on for a screen reader either way.
+  val labelled = !narrow
   val actions: @Composable () -> Unit = {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-      CatalogButton(label = "Sports", onClick = onOpenSports, modifier = sportsModifier)
-      CatalogButton(label = "Short dramas", onClick = onOpenShortDramas, modifier = shortDramasModifier)
-      CatalogButton(label = "Open web", onClick = onOpenWeb, modifier = openWebModifier)
+    Row(
+      horizontalArrangement = Arrangement.spacedBy(if (labelled) 8.dp else 6.dp),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      CatalogActionButton(
+        label = "Sports",
+        icon = Icons.Filled.SportsBasketball,
+        showLabel = labelled,
+        onClick = onOpenSports,
+        modifier = sportsModifier,
+      )
+      CatalogActionButton(
+        label = "Short dramas",
+        icon = Icons.Filled.Theaters,
+        showLabel = labelled,
+        onClick = onOpenShortDramas,
+        modifier = shortDramasModifier,
+      )
+      CatalogActionButton(
+        label = "Open web",
+        icon = Icons.Filled.Language,
+        showLabel = labelled,
+        onClick = onOpenWeb,
+        modifier = openWebModifier,
+      )
     }
   }
-  if (narrow) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+  Column(
+    modifier =
+      Modifier.fillMaxWidth().clip(shape)
+        .background(
+          Brush.horizontalGradient(
+            listOf(NightSurface.copy(alpha = .95f), NightSurface.copy(alpha = .55f))
+          )
+        )
+        .border(1.dp, SoftWhite.copy(alpha = .07f), shape)
+        .padding(
+          horizontal = if (narrow) 12.dp else 16.dp,
+          vertical = if (compact) 10.dp else 13.dp,
+        ),
+    verticalArrangement = Arrangement.spacedBy(if (compact) 9.dp else 12.dp),
+  ) {
+    if (narrow) {
       Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        CatalogWordmark()
+        CatalogWordmark(compact = true)
         Spacer(Modifier.weight(1f))
         actions()
       }
       tabs()
+    } else {
+      Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        CatalogWordmark(compact = false)
+        Spacer(Modifier.width(24.dp))
+        tabs()
+        Spacer(Modifier.weight(1f))
+        actions()
+      }
     }
-  } else {
-    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-      CatalogWordmark()
-      Spacer(Modifier.width(26.dp))
-      tabs()
-      Spacer(Modifier.weight(1f))
-      actions()
-    }
+    search?.invoke()
   }
 }
 
 @Composable
-private fun CatalogWordmark() {
+private fun CatalogWordmark(compact: Boolean) {
   Row(verticalAlignment = Alignment.CenterVertically) {
-    GizTvMark(modifier = Modifier.size(34.dp), cornerRadius = 10.dp)
-    Spacer(Modifier.width(11.dp))
-    Text("GIZTV", color = SoftWhite, fontWeight = FontWeight.Black, letterSpacing = 2.5.sp, fontSize = 18.sp)
-    Spacer(Modifier.width(9.dp))
-    Box(
-      modifier =
-        Modifier.clip(RoundedCornerShape(9.dp)).background(AuroraMint.copy(alpha = .14f))
-          .border(1.dp, AuroraMint.copy(alpha = .55f), RoundedCornerShape(9.dp)).padding(horizontal = 7.dp, vertical = 3.dp),
-      contentAlignment = Alignment.Center,
-    ) {
-      Text("v${BuildConfig.VERSION_NAME}", color = AuroraMint, fontWeight = FontWeight.Bold, fontSize = 9.sp)
+    GizTvMark(modifier = Modifier.size(if (compact) 30.dp else 34.dp), cornerRadius = 10.dp)
+    Spacer(Modifier.width(10.dp))
+    Column {
+      Text(
+        "GIZTV",
+        color = SoftWhite,
+        fontWeight = FontWeight.Black,
+        letterSpacing = 2.5.sp,
+        fontSize = if (compact) 16.sp else 18.sp,
+      )
+      // Under the wordmark rather than beside it: the version is the least important thing in the
+      // bar, and a bordered chip on the same line gave it the weight of a button.
+      Text(
+        "v${BuildConfig.VERSION_NAME}",
+        color = AuroraMint.copy(alpha = .75f),
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 1.sp,
+        fontSize = 9.sp,
+      )
     }
   }
 }
@@ -873,6 +934,7 @@ private fun <T> CatalogRail(
 /** The search box, on its own line now that the listings are rails rather than a filter. */
 @Composable
 private fun CatalogSearchRow(
+  narrow: Boolean,
   query: String,
   placeholder: String,
   onQueryChanged: (String) -> Unit,
@@ -905,8 +967,13 @@ private fun CatalogSearchRow(
     horizontalArrangement = Arrangement.spacedBy(10.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
-    CatalogSearchField(query, placeholder, onQueryChanged, onSearch, fieldModifier.weight(1f))
-    CatalogButton("Search", onSearch, buttonModifier)
+    // Stretched the full width of a television the field is a metre of empty box for a two-word
+    // query. Capped, it sits under the wordmark and tabs it belongs with.
+    val width = if (narrow) Modifier.weight(1f) else Modifier.width(560.dp)
+    CatalogSearchField(query, placeholder, onQueryChanged, onSearch, fieldModifier.then(width))
+    // Round and icon-only: it is the same magnifier as the one in the field, so the pairing reads
+    // without a word, and the shape keeps it from looking like a fourth destination button.
+    CatalogIconButton("Search", Icons.Filled.Search, onSearch, buttonModifier)
   }
 }
 
