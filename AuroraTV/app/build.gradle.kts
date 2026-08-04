@@ -44,8 +44,8 @@ android {
         applicationId = "com.example.auroratv"
         minSdk = 23
         targetSdk = 36
-        versionCode = 47
-        versionName = "1.11.0"
+        versionCode = 48
+        versionName = "1.11.1"
         buildConfigField("String", "TMDB_API_KEY", "\"$escapedTmdbApiKey\"")
         buildConfigField("String", "UPDATE_MANIFEST_URL", "\"$escapedUpdateManifestUrl\"")
     }
