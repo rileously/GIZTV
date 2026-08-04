@@ -64,6 +64,7 @@ import com.example.auroratv.link.LinkClient
 import com.example.auroratv.link.LinkCommand
 import com.example.auroratv.link.LinkEvent
 import com.example.auroratv.link.LinkKey
+import com.example.auroratv.link.LINK_DEFAULT_PORT
 import com.example.auroratv.link.LinkStatus
 import com.example.auroratv.link.LinkTarget
 import com.example.auroratv.link.PAIRING_CODE_LENGTH
@@ -121,13 +122,15 @@ internal fun RemoteScreen(onBack: () -> Unit) {
 
     when (val current = status) {
       LinkStatus.Idle,
-      LinkStatus.Searching -> TelevisionPicker(found, client::connect, client::discover)
+      LinkStatus.Searching -> TelevisionPicker(found, client::connect, client::discover, client::connectTo)
       is LinkStatus.Connecting -> Notice("Connecting to ${current.target.name}…")
       is LinkStatus.AwaitingCode -> CodeEntry(current.target) { code -> client.connect(current.target, code) }
       is LinkStatus.Failed -> {
         Notice(current.reason)
         Spacer(Modifier.height(14.dp))
         WideButton("Search again", onClick = client::discover)
+        Spacer(Modifier.height(22.dp))
+        ManualAddress(client::connectTo)
       }
       is LinkStatus.Connected -> ConnectedRemote(current, client)
     }
@@ -139,9 +142,10 @@ private fun TelevisionPicker(
   found: List<LinkTarget>,
   onPick: (LinkTarget) -> Unit,
   onSearchAgain: () -> Unit,
+  onEnterAddress: (String, Int) -> Unit,
 ) {
   if (found.isEmpty()) {
-    Notice("Looking for a television running GIZTV on this Wi-Fi…")
+    Notice("Looking for a television running GIZTV on this network…")
   } else {
     found.forEach { target ->
       Row(
@@ -160,6 +164,38 @@ private fun TelevisionPicker(
   }
   Spacer(Modifier.height(16.dp))
   WideButton("Search again", onClick = onSearchAgain)
+  Spacer(Modifier.height(22.dp))
+  ManualAddress(onEnterAddress)
+}
+
+/**
+ * Typing the television's address in, which is the way through when nothing else is.
+ *
+ * A television sharing this phone's own hotspot cannot be heard announcing itself — no multicast
+ * crosses a tethering interface — and a locked-down network may not carry a sweep either. The
+ * television shows this address on its pairing screen for exactly this moment.
+ */
+@Composable
+private fun ManualAddress(onEnterAddress: (String, Int) -> Unit) {
+  var typed by remember { mutableStateOf("") }
+  val address = typed.substringBefore(':').trim()
+  val port = typed.substringAfter(':', "").trim().toIntOrNull() ?: LINK_DEFAULT_PORT
+  val usable = address.count { it == '.' } == 3 && address.split('.').all { part ->
+    part.toIntOrNull()?.let { it in 0..255 } == true
+  }
+
+  SectionLabel("OR ENTER THE ADDRESS SHOWN ON THE TV")
+  Spacer(Modifier.height(10.dp))
+  OutlinedTextField(
+    value = typed,
+    onValueChange = { typed = it },
+    placeholder = { Text("192.168.43.137", color = MutedBlue) },
+    singleLine = true,
+    colors = remoteFieldColours(),
+    modifier = Modifier.fillMaxWidth().testTag("manual_address_field"),
+  )
+  Spacer(Modifier.height(10.dp))
+  WideButton("Connect", enabled = usable) { onEnterAddress(address, port) }
 }
 
 @Composable

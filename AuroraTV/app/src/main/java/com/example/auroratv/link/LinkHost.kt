@@ -20,6 +20,10 @@ internal object LinkHost {
   val pairingCode: StateFlow<String?>
     get() = server?.pairingCode ?: idle
 
+  /** Where this television can be reached, for a phone that has to be told rather than find it. */
+  val address: StateFlow<String?>
+    get() = server?.address ?: idle
+
   @Synchronized
   fun start(context: Context) {
     // A phone is what holds the remote; only a television is the thing being pointed at.

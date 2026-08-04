@@ -47,6 +47,11 @@ internal class LinkServer(private val context: Context) {
 
   private val clients = mutableSetOf<LinkConnection>()
 
+  private val _address = MutableStateFlow<String?>(null)
+
+  /** Where this television can be reached, shown beside the code for a phone that cannot find it. */
+  val address: StateFlow<String?> = _address.asStateFlow()
+
   private val _pairingCode = MutableStateFlow<String?>(null)
 
   /** The code the television is showing, or null when it is not asking for one. */
@@ -66,6 +71,7 @@ internal class LinkServer(private val context: Context) {
           }
         serverSocket = socket
         store.rememberPort(socket.localPort)
+        _address.value = localIpAddresses().firstOrNull()?.let { "$it:${socket.localPort}" }
         advertise(socket.localPort)
         Log.i(LOG_TAG, "Remote listening on ${socket.localPort}")
         while (isActive && !socket.isClosed) {
@@ -77,14 +83,18 @@ internal class LinkServer(private val context: Context) {
   }
 
   /**
-   * Takes the same port as last time where it can.
+   * Takes a port a phone has a chance of guessing.
    *
    * A phone remembers where its television was, and an ephemeral port picked afresh on every launch
-   * would strand it: the address it stored would answer for nothing. The old port is asked for
-   * first and any port will do if something else has taken it since.
+   * would strand it: the address it stored would answer for nothing. Worse, a phone that can only
+   * be told an address — because it is the hotspot the television is on and nothing is announced
+   * over one of those — has no way to learn a random port at all.
    */
   private fun openServerSocket(): ServerSocket? {
-    store.lastPort()?.let { port -> runCatching { return ServerSocket(port) } }
+    // The fixed port first, so a phone that has only been told an address can still get in. The
+    // port used last time is the next best thing, and any port at all rather than no remote.
+    val preferred = (listOf(LINK_DEFAULT_PORT) + listOfNotNull(store.lastPort())).distinct()
+    preferred.forEach { port -> runCatching { return ServerSocket(port) } }
     return runCatching { ServerSocket(0) }.getOrNull()
   }
 
@@ -94,6 +104,7 @@ internal class LinkServer(private val context: Context) {
     runCatching { serverSocket?.close() }
     serverSocket = null
     withdraw()
+    _address.value = null
     synchronized(clients) {
       clients.forEach(LinkConnection::close)
       clients.clear()

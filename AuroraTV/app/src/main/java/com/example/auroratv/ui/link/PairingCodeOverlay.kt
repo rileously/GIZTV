@@ -38,6 +38,7 @@ import com.example.auroratv.theme.SoftWhite
 @Composable
 internal fun PairingCodeOverlay() {
   val code by LinkHost.pairingCode.collectAsState()
+  val address by LinkHost.address.collectAsState()
   val showing = code ?: return
 
   Box(
@@ -72,6 +73,12 @@ internal fun PairingCodeOverlay() {
       }
       Spacer(Modifier.height(14.dp))
       Text("Enter this in GIZTV on your phone", color = MutedBlue, fontSize = 14.sp)
+      // Shown because a phone sharing its own connection with this television cannot hear it
+      // announce itself, and then being able to type the address in is the only way through.
+      address?.let {
+        Spacer(Modifier.height(6.dp))
+        Text("If your phone cannot find this TV, enter  $it", color = MutedBlue, fontSize = 12.sp)
+      }
     }
   }
 }

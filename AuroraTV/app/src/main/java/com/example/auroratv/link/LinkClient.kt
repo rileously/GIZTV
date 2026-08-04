@@ -64,14 +64,16 @@ internal class LinkClient(private val context: Context) {
   fun pairedTelevision(): LinkTarget? = store.lastTelevision()
 
   /**
-   * Looks for televisions, starting with the one this phone already knows.
+   * Looks for televisions, by announcement and by sweep at the same time.
    *
-   * The stored address is tried straight away because it is usually still right and saves the wait,
-   * while the search runs anyway in case the router has moved it since.
+   * The announcement is the quick way and works on an ordinary network. The sweep is the way that
+   * works on a phone's own hotspot, where the television is a client of this very device and no
+   * multicast passes between them, so nothing is ever announced to hear.
    */
   fun discover() {
     _status.value = LinkStatus.Searching
     _found.value = emptyList()
+    sweep()
     val manager = context.getSystemService(Context.NSD_SERVICE) as? NsdManager
     if (manager == null) {
       _status.value = LinkStatus.Failed("This phone cannot look for televisions.")
@@ -100,6 +102,26 @@ internal class LinkClient(private val context: Context) {
     runCatching {
       manager.discoverServices(LINK_SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
     }
+  }
+
+  /** Knocks on every address on this network, and adds whatever answers to the list. */
+  private fun sweep() {
+    scope.launch {
+      val ports =
+        (listOf(LINK_DEFAULT_PORT) + listOfNotNull(store.lastTelevision()?.port)).distinct()
+      val found = runCatching { scanForTelevisions(ports) }.getOrDefault(emptyList())
+      // Anything the announcement turned up in the meantime keeps its proper name.
+      val announced = _found.value
+      _found.value = announced + found.filterNot { swept -> announced.any { it.host == swept.host } }
+      if (_found.value.isEmpty() && _status.value is LinkStatus.Searching) {
+        _status.value = LinkStatus.Failed("No television found on this network.")
+      }
+    }
+  }
+
+  /** Connecting to an address typed in by hand, for a network that hides everything on it. */
+  fun connectTo(host: String, port: Int = LINK_DEFAULT_PORT) {
+    connect(LinkTarget(name = "GIZTV at $host", host = host, port = port))
   }
 
   private fun resolveListener(manager: NsdManager) =
