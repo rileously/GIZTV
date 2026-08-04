@@ -7,11 +7,13 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.tvprovider.media.tv.PreviewChannel
 import androidx.tvprovider.media.tv.PreviewChannelHelper
 import androidx.tvprovider.media.tv.PreviewProgram
 import androidx.tvprovider.media.tv.TvContractCompat
+import androidx.tvprovider.media.tv.WatchNextProgram
 import com.example.auroratv.MainActivity
 import com.example.auroratv.R
 import com.example.auroratv.data.WatchHistoryEntry
@@ -20,6 +22,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 private const val CHANNEL_INTERNAL_ID = "giztv_continue_watching"
+private const val LOG_TAG = "GizTvHome"
 
 /**
  * A row of half-finished titles on the television's own home screen.
@@ -43,8 +46,10 @@ internal object ContinueWatchingChannel {
     if (!context.isTelevision()) return
     withContext(Dispatchers.IO) {
       // The TV provider is absent on anything that is not a television, and a locked-down one can
-      // refuse the write outright. Neither is worth taking the app down for.
+      // refuse the write outright. Neither is worth taking the app down for, but a row that quietly
+      // never appears is impossible to account for without being told why.
       runCatching { publish(context) }
+        .onFailure { Log.w(LOG_TAG, "Continue watching row not published", it) }
     }
   }
 
@@ -52,6 +57,7 @@ internal object ContinueWatchingChannel {
   private fun publish(context: Context) {
     val helper = PreviewChannelHelper(context)
     val entries = WatchHistoryStore(context).continueWatchingAnywhere()
+    publishWatchNext(context, helper, entries)
     val channelId = findOrCreateChannel(context, helper) ?: return
 
     // Emptying the channel's own collection in one call, rather than reading the programs back to
@@ -65,6 +71,49 @@ internal object ContinueWatchingChannel {
       runCatching { helper.publishPreviewProgram(previewProgram(context, channelId, entry)) }
     }
   }
+
+  /**
+   * Puts the same titles into the television's own "Continue watching" row.
+   *
+   * Two rows, because two generations of launcher. The older Android TV home draws a channel the
+   * viewer has added; Google TV dropped those in favour of one system row it fills from Watch Next,
+   * and an app that publishes only a channel is invisible on it. Watch Next needs no channel and no
+   * approval, so on a Google TV this is the row that actually appears.
+   */
+  @RequiresApi(Build.VERSION_CODES.O)
+  private fun publishWatchNext(
+    context: Context,
+    helper: PreviewChannelHelper,
+    entries: List<WatchHistoryEntry>,
+  ) {
+    // Titles that have since been finished must leave the row, and the row is small, so it is
+    // rewritten rather than reconciled.
+    context.contentResolver.delete(TvContractCompat.WatchNextPrograms.CONTENT_URI, null, null)
+    entries.forEach { entry ->
+      runCatching { helper.publishWatchNextProgram(watchNextProgram(context, entry)) }
+    }
+  }
+
+  @RequiresApi(Build.VERSION_CODES.O)
+  private fun watchNextProgram(context: Context, entry: WatchHistoryEntry): WatchNextProgram =
+    WatchNextProgram.Builder()
+      .setType(
+        if (entry.episodeNumber != null) TvContractCompat.WatchNextPrograms.TYPE_TV_EPISODE
+        else TvContractCompat.WatchNextPrograms.TYPE_MOVIE
+      )
+      // "Continue" is the half-finished pile, as opposed to the next episode of something finished
+      // or something the viewer has only added to a list.
+      .setWatchNextType(TvContractCompat.WatchNextPrograms.WATCH_NEXT_TYPE_CONTINUE)
+      .setLastEngagementTimeUtcMillis(entry.updatedAtMs)
+      .setTitle(entry.title)
+      .setDescription(entry.subtitle.orEmpty())
+      .setPosterArtUri(entry.posterUrl?.let(Uri::parse))
+      .setPosterArtAspectRatio(TvContractCompat.WatchNextPrograms.ASPECT_RATIO_2_3)
+      .setDurationMillis(entry.durationMs.toInt())
+      .setLastPlaybackPositionMillis(entry.positionMs.toInt())
+      .setInternalProviderId(entry.pageUrl)
+      .setIntent(resumeIntent(context, entry))
+      .build()
 
   @RequiresApi(Build.VERSION_CODES.O)
   private fun findOrCreateChannel(context: Context, helper: PreviewChannelHelper): Long? {

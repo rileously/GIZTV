@@ -79,8 +79,9 @@ private val homeSurfaceScope = CoroutineScope(SupervisorJob() + Dispatchers.Defa
  */
 internal fun refreshHomeSurfaces(context: Context) {
   val appContext = context.applicationContext
-  homeSurfaceScope.launch {
-    refreshContinueWatchingWidget(appContext)
-    ContinueWatchingChannel.refresh(appContext)
-  }
+  // Launched apart rather than one after the other: these are two unrelated surfaces owned by two
+  // unrelated system services, and a device where one of them stalls should not be a device where
+  // the other silently never updates.
+  homeSurfaceScope.launch { refreshContinueWatchingWidget(appContext) }
+  homeSurfaceScope.launch { ContinueWatchingChannel.refresh(appContext) }
 }

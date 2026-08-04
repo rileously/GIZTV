@@ -24,6 +24,10 @@ class MainActivity : AppCompatActivity() {
       )
     super.onCreate(savedInstanceState)
     UpdateCheckWorker.schedule(this)
+    // Also on the way in, not only on the way out. A television asks the viewer to approve the row
+    // the first time it is offered one, and that question belongs in front of someone who has just
+    // opened GIZTV rather than behind someone who has just left it.
+    refreshHomeSurfaces(applicationContext)
     val launchStreamUrl =
       intent?.data?.toString()?.takeIf {
         (it.startsWith("https://") || it.startsWith("http://")) && it.contains(".m3u8", ignoreCase = true)
