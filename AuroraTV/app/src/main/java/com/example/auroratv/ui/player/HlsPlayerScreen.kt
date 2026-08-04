@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -249,6 +250,11 @@ internal enum class VideoResizeOption(val label: String, val resizeMode: Int) {
   STRETCH("Stretch", AspectRatioFrameLayout.RESIZE_MODE_FILL),
   FIT_WIDTH("Fit width", AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH),
   FIT_HEIGHT("Fit height", AspectRatioFrameLayout.RESIZE_MODE_FIXED_HEIGHT),
+
+  ;
+
+  /** The next size round, so the button can be pressed rather than opened. */
+  fun next(): VideoResizeOption = entries[(ordinal + 1) % entries.size]
 }
 
 private enum class PlayerControlDialog {
@@ -841,7 +847,9 @@ internal fun HlsPlayerScreen(
         onSubtitleSync = { openSettings(PlayerControlDialog.SUBTITLE_SYNC) },
         onAudio = { openSettings(PlayerControlDialog.AUDIO) },
         onQuality = { openSettings(PlayerControlDialog.QUALITY) },
-        onPicture = { openSettings(PlayerControlDialog.PICTURE) },
+        // Five sizes and an obvious order: pressing it once is quicker than opening a list to
+        // pick the next one along, and the pill shows where you have got to.
+        onPicture = { videoResize = videoResize.next() },
         onSpeed = { openSettings(PlayerControlDialog.SPEED) },
         onDecoder = { openSettings(PlayerControlDialog.DECODER) },
       )
@@ -1204,13 +1212,19 @@ private fun ModernPlayerControls(
               )
             }
           }
-          Spacer(Modifier.weight(1f))
+          // The pills take whatever room is left and slide when there is not enough of it. Shaving
+          // their labels to fit only moved the problem to the next screen that was narrower still.
+          Row(
+            modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 8.dp, Alignment.End),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
           if (!compact) {
             val hiddenWhileSeekingModifier = Modifier.alpha(surroundingControlsAlpha)
             ModernPlayerActionPill(Icons.AutoMirrored.Filled.VolumeUp, "Audio", selectedAudio, onAudio, onInteraction, showValue = false, modifier = hiddenWhileSeekingModifier)
             ModernPlayerActionPill(Icons.Filled.HighQuality, "Quality", selectedQuality, onQuality, onInteraction, showValue = false, modifier = hiddenWhileSeekingModifier)
             ModernPlayerActionPill(Icons.Filled.ClosedCaption, "Subtitles", selectedSubtitle, onSubtitles, onInteraction, showValue = false, modifier = hiddenWhileSeekingModifier)
-            ModernPlayerActionPill(Icons.Filled.AspectRatio, "Picture", selectedResize, onPicture, onInteraction, showValue = false, modifier = hiddenWhileSeekingModifier)
+            ModernPlayerActionPill(Icons.Filled.AspectRatio, "Picture", selectedResize, onPicture, onInteraction, showValue = true, modifier = hiddenWhileSeekingModifier)
             ModernPlayerActionPill(Icons.Filled.Speed, "Sync", subtitleSyncLabel(subtitleOffsetMs), onSubtitleSync, onInteraction, showValue = false, modifier = hiddenWhileSeekingModifier)
             ModernPlayerActionPill(Icons.Filled.Speed, "Speed", speedLabel(playbackSpeed), onSpeed, onInteraction, showValue = false, modifier = hiddenWhileSeekingModifier)
             ModernPlayerActionPill(Icons.Filled.Memory, "Decoder", null, onDecoder, onInteraction, showValue = false, modifier = hiddenWhileSeekingModifier)
@@ -1223,6 +1237,7 @@ private fun ModernPlayerControls(
             ModernTransportControl(Icons.Filled.Speed, "Subtitle sync ${subtitleSyncLabel(subtitleOffsetMs)}", 44.dp, onSubtitleSync, onInteraction, modifier = hiddenWhileSeekingModifier)
             ModernTransportControl(Icons.Filled.Speed, "Playback speed ${speedLabel(playbackSpeed)}", 44.dp, onSpeed, onInteraction, modifier = hiddenWhileSeekingModifier)
             ModernTransportControl(Icons.Filled.Memory, "Decoder", 44.dp, onDecoder, onInteraction, modifier = hiddenWhileSeekingModifier)
+          }
           }
         }
       }
@@ -1713,35 +1728,39 @@ private fun SubtitleSyncMiniOverlay(
     delay(100L)
     runCatching { firstChoiceFocus.requestFocus() }
   }
-  BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-    val panelWidth = minOf(maxWidth - 32.dp, 900.dp)
-    Column(
-      modifier =
-        Modifier.width(panelWidth).padding(top = 22.dp)
-          .clip(RoundedCornerShape(24.dp))
-          .background(NightSurface.copy(alpha = .94f))
-          .border(1.dp, SoftWhite.copy(alpha = .18f), RoundedCornerShape(24.dp))
-          .padding(horizontal = 18.dp, vertical = 14.dp),
-      verticalArrangement = Arrangement.spacedBy(10.dp),
+  // The state was being said three times over — as a heading, as a sentence, and as a figure — in a
+  // panel twice the height it needed. It is said once now, beside the title.
+  PlayerQuickPanel(
+    title = "Subtitle sync",
+    description = if (isCasting) "The receiver owns the timing while casting" else subtitleSyncHeadline(offsetMs),
+    onClose = onClose,
+  ) {
+    if (isCasting) return@PlayerQuickPanel
+    Row(
+      modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-      Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-          Text("Subtitle sync", color = SoftWhite, fontWeight = FontWeight.Black, fontSize = 20.sp)
-          Text("Watch the spoken line and adjust while captions stay visible", color = AuroraMint, fontSize = 11.sp)
-        }
-        ModernTransportControl(
-          icon = Icons.Filled.Close,
-          label = "Close subtitle sync",
-          size = 40.dp,
-          onClick = onClose,
-          onInteraction = {},
-        )
-      }
-      SubtitleSyncControls(
-        offsetMs = offsetMs,
-        isCasting = isCasting,
-        onOffsetSelected = onOffsetSelected,
-        firstChoiceModifier = Modifier.focusRequester(firstChoiceFocus),
+      SettingsChoiceChip(
+        label = "Earlier ½s",
+        selected = false,
+        onClick = { onOffsetSelected(adjustSubtitleSync(offsetMs, -500L)) },
+        modifier = Modifier.focusRequester(firstChoiceFocus),
+      )
+      SettingsChoiceChip(
+        label = "Earlier a touch",
+        selected = false,
+        onClick = { onOffsetSelected(adjustSubtitleSync(offsetMs, -100L)) },
+      )
+      SettingsChoiceChip(label = "In sync", selected = offsetMs == 0L, onClick = { onOffsetSelected(0L) })
+      SettingsChoiceChip(
+        label = "Later a touch",
+        selected = false,
+        onClick = { onOffsetSelected(adjustSubtitleSync(offsetMs, 100L)) },
+      )
+      SettingsChoiceChip(
+        label = "Later ½s",
+        selected = false,
+        onClick = { onOffsetSelected(adjustSubtitleSync(offsetMs, 500L)) },
       )
     }
   }
@@ -1814,39 +1833,7 @@ private fun PlayerControlDialogOverlay(
     runCatching { firstChoiceFocus.requestFocus() }
   }
 
-  BoxWithConstraints(
-    modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = .46f)),
-    contentAlignment = Alignment.Center,
-  ) {
-    val panelWidth = minOf(maxWidth - 32.dp, 580.dp)
-    val panelHeight = maxHeight * .84f
-    Column(
-      modifier =
-        Modifier.width(panelWidth).heightIn(max = panelHeight)
-          .clip(RoundedCornerShape(28.dp))
-          .background(NightSurface.copy(alpha = .97f))
-          .border(1.dp, SoftWhite.copy(alpha = .18f), RoundedCornerShape(28.dp))
-          .padding(horizontal = 22.dp, vertical = 20.dp),
-      verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-      Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-          Text(title, color = SoftWhite, fontWeight = FontWeight.Black, fontSize = 24.sp)
-          Text(description, color = AuroraMint, fontSize = 12.sp)
-        }
-        ModernTransportControl(
-          icon = Icons.Filled.Close,
-          label = "Close $title",
-          size = 42.dp,
-          onClick = onClose,
-          onInteraction = {},
-        )
-      }
-
-      Column(
-        modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-      ) {
+  PlayerQuickPanel(title = title, description = description, onClose = onClose) {
         when (dialog) {
           PlayerControlDialog.SUBTITLES -> {
             DialogOptionList(
@@ -1909,9 +1896,67 @@ private fun PlayerControlDialogOverlay(
               onSelected = { onCompatibilityModeSelected(it == "TV compatible") },
               firstChoiceModifier = Modifier.focusRequester(firstChoiceFocus),
             )
-          PlayerControlDialog.SUBTITLE_SYNC -> Unit
-        }
+      PlayerControlDialog.SUBTITLE_SYNC -> Unit
+    }
+  }
+}
+
+/**
+ * A settings panel that sits on the film rather than in front of it.
+ *
+ * These were full-height sheets in the middle of the screen with their choices stacked down the
+ * page, so changing the audio track meant losing sight of what you were changing it for. This one
+ * is only as tall as it needs to be, sits just above the row of buttons it belongs to, and lays its
+ * choices out along a line where a pad can run through them.
+ */
+@Composable
+private fun PlayerQuickPanel(
+  title: String,
+  description: String,
+  onClose: () -> Unit,
+  content: @Composable ColumnScope.() -> Unit,
+) {
+  BoxWithConstraints(
+    modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = .18f)),
+    contentAlignment = Alignment.BottomCenter,
+  ) {
+    val panelWidth = minOf(maxWidth - 40.dp, 1_020.dp)
+    Column(
+      modifier =
+        Modifier.width(panelWidth)
+          .heightIn(max = maxHeight * .5f)
+          // Clear of the transport row underneath, so both are usable at once.
+          .padding(bottom = 104.dp)
+          .clip(RoundedCornerShape(22.dp))
+          .background(NightSurface.copy(alpha = .96f))
+          .border(1.dp, SoftWhite.copy(alpha = .16f), RoundedCornerShape(22.dp))
+          .padding(horizontal = 18.dp, vertical = 14.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+      Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(title, color = SoftWhite, fontWeight = FontWeight.Black, fontSize = 17.sp, maxLines = 1)
+        Spacer(Modifier.width(12.dp))
+        Text(
+          description,
+          color = AuroraMint,
+          fontSize = 11.sp,
+          maxLines = 1,
+          softWrap = false,
+          modifier = Modifier.weight(1f),
+        )
+        ModernTransportControl(
+          icon = Icons.Filled.Close,
+          label = "Close $title",
+          size = 34.dp,
+          onClick = onClose,
+          onInteraction = {},
+        )
       }
+      Column(
+        modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        content = content,
+      )
     }
   }
 }
@@ -1923,9 +1968,14 @@ private fun DialogOptionList(
   onSelected: (String) -> Unit,
   firstChoiceModifier: Modifier,
 ) {
-  Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+  // Along a line rather than down the page: four speeds stacked vertically filled a screen for no
+  // reason, and a row of them is one press from end to end.
+  Row(
+    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+    horizontalArrangement = Arrangement.spacedBy(8.dp),
+  ) {
     options.forEachIndexed { index, option ->
-      DialogOption(
+      SettingsChoiceChip(
         label = option,
         selected = option == selected,
         onClick = { onSelected(option) },
