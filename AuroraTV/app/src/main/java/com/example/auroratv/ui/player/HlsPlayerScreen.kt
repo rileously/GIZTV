@@ -45,13 +45,11 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.CircularProgressIndicator
@@ -130,6 +128,7 @@ import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.trackselection.AdaptiveTrackSelection
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
@@ -191,12 +190,27 @@ private const val COMPATIBILITY_MAX_VIDEO_HEIGHT = 720
 private const val COMPATIBILITY_MAX_VIDEO_BITRATE = 5_000_000
 private const val STARTUP_MAX_VIDEO_WIDTH = 640
 private const val STARTUP_MAX_VIDEO_HEIGHT = 360
-private const val QUALITY_RAMP_FIRST_STEP_MS = 4_000L
-private const val QUALITY_RAMP_FINAL_STEP_MS = 8_000L
-private const val AUTO_QUALITY_INCREASE_BUFFER_MS = 15_000
-private const val AUTO_QUALITY_DECREASE_BUFFER_MS = 35_000
-private const val AUTO_QUALITY_RETAIN_BUFFER_MS = 25_000
+private const val STABLE_MAX_VIDEO_BITRATE = 800_000
+private const val QUALITY_RAMP_FIRST_STEP_MS = 15_000L
+private const val QUALITY_RAMP_FINAL_STEP_MS = 30_000L
+private const val QUALITY_RAMP_RECHECK_MS = 5_000L
+private const val QUALITY_RAMP_BALANCED_BUFFER_MS = 20_000L
+private const val QUALITY_RAMP_UNRESTRICTED_BUFFER_MS = 40_000L
+private const val AUTO_QUALITY_INCREASE_BUFFER_MS = 30_000
+private const val AUTO_QUALITY_DECREASE_BUFFER_MS = 45_000
+private const val AUTO_QUALITY_RETAIN_BUFFER_MS = 40_000
 private const val AUTO_QUALITY_BANDWIDTH_FRACTION = .55f
+private const val RELIABLE_MIN_BUFFER_MS = 30_000
+private const val RELIABLE_MAX_BUFFER_MS = 75_000
+private const val RELIABLE_START_BUFFER_MS = 5_000
+private const val RELIABLE_REBUFFER_MS = 12_000
+private const val RELIABLE_HTTP_CONNECT_TIMEOUT_MS = 20_000
+private const val RELIABLE_HTTP_READ_TIMEOUT_MS = 60_000
+private const val RELIABLE_HLS_RETRY_COUNT = 6
+private const val PROLONGED_STALL_TIMEOUT_MS = 45_000L
+private const val STABLE_PLAYBACK_RESET_MS = 60_000L
+private const val LOCAL_STALL_RECOVERY_ATTEMPTS = 1
+internal const val STABLE_QUALITY_LABEL = "Stable 360p"
 
 internal enum class AutomaticQualityPhase {
   LOW_STARTUP,
@@ -204,13 +218,62 @@ internal enum class AutomaticQualityPhase {
   UNRESTRICTED,
 }
 
+internal data class AutomaticQualityPromotion(
+  val nextPhase: AutomaticQualityPhase,
+  val stablePlaybackMs: Long,
+  val requiredBufferMs: Long,
+)
+
+internal fun automaticQualityPromotion(phase: AutomaticQualityPhase): AutomaticQualityPromotion? =
+  when (phase) {
+    AutomaticQualityPhase.LOW_STARTUP ->
+      AutomaticQualityPromotion(
+        nextPhase = AutomaticQualityPhase.BALANCED,
+        stablePlaybackMs = QUALITY_RAMP_FIRST_STEP_MS,
+        requiredBufferMs = QUALITY_RAMP_BALANCED_BUFFER_MS,
+      )
+    AutomaticQualityPhase.BALANCED ->
+      AutomaticQualityPromotion(
+        nextPhase = AutomaticQualityPhase.UNRESTRICTED,
+        stablePlaybackMs = QUALITY_RAMP_FINAL_STEP_MS,
+        requiredBufferMs = QUALITY_RAMP_UNRESTRICTED_BUFFER_MS,
+      )
+    AutomaticQualityPhase.UNRESTRICTED -> null
+  }
+
+internal fun automaticQualityPhaseAfterBuffering(
+  hasStartedPlayback: Boolean,
+  automaticQuality: Boolean,
+  compatibilityMode: Boolean,
+  currentPhase: AutomaticQualityPhase,
+): AutomaticQualityPhase =
+  if (hasStartedPlayback && automaticQuality && !compatibilityMode) {
+    AutomaticQualityPhase.LOW_STARTUP
+  } else {
+    currentPhase
+  }
+
 internal data class VideoQualityOption(
   val label: String,
   val width: Int? = null,
   val height: Int? = null,
+  val stable: Boolean = false,
 ) {
   val isAuto: Boolean get() = width == null || height == null
+  val isStable: Boolean get() = stable && isAuto
 }
+
+internal enum class ProlongedStallAction {
+  RELOAD_CURRENT_STREAM,
+  REQUEST_FRESH_STREAM,
+}
+
+internal fun prolongedStallAction(recoveryAttempts: Int): ProlongedStallAction =
+  if (recoveryAttempts < LOCAL_STALL_RECOVERY_ATTEMPTS) {
+    ProlongedStallAction.RELOAD_CURRENT_STREAM
+  } else {
+    ProlongedStallAction.REQUEST_FRESH_STREAM
+  }
 
 internal data class AudioTrackOption(
   val label: String,
@@ -277,8 +340,10 @@ internal fun HlsPlayerScreen(
   onPrepareNext: (PlaybackContext) -> Unit = {},
   /** Said once a title has been handed to the television, so this screen can step aside. */
   onHandedOver: () -> Unit = {},
-  /** Said when the stream itself will not play, so a remembered address can be thrown away. */
-  onPlaybackFailed: () -> Unit = {},
+  /** Requests a fresh resolved stream. True means the caller accepted and is leaving this screen. */
+  onPlaybackFailed: () -> Boolean = { false },
+  /** A full minute without interruption makes earlier failovers irrelevant again. */
+  onPlaybackStable: () -> Unit = {},
 ) {
   val context = LocalContext.current
   val lifecycleOwner = LocalLifecycleOwner.current
@@ -335,7 +400,12 @@ internal fun HlsPlayerScreen(
   var isCasting by remember(request) { mutableStateOf(false) }
   var videoSize by remember(request) { mutableStateOf(VideoSize.UNKNOWN) }
   var inPictureInPicture by remember { mutableStateOf(false) }
-  var selectedQuality by remember(request, compatibilityMode) { mutableStateOf(VideoQualityOption("Auto")) }
+  var selectedQuality by remember(request, compatibilityMode) {
+    mutableStateOf(
+      if (playerPreferences.stablePlayback()) VideoQualityOption(STABLE_QUALITY_LABEL, stable = true)
+      else VideoQualityOption("Auto")
+    )
+  }
   var selectedAudio by remember(request, compatibilityMode) { mutableStateOf(playerPreferences.audioTrack()) }
   var selectedSubtitle by remember(request, compatibilityMode) { mutableStateOf(playerPreferences.subtitleTrack()) }
   val localPlayer =
@@ -346,13 +416,20 @@ internal fun HlsPlayerScreen(
     remember(localPlayer, isTelevision) {
       createCastAwarePlayer(context, localPlayer, isTelevision)
     }
-  var qualityOptions by remember(player) { mutableStateOf(listOf(VideoQualityOption("Auto"))) }
+  var qualityOptions by remember(player) {
+    mutableStateOf(
+      listOf(VideoQualityOption("Auto"), VideoQualityOption(STABLE_QUALITY_LABEL, stable = true))
+    )
+  }
   var audioOptions by remember(player) { mutableStateOf(listOf(AudioTrackOption("Auto English"))) }
   var subtitleOptions by remember(player) { mutableStateOf(listOf(SubtitleTrackOption("Auto English"), SubtitleTrackOption("Off", disabled = true))) }
   var controlsVisible by remember { mutableStateOf(true) }
   var controlsInteractionVersion by remember { mutableIntStateOf(0) }
   var playbackFinished by remember(request) { mutableStateOf(false) }
-  var automaticQualityRampCompleted by remember(player) { mutableStateOf(false) }
+  var automaticQualityPhase by remember(player) { mutableStateOf(AutomaticQualityPhase.LOW_STARTUP) }
+  var hasStartedPlayback by remember(player) { mutableStateOf(false) }
+  var wantsPlayback by remember(player) { mutableStateOf(true) }
+  var stallRecoveryAttempts by remember(player) { mutableIntStateOf(0) }
   // A two-minute short drama is watched as a run, so it rolls on with no countdown to sit through.
   // A full-length episode gets the pause, which is the viewer's chance to stop after one.
   val shortForm = request.context?.shortForm == true
@@ -511,6 +588,7 @@ internal fun HlsPlayerScreen(
             GROUP_QUALITY ->
               qualityOptions.firstOrNull { it.label == itemId }?.let { option ->
                 selectedQuality = option
+                playerPreferences.setStablePlayback(option.isStable)
                 selectVideoQuality(player, option)
               }
             GROUP_SPEED ->
@@ -575,6 +653,20 @@ internal fun HlsPlayerScreen(
         override fun onPlaybackStateChanged(playbackState: Int) {
           isBuffering = playbackState == Player.STATE_BUFFERING
           when (playbackState) {
+            Player.STATE_BUFFERING -> {
+              val nextPhase =
+                automaticQualityPhaseAfterBuffering(
+                  hasStartedPlayback = hasStartedPlayback,
+                  automaticQuality = selectedQuality.isAuto,
+                  compatibilityMode = compatibilityMode,
+                  currentPhase = automaticQualityPhase,
+                )
+              if (nextPhase != automaticQualityPhase) {
+                automaticQualityPhase = nextPhase
+                applyAutomaticQualityPhase(player, nextPhase)
+                status = "Connection slowed - rebuilding a safety buffer in low quality"
+              }
+            }
             Player.STATE_READY -> subtitleStatus = describeSubtitleState(player.currentTracks)
             Player.STATE_ENDED -> {
               progressStore.clear(progressKey)
@@ -610,8 +702,13 @@ internal fun HlsPlayerScreen(
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
           isVideoPlaying = isPlaying
+          if (isPlaying) hasStartedPlayback = true
           // A floating window is too small for the controls, and the viewer is looking elsewhere.
           if (!isPlaying && !inPictureInPicture) controlsVisible = true
+        }
+
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+          wantsPlayback = playWhenReady
         }
 
         override fun onVideoSizeChanged(size: VideoSize) {
@@ -622,8 +719,12 @@ internal fun HlsPlayerScreen(
           android.util.Log.e("AuroraHls", "Playback failed for ${request.url}", playerError)
           // A decoder that cannot cope is this device's problem and the address is fine; anything
           // else and the address is the first suspect.
-          if (!isVideoDecoderFailure(playerError)) onPlaybackFailed()
-          if (!compatibilityMode && isVideoDecoderFailure(playerError)) {
+          val decoderFailure = isVideoDecoderFailure(playerError)
+          if (!decoderFailure && onPlaybackFailed()) {
+            savePlaybackProgress()
+            return
+          }
+          if (!compatibilityMode && decoderFailure) {
             resumePositionMs = player.currentPosition.coerceAtLeast(0L)
             savePlaybackProgress()
             isVideoPlaying = false
@@ -637,7 +738,7 @@ internal fun HlsPlayerScreen(
           error =
             when {
               invalidPlaylist -> "The detected URL did not return a valid HLS playlist. Try another server."
-              isVideoDecoderFailure(playerError) ->
+              decoderFailure ->
                 "This TV could not decode the video, even in compatibility mode. Try another video server."
               else -> playerError.localizedMessage ?: "This stream could not be played."
             }
@@ -678,25 +779,81 @@ internal fun HlsPlayerScreen(
     }
   }
 
-  // Start with a small rendition so playback begins quickly. Once video is actually flowing, widen
-  // the ceiling in two steps; ExoPlayer still chooses within each ceiling from measured bandwidth.
-  LaunchedEffect(player, selectedQuality, compatibilityMode, isVideoPlaying) {
-    if (compatibilityMode || automaticQualityRampCompleted) return@LaunchedEffect
-    if (!selectedQuality.isAuto) {
-      applyAutomaticQualityPhase(player, AutomaticQualityPhase.UNRESTRICTED)
-      automaticQualityRampCompleted = true
+  // Changing back to Auto always earns a fresh conservative start. Stable uses the same adaptive
+  // selection but deliberately never removes its low-bandwidth ceiling.
+  LaunchedEffect(player, selectedQuality, compatibilityMode) {
+    if (compatibilityMode && !selectedQuality.isStable) return@LaunchedEffect
+    automaticQualityPhase =
+      if (selectedQuality.isAuto) AutomaticQualityPhase.LOW_STARTUP
+      else AutomaticQualityPhase.UNRESTRICTED
+    applyAutomaticQualityPhase(player, automaticQualityPhase)
+    if (selectedQuality.isStable) {
+      status = "Stable mode - capped at 360p for fewer interruptions"
+    }
+  }
+
+  // Quality only climbs after uninterrupted playback and a real forward safety buffer. A slow or
+  // unstable link can therefore remain at 360p/720p instead of oscillating into an unsustainable
+  // rendition. Any later rebuffer resets this progression to LOW_STARTUP in the player listener.
+  LaunchedEffect(player, selectedQuality, compatibilityMode, isVideoPlaying, automaticQualityPhase) {
+    if (
+      compatibilityMode ||
+        !selectedQuality.isAuto ||
+        selectedQuality.isStable ||
+        !isVideoPlaying
+    ) {
       return@LaunchedEffect
     }
-    if (!isVideoPlaying) return@LaunchedEffect
+    val promotion = automaticQualityPromotion(automaticQualityPhase) ?: run {
+      status = "Auto quality - adapting with extra bandwidth headroom"
+      return@LaunchedEffect
+    }
 
-    status = "Auto quality · measuring your connection"
-    delay(QUALITY_RAMP_FIRST_STEP_MS)
-    applyAutomaticQualityPhase(player, AutomaticQualityPhase.BALANCED)
-    status = "Auto quality · increasing when the buffer is healthy"
-    delay(QUALITY_RAMP_FINAL_STEP_MS)
-    applyAutomaticQualityPhase(player, AutomaticQualityPhase.UNRESTRICTED)
-    automaticQualityRampCompleted = true
-    status = "Auto quality · adapting to your network"
+    status = "Auto quality - building a safety buffer"
+    delay(promotion.stablePlaybackMs)
+    while (player.totalBufferedDuration < promotion.requiredBufferMs) {
+      status = "Auto quality - holding low quality until the buffer is safe"
+      delay(QUALITY_RAMP_RECHECK_MS)
+    }
+    applyAutomaticQualityPhase(player, promotion.nextPhase)
+    automaticQualityPhase = promotion.nextPhase
+  }
+
+  // A stream can keep the player in BUFFERING forever without producing an error. Give the same
+  // address one clean reload, then ask the catalog resolver for a fresh signed address/server.
+  LaunchedEffect(player, isBuffering, wantsPlayback, error) {
+    if (!isBuffering || !wantsPlayback || error != null) return@LaunchedEffect
+    delay(PROLONGED_STALL_TIMEOUT_MS)
+    when (prolongedStallAction(stallRecoveryAttempts)) {
+      ProlongedStallAction.RELOAD_CURRENT_STREAM -> {
+        stallRecoveryAttempts++
+        val positionMs = player.currentPosition.coerceAtLeast(0L)
+        savePlaybackProgress()
+        error = null
+        status = "Connection stalled - reloading this stream once"
+        player.stop()
+        player.seekTo(positionMs)
+        player.prepare()
+        player.play()
+      }
+      ProlongedStallAction.REQUEST_FRESH_STREAM -> {
+        savePlaybackProgress()
+        if (!onPlaybackFailed()) {
+          error = "This stream stayed stalled. Try another server."
+          status = "Playback stalled"
+          controlsVisible = true
+        }
+      }
+    }
+  }
+
+  // Once playback has remained uninterrupted for a full minute, a previous recovery no longer
+  // counts against this title. Future trouble starts with the least disruptive step again.
+  LaunchedEffect(player, isVideoPlaying) {
+    if (!isVideoPlaying) return@LaunchedEffect
+    delay(STABLE_PLAYBACK_RESET_MS)
+    stallRecoveryAttempts = 0
+    onPlaybackStable()
   }
 
   LaunchedEffect(player, progressKey) {
@@ -911,6 +1068,7 @@ internal fun HlsPlayerScreen(
         isCasting = isCasting,
         onQualitySelected = { option ->
           selectedQuality = option
+          playerPreferences.setStablePlayback(option.isStable)
           selectVideoQuality(player, option)
         },
         onAudioSelected = { option ->
@@ -1012,8 +1170,10 @@ private fun ModernPlayerControls(
     BoxWithConstraints(Modifier.fillMaxSize()) {
       val compact = maxWidth < 720.dp
       val horizontalPadding = if (compact) 18.dp else 38.dp
-      val centerButtonSize = if (compact) 52.dp else 60.dp
       val playButtonSize = if (compact) 68.dp else 78.dp
+      // Seeking lives on the timeline and remote keys. The center is deliberately limited to one
+      // faint play/pause target so controls never obscure the picture, including while buffering.
+      val playButtonAlpha = .22f
 
       Box(
         Modifier.matchParentSize()
@@ -1092,16 +1252,6 @@ private fun ModernPlayerControls(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(if (compact) 20.dp else 30.dp),
       ) {
-        ModernTransportControl(
-          icon = Icons.Filled.Replay10,
-          label = "Back 10 seconds",
-          size = centerButtonSize,
-          onClick = {
-            onInteraction()
-            player.seekTo(seekTargetPosition(player.currentPosition, -10_000L, player.duration))
-          },
-          onInteraction = onInteraction,
-        )
         Box(contentAlignment = Alignment.Center) {
           if (isBuffering) {
             CircularProgressIndicator(
@@ -1114,8 +1264,7 @@ private fun ModernPlayerControls(
             icon = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
             label = if (isPlaying) "Pause" else "Play",
             size = playButtonSize,
-            prominent = true,
-            modifier = Modifier.focusRequester(playButtonFocusRequester),
+            modifier = Modifier.focusRequester(playButtonFocusRequester).alpha(playButtonAlpha),
             onClick = {
               onInteraction()
               if (isPlaying) {
@@ -1128,16 +1277,6 @@ private fun ModernPlayerControls(
             onInteraction = onInteraction,
           )
         }
-        ModernTransportControl(
-          icon = Icons.Filled.Forward10,
-          label = "Forward 10 seconds",
-          size = centerButtonSize,
-          onClick = {
-            onInteraction()
-            player.seekTo(seekTargetPosition(player.currentPosition, 10_000L, player.duration))
-          },
-          onInteraction = onInteraction,
-        )
       }
 
       Column(
@@ -1822,7 +1961,7 @@ private fun PlayerControlDialogOverlay(
       PlayerControlDialog.SUBTITLES -> "Choose any detected subtitle track and its appearance"
       PlayerControlDialog.SUBTITLE_SYNC -> "Match captions to the spoken line"
       PlayerControlDialog.AUDIO -> "Choose the language or audio mix"
-      PlayerControlDialog.QUALITY -> "Automatic adapts to your connection"
+      PlayerControlDialog.QUALITY -> "Auto adapts; Stable stays at 360p for weak connections"
       PlayerControlDialog.PICTURE -> "Fit shows the complete picture without cropping"
       PlayerControlDialog.SPEED -> "Change how quickly the video plays"
       PlayerControlDialog.DECODER -> "Use compatibility mode only when video decoding fails"
@@ -2364,7 +2503,10 @@ internal fun videoQualityOptions(tracks: Tracks, compatibilityMode: Boolean): Li
     formats
       .map { VideoQualityOption(qualityLabel(it.width, it.height), it.width, it.height) }
       .distinctBy { it.label }
-  return listOf(VideoQualityOption("Auto")) + fixedOptions
+  return listOf(
+    VideoQualityOption("Auto"),
+    VideoQualityOption(STABLE_QUALITY_LABEL, stable = true),
+  ) + fixedOptions
 }
 
 private fun qualityLabel(width: Int, height: Int): String =
@@ -2597,7 +2739,7 @@ internal fun createHlsPlayer(
   context: android.content.Context,
   request: HlsStreamRequest,
   compatibilityMode: Boolean = false,
-  subtitleOffset: AtomicLong,
+  subtitleOffset: AtomicLong = AtomicLong(0L),
   /**
    * Where to begin.
    *
@@ -2621,15 +2763,15 @@ internal fun createHlsPlayer(
   val mediaSource = createHlsMediaSource(context, request, subtitleOffset)
   val loadControl =
     DefaultLoadControl.Builder()
-      // Enough to start on, not enough to wait for. The quality ramp fills the rest in once the
-      // picture is already up, so a large opening buffer only ever delayed the first frame.
-      .setBufferDurationsMs(
-        8_000,
-        30_000,
-        1_500,
-        3_000,
+      // Slow links need time rather than bytes: keep up to 75 seconds ahead, wait for a useful five
+      // seconds before the first frame, and rebuild a larger cushion after any interruption.
+      .setBufferDurationsMsForStreaming(
+        RELIABLE_MIN_BUFFER_MS,
+        RELIABLE_MAX_BUFFER_MS,
+        RELIABLE_START_BUFFER_MS,
+        RELIABLE_REBUFFER_MS,
       )
-      .setPrioritizeTimeOverSizeThresholds(true)
+      .setPrioritizeTimeOverSizeThresholdsForStreaming(true)
       .build()
   val renderersFactory =
     DefaultRenderersFactory(context)
@@ -2657,7 +2799,9 @@ internal fun createHlsPlayer(
           .setMaxVideoSize(COMPATIBILITY_MAX_VIDEO_WIDTH, COMPATIBILITY_MAX_VIDEO_HEIGHT)
           .setMaxVideoBitrate(COMPATIBILITY_MAX_VIDEO_BITRATE)
       } else {
-        selectionBuilder.setMaxVideoSize(STARTUP_MAX_VIDEO_WIDTH, STARTUP_MAX_VIDEO_HEIGHT)
+        selectionBuilder
+          .setMaxVideoSize(STARTUP_MAX_VIDEO_WIDTH, STARTUP_MAX_VIDEO_HEIGHT)
+          .setMaxVideoBitrate(STABLE_MAX_VIDEO_BITRATE)
       }
       trackSelectionParameters = selectionBuilder.build()
       if (startPositionMs > 0L) setMediaSource(mediaSource, startPositionMs) else setMediaSource(mediaSource)
@@ -2683,15 +2827,21 @@ internal fun createHlsMediaSource(
       .setUserAgent(userAgent)
       .setTransferListener(bandwidthMeter)
       .setAllowCrossProtocolRedirects(true)
-      .setConnectTimeoutMs(15_000)
-      .setReadTimeoutMs(25_000)
+      .setConnectTimeoutMs(RELIABLE_HTTP_CONNECT_TIMEOUT_MS)
+      // A segment arriving slowly is still progress. Let it finish instead of turning a weak but
+      // usable connection into a timeout/retry loop.
+      .setReadTimeoutMs(RELIABLE_HTTP_READ_TIMEOUT_MS)
       .setDefaultRequestProperties(requestProperties)
   val dataSourceFactory = DefaultDataSource.Factory(context, httpFactory)
   val mediaItem = createMediaItem(request)
   return DefaultMediaSourceFactory(dataSourceFactory)
     .setSubtitleParserFactory(OffsetSubtitleParserFactory(subtitleOffset))
+    .setLoadErrorHandlingPolicy(reliableHlsLoadErrorPolicy())
     .createMediaSource(mediaItem)
 }
+
+internal fun reliableHlsLoadErrorPolicy(): DefaultLoadErrorHandlingPolicy =
+  DefaultLoadErrorHandlingPolicy(RELIABLE_HLS_RETRY_COUNT)
 
 /** Applies only a temporary ceiling; the adaptive selector remains responsible for the rendition. */
 @androidx.annotation.OptIn(UnstableApi::class)
@@ -2699,10 +2849,15 @@ internal fun applyAutomaticQualityPhase(player: Player, phase: AutomaticQualityP
   val builder = player.trackSelectionParameters.buildUpon()
   when (phase) {
     AutomaticQualityPhase.LOW_STARTUP ->
-      builder.setMaxVideoSize(STARTUP_MAX_VIDEO_WIDTH, STARTUP_MAX_VIDEO_HEIGHT)
+      builder
+        .setMaxVideoSize(STARTUP_MAX_VIDEO_WIDTH, STARTUP_MAX_VIDEO_HEIGHT)
+        .setMaxVideoBitrate(STABLE_MAX_VIDEO_BITRATE)
     AutomaticQualityPhase.BALANCED ->
-      builder.setMaxVideoSize(COMPATIBILITY_MAX_VIDEO_WIDTH, COMPATIBILITY_MAX_VIDEO_HEIGHT)
-    AutomaticQualityPhase.UNRESTRICTED -> builder.clearVideoSizeConstraints()
+      builder
+        .setMaxVideoSize(COMPATIBILITY_MAX_VIDEO_WIDTH, COMPATIBILITY_MAX_VIDEO_HEIGHT)
+        .setMaxVideoBitrate(Int.MAX_VALUE)
+    AutomaticQualityPhase.UNRESTRICTED ->
+      builder.clearVideoSizeConstraints().setMaxVideoBitrate(Int.MAX_VALUE)
   }
   val updatedParameters = builder.build()
   if (updatedParameters != player.trackSelectionParameters) {

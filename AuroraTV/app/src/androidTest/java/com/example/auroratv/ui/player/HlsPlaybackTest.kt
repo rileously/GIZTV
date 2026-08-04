@@ -450,14 +450,17 @@ class HlsPlaybackTest {
       instrumentation.runOnMainSync {
         assertEquals(640, player.trackSelectionParameters.maxVideoWidth)
         assertEquals(360, player.trackSelectionParameters.maxVideoHeight)
+        assertEquals(800_000, player.trackSelectionParameters.maxVideoBitrate)
 
         applyAutomaticQualityPhase(player, AutomaticQualityPhase.BALANCED)
         assertEquals(1280, player.trackSelectionParameters.maxVideoWidth)
         assertEquals(720, player.trackSelectionParameters.maxVideoHeight)
+        assertEquals(Int.MAX_VALUE, player.trackSelectionParameters.maxVideoBitrate)
 
         applyAutomaticQualityPhase(player, AutomaticQualityPhase.UNRESTRICTED)
         assertEquals(Int.MAX_VALUE, player.trackSelectionParameters.maxVideoWidth)
         assertEquals(Int.MAX_VALUE, player.trackSelectionParameters.maxVideoHeight)
+        assertEquals(Int.MAX_VALUE, player.trackSelectionParameters.maxVideoBitrate)
       }
     } finally {
       instrumentation.runOnMainSync { player.release() }

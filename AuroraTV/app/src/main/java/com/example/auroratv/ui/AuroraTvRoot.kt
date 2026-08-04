@@ -5,6 +5,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -47,6 +48,22 @@ import com.example.auroratv.ui.update.AppUpdateController
 import kotlinx.coroutines.launch
 
 private const val SKYFLIX_URL = "https://skyflix.to/"
+private const val MAX_AUTOMATIC_STREAM_FAILOVERS = 2
+
+internal enum class StreamFailureAction {
+  RESOLVE_FRESH_STREAM,
+  SHOW_PLAYER_ERROR,
+}
+
+internal fun streamFailureAction(
+  hasPlaybackContext: Boolean,
+  completedFailovers: Int,
+): StreamFailureAction =
+  if (hasPlaybackContext && completedFailovers < MAX_AUTOMATIC_STREAM_FAILOVERS) {
+    StreamFailureAction.RESOLVE_FRESH_STREAM
+  } else {
+    StreamFailureAction.SHOW_PLAYER_ERROR
+  }
 
 private enum class Destination {
   CATALOG,
@@ -98,6 +115,7 @@ fun AuroraTvRoot(
   var prefetchTarget by remember { mutableStateOf<PlaybackContext?>(null) }
   var prefetched by remember { mutableStateOf<Pair<String, HlsStreamRequest>?>(null) }
   val streamCache = remember(appContext) { StreamCacheStore(appContext) }
+  var streamFailoverAttempts by remember { mutableIntStateOf(0) }
   val scope = rememberCoroutineScope()
 
   // What a paired phone's pad actually drives. Compose moves focus perfectly well when asked; what
@@ -132,6 +150,7 @@ fun AuroraTvRoot(
   }
 
   fun openForPlayback(context: PlaybackContext, returnTo: Destination) {
+    streamFailoverAttempts = 0
     pendingContext = context
     browserUrl = context.pageUrl
     browserReturnDestination = returnTo
@@ -343,9 +362,30 @@ fun AuroraTvRoot(
             onPlayNext = { next -> openForPlayback(next, browserReturnDestination) },
             onPrepareNext = { next -> prefetchTarget = next },
             onHandedOver = { destination = Destination.REMOTE },
-            // Whatever went wrong, a remembered address that leads to a broken stream must not be
-            // offered a second time: the next attempt goes and finds the page again.
-            onPlaybackFailed = { request.context?.pageUrl?.let(streamCache::forget) },
+            // Signed stream addresses can expire or point to an unhealthy edge. Forget the dead
+            // address and resolve the title page again, but bound the automatic loop so a genuinely
+            // broken title still presents a useful error instead of loading forever.
+            onPlaybackFailed = {
+              val playbackContext = request.context
+              playbackContext?.pageUrl?.let(streamCache::forget)
+              when (
+                streamFailureAction(
+                  hasPlaybackContext = playbackContext != null,
+                  completedFailovers = streamFailoverAttempts,
+                )
+              ) {
+                StreamFailureAction.RESOLVE_FRESH_STREAM -> {
+                  streamFailoverAttempts++
+                  pendingContext = playbackContext
+                  browserUrl = requireNotNull(playbackContext).pageUrl
+                  streamRequest = null
+                  destination = Destination.BROWSER
+                  true
+                }
+                StreamFailureAction.SHOW_PLAYER_ERROR -> false
+              }
+            },
+            onPlaybackStable = { streamFailoverAttempts = 0 },
           )
         } else {
           Catalog()

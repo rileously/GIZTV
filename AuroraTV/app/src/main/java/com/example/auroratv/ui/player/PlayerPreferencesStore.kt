@@ -9,6 +9,7 @@ private const val KEY_PLAYBACK_SPEED = "playback_speed"
 private const val KEY_SUBTITLE_SIZE = "subtitle_size"
 private const val KEY_SUBTITLE_POSITION = "subtitle_position"
 private const val KEY_SUBTITLE_STYLE = "subtitle_style"
+private const val KEY_STABLE_PLAYBACK = "stable_playback"
 
 internal const val SUBTITLES_OFF_LABEL = "Off"
 internal const val AUTO_SUBTITLE_LABEL = "Auto English"
@@ -49,6 +50,12 @@ internal class PlayerPreferencesStore(context: Context) {
 
   fun setPlaybackSpeed(speed: Float) {
     preferences.edit().putFloat(KEY_PLAYBACK_SPEED, speed).apply()
+  }
+
+  fun stablePlayback(): Boolean = preferences.getBoolean(KEY_STABLE_PLAYBACK, false)
+
+  fun setStablePlayback(enabled: Boolean) {
+    preferences.edit().putBoolean(KEY_STABLE_PLAYBACK, enabled).apply()
   }
 
   fun subtitleSize(): SubtitleSizeOption =

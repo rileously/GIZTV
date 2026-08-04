@@ -1,16 +1,29 @@
 package com.example.auroratv
 
+import androidx.media3.common.C
 import androidx.media3.common.Player
+import com.example.auroratv.ui.StreamFailureAction
+import com.example.auroratv.ui.streamFailureAction
+import com.example.auroratv.ui.player.AutomaticQualityPhase
 import com.example.auroratv.ui.player.PlayerBackAction
+import com.example.auroratv.ui.player.ProlongedStallAction
+import com.example.auroratv.ui.player.STABLE_QUALITY_LABEL
+import com.example.auroratv.ui.player.VideoQualityOption
 import com.example.auroratv.ui.player.adjustSubtitleSync
+import com.example.auroratv.ui.player.automaticQualityPhaseAfterBuffering
+import com.example.auroratv.ui.player.automaticQualityPromotion
 import com.example.auroratv.ui.player.playerBackAction
 import com.example.auroratv.ui.player.playerControllerTimeoutMs
+import com.example.auroratv.ui.player.prolongedStallAction
+import com.example.auroratv.ui.player.reliableHlsLoadErrorPolicy
 import com.example.auroratv.ui.player.resumablePlaybackPosition
 import com.example.auroratv.ui.player.subtitleSyncDescription
 import com.example.auroratv.ui.player.subtitleSyncLabel
 import com.example.auroratv.ui.player.touchSeekPositionMs
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -68,5 +81,80 @@ class PlaybackLogicTest {
   @Test
   fun controlsLinger_longerOnATelevisionThanUnderAThumb() {
     assert(playerControllerTimeoutMs(isTelevision = true) > playerControllerTimeoutMs(isTelevision = false))
+  }
+
+  @Test
+  fun automaticQuality_requiresStablePlaybackAndARealSafetyBuffer() {
+    val lowPromotion = automaticQualityPromotion(AutomaticQualityPhase.LOW_STARTUP)!!
+    assertEquals(AutomaticQualityPhase.BALANCED, lowPromotion.nextPhase)
+    assertEquals(15_000L, lowPromotion.stablePlaybackMs)
+    assertEquals(20_000L, lowPromotion.requiredBufferMs)
+
+    val balancedPromotion = automaticQualityPromotion(AutomaticQualityPhase.BALANCED)!!
+    assertEquals(AutomaticQualityPhase.UNRESTRICTED, balancedPromotion.nextPhase)
+    assertEquals(30_000L, balancedPromotion.stablePlaybackMs)
+    assertEquals(40_000L, balancedPromotion.requiredBufferMs)
+    assertNull(automaticQualityPromotion(AutomaticQualityPhase.UNRESTRICTED))
+  }
+
+  @Test
+  fun rebuffering_dropsAutomaticQualityButRespectsManualAndCompatibilityChoices() {
+    assertEquals(
+      AutomaticQualityPhase.LOW_STARTUP,
+      automaticQualityPhaseAfterBuffering(
+        hasStartedPlayback = true,
+        automaticQuality = true,
+        compatibilityMode = false,
+        currentPhase = AutomaticQualityPhase.UNRESTRICTED,
+      ),
+    )
+    assertEquals(
+      AutomaticQualityPhase.UNRESTRICTED,
+      automaticQualityPhaseAfterBuffering(
+        hasStartedPlayback = true,
+        automaticQuality = false,
+        compatibilityMode = false,
+        currentPhase = AutomaticQualityPhase.UNRESTRICTED,
+      ),
+    )
+    assertEquals(
+      AutomaticQualityPhase.BALANCED,
+      automaticQualityPhaseAfterBuffering(
+        hasStartedPlayback = true,
+        automaticQuality = true,
+        compatibilityMode = true,
+        currentPhase = AutomaticQualityPhase.BALANCED,
+      ),
+    )
+  }
+
+  @Test
+  fun hlsLoading_retriesTransientFailuresBeforeAbandoningAStream() {
+    assertEquals(6, reliableHlsLoadErrorPolicy().getMinimumLoadableRetryCount(C.DATA_TYPE_MEDIA))
+  }
+
+  @Test
+  fun stableQuality_remainsAdaptiveButIsDistinctFromNormalAuto() {
+    val stable = VideoQualityOption(STABLE_QUALITY_LABEL, stable = true)
+
+    assertTrue(stable.isAuto)
+    assertTrue(stable.isStable)
+    assertFalse(VideoQualityOption("Auto").isStable)
+    assertFalse(VideoQualityOption("720p", width = 1280, height = 720).isAuto)
+  }
+
+  @Test
+  fun prolongedStall_reloadsOnceThenRequestsAFreshStream() {
+    assertEquals(ProlongedStallAction.RELOAD_CURRENT_STREAM, prolongedStallAction(0))
+    assertEquals(ProlongedStallAction.REQUEST_FRESH_STREAM, prolongedStallAction(1))
+    assertEquals(ProlongedStallAction.REQUEST_FRESH_STREAM, prolongedStallAction(2))
+  }
+
+  @Test
+  fun streamFailover_isAvailableOnlyForCatalogTitlesAndIsBounded() {
+    assertEquals(StreamFailureAction.RESOLVE_FRESH_STREAM, streamFailureAction(true, 0))
+    assertEquals(StreamFailureAction.RESOLVE_FRESH_STREAM, streamFailureAction(true, 1))
+    assertEquals(StreamFailureAction.SHOW_PLAYER_ERROR, streamFailureAction(true, 2))
+    assertEquals(StreamFailureAction.SHOW_PLAYER_ERROR, streamFailureAction(false, 0))
   }
 }
