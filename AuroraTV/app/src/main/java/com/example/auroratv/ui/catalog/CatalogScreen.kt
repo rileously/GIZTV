@@ -401,14 +401,16 @@ internal fun CatalogScreen(
   ) {
     val narrow = maxWidth < 600.dp
     val compact = maxHeight < 600.dp
+    // The inset belongs to the things that do not scroll. Putting it on this column boxed every
+    // rail inside it too, so the card at the right edge was clipped by an invisible line instead of
+    // running under the edge of the screen the way a rail is supposed to.
+    val edge = if (narrow) 18.dp else 42.dp
+    val edgeOnly = Modifier.padding(horizontal = edge)
     Column(
-      modifier =
-        Modifier.fillMaxSize().padding(
-          horizontal = if (narrow) 18.dp else 42.dp,
-          vertical = if (compact) 14.dp else 22.dp,
-        )
+      modifier = Modifier.fillMaxSize().padding(vertical = if (compact) 14.dp else 22.dp)
     ) {
       CatalogTopBar(
+        modifier = edgeOnly,
         narrow = narrow,
         compact = compact,
         onOpenWeb = { dismissKeyboard(); onOpenWeb() },
@@ -465,11 +467,11 @@ internal fun CatalogScreen(
       when {
         // Only when there is nothing to show. Typing would otherwise replace the results with a
         // loading panel on every letter, which flickers and loses the viewer's place.
-        loading && itemCount == 0 -> StatusPanel("Loading…", Modifier.weight(1f), loading = true)
+        loading && itemCount == 0 -> StatusPanel("Loading…", edgeOnly.weight(1f), loading = true)
         errorMessage != null && itemCount == 0 ->
           StatusPanel(
             message = errorMessage ?: "Content could not be loaded",
-            modifier = Modifier.weight(1f),
+            modifier = edgeOnly.weight(1f),
             actionLabel = "Try again",
             onAction = { load(tab, query.trim().takeIf(String::isNotBlank)) },
           )
@@ -477,7 +479,7 @@ internal fun CatalogScreen(
           StatusPanel(
             if (tab == CatalogTab.MY_LIST) "Nothing saved yet. Open a title and choose Save to add it here."
             else "Nothing found. Try another title.",
-            Modifier.weight(1f),
+            edgeOnly.weight(1f),
           )
         showRails ->
           LazyColumn(
@@ -497,6 +499,7 @@ internal fun CatalogScreen(
                   up = searchButtonFocusRequester,
                   down = if (showRecommendedRail) recommendedFocusRequester else firstRailFocusRequester,
                   hasGrid = sections.isNotEmpty() || showRecommendedRail,
+                  edge = edge,
                 )
               }
             }
@@ -632,7 +635,9 @@ internal fun CatalogScreen(
             state = gridState,
             columns = GridCells.Adaptive(minSize = if (narrow) 132.dp else 158.dp),
             modifier = Modifier.weight(1f).fillMaxWidth(),
-            contentPadding = PaddingValues(bottom = 22.dp),
+            // Inset as content rather than as a border, so a focused card at the edge is not
+            // clipped by the boundary it sits against.
+            contentPadding = PaddingValues(start = edge, end = edge, bottom = 22.dp),
             horizontalArrangement = Arrangement.spacedBy(if (narrow) 12.dp else 18.dp),
             verticalArrangement = Arrangement.spacedBy(if (narrow) 16.dp else 22.dp),
           ) {
@@ -645,6 +650,7 @@ internal fun CatalogScreen(
                   up = if (browsing) searchButtonFocusRequester else firstTabFocusRequester,
                   down = gridFocusRequester,
                   hasGrid = itemCount > 0,
+                  edge = edge,
                 )
               }
             }
@@ -765,8 +771,9 @@ private fun SectionHeading(
   itemCount: Int,
   narrow: Boolean,
   attribution: Boolean = true,
+  modifier: Modifier = Modifier,
 ) {
-  Column {
+  Column(modifier) {
     Row(verticalAlignment = Alignment.CenterVertically) {
       Text(heading, color = SoftWhite, fontWeight = FontWeight.Black, fontSize = if (narrow) 17.sp else 19.sp)
       Spacer(Modifier.width(10.dp))
@@ -798,6 +805,7 @@ private fun SectionHeading(
  */
 @Composable
 private fun CatalogTopBar(
+  modifier: Modifier = Modifier,
   narrow: Boolean,
   compact: Boolean,
   onOpenWeb: () -> Unit,
@@ -852,7 +860,7 @@ private fun CatalogTopBar(
   }
   Column(
     modifier =
-      Modifier.fillMaxWidth().clip(shape)
+      modifier.fillMaxWidth().clip(shape)
         .background(
           Brush.horizontalGradient(
             listOf(NightSurface.copy(alpha = .95f), NightSurface.copy(alpha = .55f))
@@ -944,14 +952,20 @@ private fun <T> CatalogRail(
         }
       }
   ) {
+    // The same inset the rest of the screen uses, applied here rather than around the rail.
+    val edge = if (narrow) 18.dp else 42.dp
     SectionHeading(
       heading = heading,
       itemCount = items.size,
       narrow = narrow,
       attribution = attribution,
+      modifier = Modifier.padding(horizontal = edge),
     )
     LazyRow(
       modifier = Modifier.fillMaxWidth().focusGroup(),
+      // The inset lives here rather than around the whole rail, so the first card lines up with
+      // everything else while the last one is free to scroll off the edge of the screen.
+      contentPadding = PaddingValues(horizontal = edge),
       horizontalArrangement = Arrangement.spacedBy(if (narrow) 12.dp else 18.dp),
     ) {
       items(items = items, key = key) { item ->

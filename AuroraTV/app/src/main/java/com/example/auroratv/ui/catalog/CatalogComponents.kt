@@ -14,6 +14,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -575,12 +576,21 @@ internal fun ContinueWatchingSection(
   up: FocusRequester,
   down: FocusRequester,
   hasGrid: Boolean,
+  /** The screen's own inset, applied here so the rail itself can reach the edges. */
+  edge: Dp = 42.dp,
 ) {
   Column {
-    Text("Continue watching", color = SoftWhite, fontWeight = FontWeight.Black, fontSize = 16.sp)
+    Text(
+      "Continue watching",
+      color = SoftWhite,
+      fontWeight = FontWeight.Black,
+      fontSize = 16.sp,
+      modifier = Modifier.padding(horizontal = edge),
+    )
     Spacer(Modifier.height(8.dp))
     LazyRow(
       modifier = Modifier.fillMaxWidth().focusGroup(),
+      contentPadding = PaddingValues(horizontal = edge),
       horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
       items(items = entries, key = { it.pageUrl }) { entry ->
