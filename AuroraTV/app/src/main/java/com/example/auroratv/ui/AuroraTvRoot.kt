@@ -25,7 +25,10 @@ import com.example.auroratv.ui.drama.ShortDramaScreen
 import com.example.auroratv.ui.main.AuroraTvApp
 import com.example.auroratv.ui.sports.SportsScreen
 import com.example.auroratv.ui.player.HlsPlayerScreen
+import androidx.media3.common.Player
 import com.example.auroratv.ui.player.HlsStreamRequest
+import com.example.auroratv.ui.player.PlaybackProgressStore
+import com.example.auroratv.ui.player.playbackProgressKeyForPage
 import com.example.auroratv.ui.link.PairingCodeOverlay
 import com.example.auroratv.ui.link.RemoteScreen
 import com.example.auroratv.ui.update.AppUpdateController
@@ -173,7 +176,31 @@ fun AuroraTvRoot(
           Catalog()
         }
       }
-      Destination.REMOTE -> RemoteScreen(onBack = { destination = Destination.CATALOG })
+      Destination.REMOTE ->
+        RemoteScreen(
+          onBack = { destination = Destination.CATALOG },
+          onPlayHere = { pageUrl, title, subtitle, posterUrl, positionMs ->
+            // The position comes from the television, so the phone's player has to be told it
+            // before the title opens: it resumes from what this device has stored, and this device
+            // has been in another room.
+            PlaybackProgressStore(appContext)
+              .update(
+                key = playbackProgressKeyForPage(pageUrl),
+                positionMs = positionMs,
+                durationMs = 0L,
+                playbackState = Player.STATE_READY,
+              )
+            openForPlayback(
+              PlaybackContext(
+                pageUrl = pageUrl,
+                title = title,
+                subtitle = subtitle,
+                posterUrl = posterUrl,
+              ),
+              Destination.CATALOG,
+            )
+          },
+        )
       Destination.SPORTS ->
         SportsScreen(
           onPlay = { context -> openForPlayback(context, Destination.SPORTS) },
@@ -213,6 +240,7 @@ fun AuroraTvRoot(
             },
             onPlayNext = { next -> openForPlayback(next, browserReturnDestination) },
             onPrepareNext = { next -> prefetchTarget = next },
+            onHandedOver = { destination = Destination.REMOTE },
           )
         } else {
           Catalog()

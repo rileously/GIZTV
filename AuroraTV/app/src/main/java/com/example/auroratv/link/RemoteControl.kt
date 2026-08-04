@@ -90,6 +90,7 @@ internal object RemoteControl {
       val context = playbackContext
       LinkEvent.State(
         playing = player?.isPlaying == true,
+        pageUrl = context?.pageUrl,
         title = context?.title,
         subtitle = context?.subtitle,
         posterUrl = context?.posterUrl,

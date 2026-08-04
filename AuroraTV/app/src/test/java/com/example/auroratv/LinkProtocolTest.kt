@@ -77,6 +77,7 @@ class LinkProtocolTest {
         ),
         LinkEvent.State(
           playing = true,
+          pageUrl = "https://vidfast.vc/movie/1368337",
           title = "The Odyssey",
           subtitle = "2026",
           posterUrl = "https://image.tmdb.org/t/p/w300/x.jpg",
@@ -94,6 +95,7 @@ class LinkProtocolTest {
     val idle =
       LinkEvent.State(
         playing = false,
+        pageUrl = null,
         title = null,
         subtitle = null,
         posterUrl = null,
@@ -188,6 +190,25 @@ class LinkProtocolTest {
     val odd = decodeCommand("""{"v":1,"cmd":"play","pageUrl":"https://example.com/x","positionMs":-9}""") as LinkCommand.Play
 
     assertEquals(0L, odd.positionMs)
+  }
+
+  /** The page is what lets a phone take back what the television is showing. */
+  @Test
+  fun theStateSaysWhichPageIsPlaying() {
+    val playing =
+      LinkEvent.State(
+        playing = true,
+        pageUrl = "https://vidfast.vc/movie/155",
+        title = "The Dark Knight",
+        subtitle = "2008",
+        posterUrl = null,
+        positionMs = 3_600_000L,
+        durationMs = 9_120_000L,
+        volume = 50,
+      )
+
+    assertEquals(playing, decodeEvent(playing.encode()))
+    assertEquals("https://vidfast.vc/movie/155", (decodeEvent(playing.encode()) as LinkEvent.State).pageUrl)
   }
 
   @Test

@@ -86,7 +86,11 @@ private const val SKIP_MS = 10_000L
  * than this screen's guess at it.
  */
 @Composable
-internal fun RemoteScreen(onBack: () -> Unit) {
+internal fun RemoteScreen(
+  onBack: () -> Unit,
+  /** Taking what the television is playing and carrying on with it here. */
+  onPlayHere: (pageUrl: String, title: String, subtitle: String?, posterUrl: String?, positionMs: Long) -> Unit = { _, _, _, _, _ -> },
+) {
   val context = LocalContext.current
   val client = remember(context) { PhoneLink.client(context) }
   val status by client.status.collectAsState()
@@ -133,7 +137,7 @@ internal fun RemoteScreen(onBack: () -> Unit) {
         Spacer(Modifier.height(22.dp))
         ManualAddress(client::connectTo)
       }
-      is LinkStatus.Connected -> ConnectedRemote(current, client)
+      is LinkStatus.Connected -> ConnectedRemote(current, client, onPlayHere)
     }
   }
 }
@@ -219,7 +223,11 @@ private fun CodeEntry(target: LinkTarget, onSubmit: (String) -> Unit) {
 }
 
 @Composable
-private fun ConnectedRemote(connected: LinkStatus.Connected, client: LinkClient) {
+private fun ConnectedRemote(
+  connected: LinkStatus.Connected,
+  client: LinkClient,
+  onPlayHere: (String, String, String?, String?, Long) -> Unit,
+) {
   val state = connected.state
   val options by client.options.collectAsState()
   val nothingPlaying = state.title == null
@@ -274,6 +282,16 @@ private fun ConnectedRemote(connected: LinkStatus.Connected, client: LinkClient)
           Text(formatWatchTime(state.durationMs), color = MutedBlue, fontSize = 12.sp)
         }
       }
+    }
+  }
+
+  // The other direction. A title started on the television can be picked up here — on the way to
+  // bed, or when the room is wanted for something else — and it carries on from the same second.
+  state.pageUrl?.let { pageUrl ->
+    Spacer(Modifier.height(12.dp))
+    WideButton("Watch this on my phone") {
+      client.send(LinkCommand.Stop)
+      onPlayHere(pageUrl, state.title.orEmpty(), state.subtitle, state.posterUrl, state.positionMs)
     }
   }
 

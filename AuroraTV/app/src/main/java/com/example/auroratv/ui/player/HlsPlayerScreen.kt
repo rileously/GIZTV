@@ -268,6 +268,8 @@ internal fun HlsPlayerScreen(
   onPlayNext: (PlaybackContext) -> Unit = {},
   /** Said once the episode is over, while the countdown is the only thing left to wait for. */
   onPrepareNext: (PlaybackContext) -> Unit = {},
+  /** Said once a title has been handed to the television, so this screen can step aside. */
+  onHandedOver: () -> Unit = {},
 ) {
   val context = LocalContext.current
   val lifecycleOwner = LocalLifecycleOwner.current
@@ -540,10 +542,13 @@ internal fun HlsPlayerScreen(
           )
         )
     if (sent) {
-      // Stop here as it starts there, so the film is not playing in two rooms at once.
+      // Leaving the player outright rather than merely pausing it: pausing left this screen sitting
+      // on a still frame of something now playing next door, and the useful thing to be looking at
+      // from that moment is the remote.
       savePlaybackProgress()
       player.pause()
       handoverSent = true
+      onHandedOver()
     }
   }
 

@@ -97,6 +97,8 @@ internal sealed interface LinkEvent {
   /** What the television is doing now, sent on every change and while playing. */
   data class State(
     val playing: Boolean,
+    /** The catalog page behind what is playing, which is what a phone needs to take it back. */
+    val pageUrl: String?,
     val title: String?,
     val subtitle: String?,
     val posterUrl: String?,
@@ -225,6 +227,7 @@ internal fun LinkEvent.encode(): String {
       json
         .put("evt", "state")
         .put("playing", playing)
+        .put("pageUrl", pageUrl ?: JSONObject.NULL)
         .put("title", title ?: JSONObject.NULL)
         .put("subtitle", subtitle ?: JSONObject.NULL)
         .put("posterUrl", posterUrl ?: JSONObject.NULL)
@@ -270,6 +273,7 @@ internal fun decodeEvent(line: String): LinkEvent? =
         "state" ->
           LinkEvent.State(
             playing = json.optBoolean("playing"),
+            pageUrl = json.optNonBlank("pageUrl"),
             title = json.optNonBlank("title"),
             subtitle = json.optNonBlank("subtitle"),
             posterUrl = json.optNonBlank("posterUrl"),

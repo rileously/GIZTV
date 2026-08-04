@@ -20,6 +20,15 @@ import kotlinx.coroutines.withContext
 private const val LOG_TAG = "GizTvLink"
 private const val CONNECT_TIMEOUT_MS = 6_000
 
+/**
+ * How long a host that answered the door has to say something.
+ *
+ * Opening a socket proves very little: a router, a proxy or a phone's own NAT will accept a
+ * connection on any port and then sit there. Without this the remote waits on one of those for
+ * ever, which is exactly what a sweep across a whole subnet will eventually find.
+ */
+private const val HANDSHAKE_TIMEOUT_MS = 8_000
+
 /** Where the phone thinks it stands with the television. */
 internal sealed interface LinkStatus {
   data object Idle : LinkStatus
@@ -157,6 +166,7 @@ internal class LinkClient(private val context: Context) {
               discover()
               return@launch
             }
+        socket.soTimeout = HANDSHAKE_TIMEOUT_MS
         val link = LinkConnection(socket)
         connection = link
         val phoneName = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
@@ -166,14 +176,21 @@ internal class LinkClient(private val context: Context) {
         } else {
           link.send(LinkCommand.Hello(token = token.orEmpty().ifEmpty { "none" }, name = phoneName))
         }
-        listen(link, target)
+        listen(link, socket, target)
       }
   }
 
-  private suspend fun listen(link: LinkConnection, target: LinkTarget) {
+  private suspend fun listen(link: LinkConnection, socket: Socket, target: LinkTarget) {
     withContext(Dispatchers.IO) {
+      var heardAnything = false
       while (true) {
         val line = link.readLine() ?: break
+        // It has spoken GIZTV, so it is not a router holding the line open. From here it may take
+        // as long as it likes between messages.
+        if (!heardAnything) {
+          heardAnything = true
+          runCatching { socket.soTimeout = 0 }
+        }
         when (val event = decodeEvent(line)) {
           LinkEvent.PairingRequired -> _status.value = LinkStatus.AwaitingCode(target)
           is LinkEvent.Paired -> {
@@ -198,8 +215,12 @@ internal class LinkClient(private val context: Context) {
         }
       }
       link.close()
-      if (_status.value is LinkStatus.Connected) {
-        _status.value = LinkStatus.Failed("The television disconnected.")
+      when {
+        _status.value is LinkStatus.Connected ->
+          _status.value = LinkStatus.Failed("The television disconnected.")
+        // Answered the door and said nothing: not a television, whatever it is.
+        !heardAnything ->
+          _status.value = LinkStatus.Failed("Nothing at ${target.host} answered as a television.")
       }
       Log.i(LOG_TAG, "Remote connection closed")
     }
