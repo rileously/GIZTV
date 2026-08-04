@@ -35,12 +35,14 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -328,13 +330,51 @@ private fun ConnectedRemote(
   if (!nothingPlaying) PlayerSettings(options, client)
 
   Spacer(Modifier.height(22.dp))
+  ForgetTelevision(connected.target.name) { client.forget() }
+  Spacer(Modifier.height(28.dp))
+}
+
+/**
+ * Forgetting a television, once the viewer has said so twice.
+ *
+ * It is one word away from Disconnect and undoes something quite different: pairing again means
+ * fetching a code off a screen in another room, which is a poor reward for a thumb that slipped.
+ */
+@Composable
+private fun ForgetTelevision(name: String, onForget: () -> Unit) {
+  var asking by remember { mutableStateOf(false) }
+
   Text(
     "Forget this television",
     color = MutedBlue,
     fontSize = 13.sp,
-    modifier = Modifier.clickable { client.forget() },
+    modifier = Modifier.clickable { asking = true }.testTag("forget_television"),
   )
-  Spacer(Modifier.height(28.dp))
+
+  if (!asking) return
+  AlertDialog(
+    onDismissRequest = { asking = false },
+    containerColor = NightSurface,
+    titleContentColor = SoftWhite,
+    textContentColor = MutedBlue,
+    title = { Text("Forget $name?") },
+    text = {
+      Text("This phone will need the code shown on the television to pair with it again.")
+    },
+    confirmButton = {
+      TextButton(
+        onClick = {
+          asking = false
+          onForget()
+        }
+      ) {
+        Text("Forget", color = AuroraMint, fontWeight = FontWeight.Bold)
+      }
+    },
+    dismissButton = {
+      TextButton(onClick = { asking = false }) { Text("Keep it", color = MutedBlue) }
+    },
+  )
 }
 
 /**

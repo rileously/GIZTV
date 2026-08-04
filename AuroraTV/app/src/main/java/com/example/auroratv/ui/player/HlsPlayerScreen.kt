@@ -1175,12 +1175,20 @@ private fun ModernPlayerControls(
           verticalAlignment = Alignment.CenterVertically,
           horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-          Text(
-            "${formatPlayerTime(seekPreviewMs ?: positionMs)}  /  ${formatPlayerTime(durationMs)}",
-            color = SoftWhite,
-            fontWeight = FontWeight.Bold,
-            fontSize = 12.sp,
-          )
+          Column {
+            Text(
+              "${formatPlayerTime(seekPreviewMs ?: positionMs)}  /  ${formatPlayerTime(durationMs)}",
+              color = SoftWhite,
+              fontWeight = FontWeight.Bold,
+              fontSize = 12.sp,
+            )
+            // What the clock will say when the credits roll, and how much of the evening is left in
+            // it. Both follow the position being scrubbed to, so dragging the bar answers "will
+            // this finish before bed" while the thumb is still down.
+            remainingLabel(LocalContext.current, seekPreviewMs ?: positionMs, durationMs)?.let {
+              Text(it, color = MutedBlue, fontWeight = FontWeight.Medium, fontSize = 11.sp)
+            }
+          }
           Spacer(Modifier.weight(1f))
           if (!compact) {
             val hiddenWhileSeekingModifier = Modifier.alpha(surroundingControlsAlpha)
@@ -2667,3 +2675,29 @@ internal fun playerBackAction(settingsOpen: Boolean, controlsVisible: Boolean): 
     controlsVisible -> PlayerBackAction.HIDE_CONTROLS
     else -> PlayerBackAction.EXIT_PLAYER
   }
+
+/**
+ * "Ends 21:20 · 35 min left", or nothing at all.
+ *
+ * A live stream has no end to predict and a duration that has not arrived yet is not worth guessing
+ * at, so both give back null rather than a figure that would only be wrong. The clock follows the
+ * device's own 12- or 24-hour setting.
+ */
+private fun remainingLabel(context: Context, positionMs: Long, durationMs: Long): String? {
+  if (durationMs <= 0L) return null
+  val remainingMs = (durationMs - positionMs).coerceAtLeast(0L)
+  val minutesLeft = (remainingMs + 30_000L) / 60_000L
+  val endsAt = java.util.Date(System.currentTimeMillis() + remainingMs)
+  val clock = android.text.format.DateFormat.getTimeFormat(context).format(endsAt)
+  val left =
+    when {
+      minutesLeft <= 0L -> "finishing"
+      minutesLeft < 60L -> "${minutesLeft}m left"
+      else -> {
+        val hours = minutesLeft / 60L
+        val minutes = minutesLeft % 60L
+        if (minutes == 0L) "${hours}h left" else "${hours}h ${minutes}m left"
+      }
+    }
+  return "Ends $clock · $left"
+}

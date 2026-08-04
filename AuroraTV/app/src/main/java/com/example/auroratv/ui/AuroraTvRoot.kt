@@ -10,10 +10,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import com.example.auroratv.data.PlaybackContext
 import com.example.auroratv.home.isTelevision
 import com.example.auroratv.home.resumeContextFor
+import com.example.auroratv.link.LinkKey
+import com.example.auroratv.link.RemoteUiBridge
 import com.example.auroratv.ui.browser.BrowserScreen
 import com.example.auroratv.ui.browser.StreamPrefetcher
 import com.example.auroratv.ui.catalog.CatalogScreen
@@ -84,6 +90,23 @@ fun AuroraTvRoot(
   // The next episode, being resolved behind the player while its countdown runs.
   var prefetchTarget by remember { mutableStateOf<PlaybackContext?>(null) }
   var prefetched by remember { mutableStateOf<Pair<String, HlsStreamRequest>?>(null) }
+
+  // What a paired phone's pad actually drives. Compose moves focus perfectly well when asked; what
+  // it will not do is respond to a key event the app posted to itself while still in touch mode.
+  val focusManager = LocalFocusManager.current
+  DisposableEffect(focusManager) {
+    RemoteUiBridge.moveFocus = { key ->
+      when (key) {
+        LinkKey.UP -> focusManager.moveFocus(FocusDirection.Up)
+        LinkKey.DOWN -> focusManager.moveFocus(FocusDirection.Down)
+        LinkKey.LEFT -> focusManager.moveFocus(FocusDirection.Left)
+        LinkKey.RIGHT -> focusManager.moveFocus(FocusDirection.Right)
+        else -> false
+      }
+    }
+    onDispose { RemoteUiBridge.moveFocus = null }
+  }
+  SideEffect { RemoteUiBridge.playerOpen = destination == Destination.PLAYER }
 
   // One stable handler for the drama destinations and the sports page. Registering a BackHandler
   // inside each screen instead would hand the press that leaves the detail page to the listing page

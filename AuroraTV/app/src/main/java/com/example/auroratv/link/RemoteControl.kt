@@ -125,8 +125,8 @@ internal object RemoteControl {
           }
         is LinkCommand.Volume -> adjustVolume(context, command.delta)
         is LinkCommand.SetVolume -> setVolume(context, command.percent)
-        is LinkCommand.Key -> dispatchKey(command.key.toKeyCode())
-        is LinkCommand.Text -> dispatchText(command.text)
+        is LinkCommand.Key -> press(command.key)
+        is LinkCommand.Text -> type(command.text)
         is LinkCommand.SelectOption -> playerOptions?.select(command.groupId, command.itemId)
         is LinkCommand.SubtitleSync -> playerOptions?.nudgeSubtitleSync(command.deltaMs)
       }
@@ -198,6 +198,34 @@ internal object RemoteControl {
         audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, AudioManager.FLAG_SHOW_UI)
       }
     }
+  }
+
+  /**
+   * A pad press, moving focus where the screen has lent us a way to.
+   *
+   * Arrows go through the screen's own focus system, which works whether or not anything was
+   * focused to begin with. Select and back stay as key events: those the window handles perfectly
+   * well once something is focused.
+   */
+  private fun press(key: LinkKey) {
+    val moved = when (key) {
+      LinkKey.UP, LinkKey.DOWN, LinkKey.LEFT, LinkKey.RIGHT ->
+        RemoteUiBridge.moveFocus?.invoke(key) ?: false
+      else -> false
+    }
+    if (!moved) dispatchKey(key.toKeyCode())
+  }
+
+  /**
+   * Typing, which is only ever meant for the search box.
+   *
+   * Ignored while the player is up: there is nothing to type into behind a film, and letters
+   * arriving as key presses would be read as playback shortcuts.
+   */
+  private fun type(text: String) {
+    if (RemoteUiBridge.playerOpen) return
+    val search = RemoteUiBridge.typeIntoSearch
+    if (search != null) search(text) else dispatchText(text)
   }
 
   /**

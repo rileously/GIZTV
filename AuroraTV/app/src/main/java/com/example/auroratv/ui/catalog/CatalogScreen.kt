@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.SettingsRemote
 import androidx.compose.material.icons.filled.SportsBasketball
 import androidx.compose.material.icons.filled.Theaters
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -84,6 +85,7 @@ import com.example.auroratv.data.PlaybackContext
 import com.example.auroratv.data.UiPreferencesStore
 import com.example.auroratv.data.WatchHistoryEntry
 import com.example.auroratv.data.WatchHistoryStore
+import com.example.auroratv.link.RemoteUiBridge
 import com.example.auroratv.theme.AuroraMint
 import com.example.auroratv.theme.DeepSpace
 import com.example.auroratv.theme.MutedBlue
@@ -230,6 +232,17 @@ internal fun CatalogScreen(
     searchButtonFocusRequester.requestFocus()
   }
 
+  // Lent to a paired phone so a search typed on a real keyboard lands in the box rather than
+  // arriving as a stream of key presses aimed at whatever happens to be focused. The television's
+  // own keyboard stays down: the typing is happening in someone's hand, not on the screen.
+  DisposableEffect(Unit) {
+    RemoteUiBridge.typeIntoSearch = { typed ->
+      query = typed
+      load(tab, typed.takeIf(String::isNotBlank))
+    }
+    onDispose { RemoteUiBridge.typeIntoSearch = null }
+  }
+
   /**
    * Searches as the viewer types.
    *
@@ -346,7 +359,7 @@ internal fun CatalogScreen(
   val leadingRailItems = (if (showContinueRow) 1 else 0) + (if (showRecommendedRail) 1 else 0)
   val moveToRail: (Int) -> Unit = { target ->
     scope.launch {
-      railState.scrollToItem(target + leadingRailItems)
+      railState.animateScrollToItem(target + leadingRailItems)
       runCatching { railFocusRequesters[target].requestFocus() }
         .onFailure {
           // One frame later the rail has certainly been placed.
