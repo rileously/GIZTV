@@ -65,6 +65,8 @@ internal fun StreamPrefetcher(
         CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
         val resolver =
           AdBlockingWebViewClient(
+            // Nothing here is ever shown, so nothing decorative is ever worth fetching.
+            resolvingOnly = true,
             userAgent = settings.userAgentString,
             onPageState = { _, _, _, _ -> },
             onStatus = {},

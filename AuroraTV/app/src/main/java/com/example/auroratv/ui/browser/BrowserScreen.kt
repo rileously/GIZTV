@@ -84,6 +84,8 @@ import androidx.media3.common.MimeTypes
 import androidx.tv.material3.Text
 import com.example.auroratv.BuildConfig
 import com.example.auroratv.data.PlaybackContext
+import com.example.auroratv.data.CachedSubtitle
+import com.example.auroratv.data.StreamCacheStore
 import com.example.auroratv.data.StreamResolutionStore
 import com.example.auroratv.data.streamResolutionTimeoutMs
 import com.example.auroratv.theme.AuroraBlue
@@ -239,6 +241,7 @@ internal fun BrowserScreen(
   var preparationFailed by remember { mutableStateOf(false) }
   var preparationAttempt by remember { mutableIntStateOf(0) }
   val resolutionStore = remember(context) { StreamResolutionStore(context) }
+  val streamCacheStore = remember(context) { StreamCacheStore(context) }
   var automaticRetries by remember(playback) { mutableIntStateOf(0) }
   var attemptStartedAtMs by remember(playback) { mutableLongStateOf(SystemClock.elapsedRealtime()) }
   // The viewer can drop out of the branded wait and drive the page by hand.
@@ -349,9 +352,22 @@ internal fun BrowserScreen(
                       pageUrl = it.pageUrl,
                       elapsedMs = SystemClock.elapsedRealtime() - attemptStartedAtMs,
                     )
+                    // And where it was, so the next attempt need not be made at all.
+                    streamCacheStore.remember(
+                      pageUrl = it.pageUrl,
+                      url = stream.url,
+                      headers = stream.headers,
+                      subtitles =
+                        stream.subtitles.map { track ->
+                          CachedSubtitle(track.url, track.label, track.language, track.mimeType)
+                        },
+                      sourcePageUrl = stream.sourcePageUrl,
+                    )
                   }
                   latestStreamDetected.value(stream)
                 },
+                // Only while a title is being resolved; plain browsing is looked at.
+                resolvingOnly = playback != null,
                 onRendererGone = { rendererGeneration += 1 },
               )
             webViewClient = client
@@ -745,6 +761,14 @@ internal class AdBlockingWebViewClient(
   private val onStage: (PreparationStage) -> Unit,
   private val onStreamDetected: (HlsStreamRequest) -> Unit,
   private val onRendererGone: () -> Unit,
+  /**
+   * Whether this page is being read rather than shown.
+   *
+   * While resolving, nothing here reaches a screen: the page is loaded only until its player asks
+   * for the video. Everything that exists to be looked at can be skipped, which is most of the
+   * bytes on a page like this.
+   */
+  private val resolvingOnly: Boolean = false,
 ) : WebViewClient() {
   private val mainHandler = Handler(Looper.getMainLooper())
   private val streamReported = AtomicBoolean(false)
@@ -838,6 +862,9 @@ internal class AdBlockingWebViewClient(
       if (blocked == 1 || blocked % 5 == 0) mainHandler.post { onStatus("$blocked ads blocked · Popups off") }
       return emptyResponse()
     }
+    // Pictures, typefaces and stylesheets on a page nobody is looking at. The script that asks for
+    // the video still runs; it simply runs without waiting for a poster to arrive first.
+    if (resolvingOnly && isDecorativeRequest(request, url)) return emptyResponse()
     if (isSupportedSubtitleCatalogUrl(url)) captureSubtitleCatalog(url, request.requestHeaders)
     if (isExternalSubtitleUrl(url)) captureSubtitle(url)
     if (isHlsUrl(url)) reportStream(view, request)
@@ -1289,6 +1316,26 @@ private fun isBlockedUrl(url: String): Boolean {
   if (blockedHosts.any { host == it || host.endsWith(".$it") }) return true
   val normalized = url.lowercase()
   return blockedUrlFragments.any(normalized::contains)
+}
+
+/**
+ * Whether a request is only there to be seen.
+ *
+ * Judged by what the page asked for rather than by extension, since these players fetch most things
+ * from URLs that carry no useful suffix. Scripts, documents and anything that might be the video are
+ * never touched.
+ */
+private fun isDecorativeRequest(request: WebResourceRequest, url: String): Boolean {
+  if (request.isForMainFrame) return false
+  val accept = request.requestHeaders["Accept"].orEmpty().lowercase()
+  val decorativeAccept =
+    accept.startsWith("image/") || accept.contains("text/css") || accept.contains("font")
+  val decorativeSuffix =
+    Regex("\\.(png|jpe?g|gif|webp|bmp|ico|svg|css|woff2?|ttf|otf|eot)(\\?|$)")
+      .containsMatchIn(url.lowercase())
+  if (!decorativeAccept && !decorativeSuffix) return false
+  // A stream is the one thing that must never be intercepted, whatever it looks like.
+  return !isHlsUrl(url) && !isExternalSubtitleUrl(url) && !isSupportedSubtitleCatalogUrl(url)
 }
 
 private fun emptyResponse(): WebResourceResponse =

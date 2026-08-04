@@ -16,7 +16,10 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.runtime.rememberCoroutineScope
 import com.example.auroratv.data.PlaybackContext
+import com.example.auroratv.data.StreamCacheStore
+import com.example.auroratv.data.streamStillLive
 import com.example.auroratv.home.isTelevision
 import com.example.auroratv.home.resumeContextFor
 import com.example.auroratv.link.LinkKey
@@ -33,12 +36,14 @@ import com.example.auroratv.ui.main.AuroraTvApp
 import com.example.auroratv.ui.sports.SportsScreen
 import com.example.auroratv.ui.player.HlsPlayerScreen
 import androidx.media3.common.Player
+import com.example.auroratv.ui.player.ExternalSubtitleTrack
 import com.example.auroratv.ui.player.HlsStreamRequest
 import com.example.auroratv.ui.player.PlaybackProgressStore
 import com.example.auroratv.ui.player.playbackProgressKeyForPage
 import com.example.auroratv.ui.link.PairingCodeOverlay
 import com.example.auroratv.ui.link.RemoteScreen
 import com.example.auroratv.ui.update.AppUpdateController
+import kotlinx.coroutines.launch
 
 private const val SKYFLIX_URL = "https://skyflix.to/"
 
@@ -91,6 +96,8 @@ fun AuroraTvRoot(
   // The next episode, being resolved behind the player while its countdown runs.
   var prefetchTarget by remember { mutableStateOf<PlaybackContext?>(null) }
   var prefetched by remember { mutableStateOf<Pair<String, HlsStreamRequest>?>(null) }
+  val streamCache = remember(appContext) { StreamCacheStore(appContext) }
+  val scope = rememberCoroutineScope()
 
   // What a paired phone's pad actually drives. Compose moves focus perfectly well when asked; what
   // it will not do is respond to a key event the app posted to itself while still in touch mode.
@@ -137,6 +144,32 @@ fun AuroraTvRoot(
       return
     }
     destination = Destination.BROWSER
+
+    // A stream found earlier is worth trying before the page is ground through again. The loading
+    // page is already up, so this races the search rather than delaying it: whichever answers first
+    // is the one the viewer gets, and a remembered address that has quietly died costs only the
+    // moment spent asking.
+    val cached = streamCache.find(context.pageUrl) ?: return
+    scope.launch {
+      if (!streamStillLive(cached.url, cached.headers)) {
+        streamCache.forget(context.pageUrl)
+        return@launch
+      }
+      // Only if the viewer is still waiting for this same title and has not been served already.
+      if (pendingContext?.pageUrl != context.pageUrl || destination != Destination.BROWSER) {
+        return@launch
+      }
+      streamRequest =
+        HlsStreamRequest(
+          url = cached.url,
+          headers = cached.headers,
+          subtitles =
+            cached.subtitles.map { ExternalSubtitleTrack(it.url, it.label, it.language, it.mimeType) },
+          sourcePageUrl = cached.sourcePageUrl,
+          context = context,
+        )
+      destination = Destination.PLAYER
+    }
   }
 
   // A title asked for while the app was already open — from a widget, the television's own row,
@@ -276,6 +309,9 @@ fun AuroraTvRoot(
             onPlayNext = { next -> openForPlayback(next, browserReturnDestination) },
             onPrepareNext = { next -> prefetchTarget = next },
             onHandedOver = { destination = Destination.REMOTE },
+            // Whatever went wrong, a remembered address that leads to a broken stream must not be
+            // offered a second time: the next attempt goes and finds the page again.
+            onPlaybackFailed = { request.context?.pageUrl?.let(streamCache::forget) },
           )
         } else {
           Catalog()

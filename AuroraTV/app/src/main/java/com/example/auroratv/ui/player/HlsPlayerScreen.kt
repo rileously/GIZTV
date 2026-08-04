@@ -270,6 +270,8 @@ internal fun HlsPlayerScreen(
   onPrepareNext: (PlaybackContext) -> Unit = {},
   /** Said once a title has been handed to the television, so this screen can step aside. */
   onHandedOver: () -> Unit = {},
+  /** Said when the stream itself will not play, so a remembered address can be thrown away. */
+  onPlaybackFailed: () -> Unit = {},
 ) {
   val context = LocalContext.current
   val lifecycleOwner = LocalLifecycleOwner.current
@@ -603,6 +605,9 @@ internal fun HlsPlayerScreen(
 
         override fun onPlayerError(playerError: PlaybackException) {
           android.util.Log.e("AuroraHls", "Playback failed for ${request.url}", playerError)
+          // A decoder that cannot cope is this device's problem and the address is fine; anything
+          // else and the address is the first suspect.
+          if (!isVideoDecoderFailure(playerError)) onPlaybackFailed()
           if (!compatibilityMode && isVideoDecoderFailure(playerError)) {
             resumePositionMs = player.currentPosition.coerceAtLeast(0L)
             savePlaybackProgress()
