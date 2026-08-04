@@ -119,6 +119,8 @@ internal fun CatalogScreen(
   onOpenSports: () -> Unit,
   /** Absent on a television, which is the thing being pointed at rather than the thing pointing. */
   onOpenRemote: (() -> Unit)? = null,
+  /** A title the viewer has paused on, worth finding the stream for before they ask. */
+  onConsidering: (PlaybackContext) -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -529,6 +531,7 @@ internal fun CatalogScreen(
                       actionLabel = "Play ${movie.title}",
                       watched = historyStore.find(vidfastMovieUrl(movie.id))?.completed == true,
                       onClick = { onPlay(movie.toPlaybackContext()) },
+                      onDwell = { onConsidering(movie.toPlaybackContext()) },
                       modifier = cardModifier,
                     )
                   }
@@ -601,6 +604,7 @@ internal fun CatalogScreen(
                     actionLabel = "Play ${movie.title}",
                     watched = historyStore.find(vidfastMovieUrl(movie.id))?.completed == true,
                     onClick = { onPlay(movie.toPlaybackContext()) },
+                    onDwell = { onConsidering(movie.toPlaybackContext()) },
                     modifier = cardModifier,
                   )
                 }
@@ -670,6 +674,7 @@ internal fun CatalogScreen(
                     actionLabel = "Play ${movie.title}",
                     watched = historyStore.find(vidfastMovieUrl(movie.id))?.completed == true,
                     onClick = { onPlay(movie.toPlaybackContext()) },
+                    onDwell = { onConsidering(movie.toPlaybackContext()) },
                     modifier = gridEntryModifier(movie.id == movies.firstOrNull()?.id, gridFocusRequester),
                   )
                 }

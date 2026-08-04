@@ -38,6 +38,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -71,6 +72,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import kotlinx.coroutines.delay
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
@@ -478,6 +480,9 @@ internal fun CatalogSearchField(
   )
 }
 
+/** How long a card is looked at before it counts as being considered rather than passed over. */
+private const val DWELL_MS = 1_200L
+
 @Composable
 internal fun PosterCard(
   title: String,
@@ -488,8 +493,23 @@ internal fun PosterCard(
   onClick: () -> Unit,
   modifier: Modifier = Modifier,
   watched: Boolean = false,
+  /**
+   * Said once this card has been sitting under the focus for a moment.
+   *
+   * Not the instant focus arrives: running a rail from one end to the other passes over a dozen
+   * cards nobody meant to look at, and each one would start work that is thrown away a moment
+   * later. A pause is what separates browsing from choosing.
+   */
+  onDwell: (() -> Unit)? = null,
 ) {
   var focused by remember { mutableStateOf(false) }
+  if (onDwell != null) {
+    LaunchedEffect(focused) {
+      if (!focused) return@LaunchedEffect
+      delay(DWELL_MS)
+      onDwell()
+    }
+  }
   val scale by animateFloatAsState(if (focused) 1.045f else 1f, label = "card focus scale")
   val outline by animateColorAsState(if (focused) AuroraMint else SoftWhite.copy(alpha = .08f), label = "card outline")
   Column(

@@ -18,6 +18,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.runtime.rememberCoroutineScope
 import com.example.auroratv.data.PlaybackContext
+import com.example.auroratv.data.CachedSubtitle
 import com.example.auroratv.data.StreamCacheStore
 import com.example.auroratv.data.streamStillLive
 import com.example.auroratv.home.isTelevision
@@ -194,6 +195,13 @@ fun AuroraTvRoot(
       onOpenWeb = { destination = Destination.WEB_HOME },
       onOpenShortDramas = { destination = Destination.SHORT_DRAMAS },
       onOpenSports = { destination = Destination.SPORTS },
+      // Nothing to find if it is already known, and nothing worth starting over a title that is
+      // already being looked for.
+      onConsidering = { considered ->
+        if (streamCache.find(considered.pageUrl) == null && prefetchTarget?.pageUrl != considered.pageUrl) {
+          prefetchTarget = considered
+        }
+      },
       // A television is what a remote points at, so it is not offered one of its own.
       onOpenRemote =
         if (isTelevision) null else ({ destination = Destination.REMOTE }),
@@ -202,10 +210,24 @@ fun AuroraTvRoot(
 
   Box(Modifier.fillMaxSize()) {
     // First in the box, so the player paints over it. Only ever alive while the player is up.
-    if (destination == Destination.PLAYER) {
+    // Behind whatever is on screen. While the player is up this finds the next episode; on the
+    // catalog it finds whatever the viewer has stopped on, so pressing play has nothing left to
+    // wait for. Either way it is covered by the screen in front of it and takes no focus.
+    if (destination == Destination.PLAYER || destination == Destination.CATALOG) {
       StreamPrefetcher(
         target = prefetchTarget,
-        onResolved = { context, stream -> prefetched = context.pageUrl to stream },
+        onResolved = { context, stream ->
+          prefetched = context.pageUrl to stream
+          // Kept beyond this run of the app too, since the work has been done either way.
+          streamCache.remember(
+            pageUrl = context.pageUrl,
+            url = stream.url,
+            headers = stream.headers,
+            subtitles =
+              stream.subtitles.map { CachedSubtitle(it.url, it.label, it.language, it.mimeType) },
+            sourcePageUrl = stream.sourcePageUrl,
+          )
+        },
       )
     }
 
