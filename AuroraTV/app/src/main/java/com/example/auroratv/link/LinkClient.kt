@@ -276,6 +276,9 @@ internal class LinkClient(private val context: Context) {
       when {
         // A television that goes quiet mid-evening is almost always a phone that changed network or
         // an app that was reopened, and the viewer should not have to go and press anything.
+        // Still waiting for a code to be typed: say so and stay put. Reconnecting here is what
+        // made the television issue a fresh number every few seconds.
+        _status.value is LinkStatus.AwaitingCode -> Unit
         heardAnything -> {
           _status.value = LinkStatus.Failed("Reconnecting to ${target.name}…")
           delay(RECONNECT_DELAY_MS)
@@ -286,6 +289,22 @@ internal class LinkClient(private val context: Context) {
       }
       Log.i(LOG_TAG, "Remote connection closed")
     }
+  }
+
+  /**
+   * Answers the television's request for a code.
+   *
+   * Down the connection that asked, where one is still open. Opening a second would leave the
+   * television waiting on the first and asking the viewer for another number.
+   */
+  fun submitCode(target: LinkTarget, code: String) {
+    val phoneName = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
+    val open = connection
+    if (open != null && _status.value is LinkStatus.AwaitingCode) {
+      scope.launch { open.send(LinkCommand.Pair(code = code, name = phoneName)) }
+      return
+    }
+    connect(target, code)
   }
 
   fun send(command: LinkCommand) {

@@ -165,7 +165,7 @@ internal class LinkServer(private val context: Context) {
         }
         .getOrNull() ?: return
     try {
-      if (!authenticate(connection)) return
+      if (!authenticate(connection, socket)) return
       // Past the handshake the phone may sit quiet for as long as it likes; it is a remote control,
       // not a heartbeat.
       socket.soTimeout = 0
@@ -196,43 +196,60 @@ internal class LinkServer(private val context: Context) {
    * code on the television and gets one attempt at it: a second guess would make six digits worth
    * guessing, and the viewer who is standing there can simply ask for a new code.
    */
-  private suspend fun authenticate(connection: LinkConnection): Boolean {
-    val line = connection.readLine() ?: return false
-    return when (val command = decodeCommand(line)) {
-      is LinkCommand.Hello -> {
-        val known = store.isPaired(command.token)
-        if (!known) {
+  private suspend fun authenticate(connection: LinkConnection, socket: Socket): Boolean {
+    var line = connection.readLine() ?: return false
+    while (true) {
+      when (val command = decodeCommand(line)) {
+        is LinkCommand.Hello -> {
+          if (store.isPaired(command.token)) return true
+          beginPairing()
+          connection.send(LinkEvent.PairingRequired)
+          // Reading a number off a television and typing it takes longer than a handshake, and the
+          // socket stays open for it: hanging up here is what made the phone reconnect, and every
+          // reconnection used to put a new number on screen before the last could be typed.
+          runCatching { socket.soTimeout = PAIRING_WINDOW_MS.toInt() }
+        }
+        is LinkCommand.Pair -> {
+          val expected = pendingCode
+          val accepted =
+            expected != null &&
+              System.currentTimeMillis() < pendingCodeExpiresAt &&
+              constantTimeEquals(expected, command.code)
+          if (accepted) {
+            endPairing()
+            val token = newPairingToken()
+            store.addPairedToken(token)
+            connection.send(LinkEvent.Paired(token))
+            Log.i(LOG_TAG, "Paired with ${command.name}")
+            return true
+          }
+          // A wrong number is a typo far more often than an attack, and the code on screen is only
+          // good for its window either way. The viewer gets to try again without fetching a new one.
+          connection.send(LinkEvent.Refused("That code did not match. Try again."))
+        }
+        else -> {
           beginPairing()
           connection.send(LinkEvent.PairingRequired)
         }
-        known
       }
-      is LinkCommand.Pair -> {
-        val expected = pendingCode
-        val accepted =
-          expected != null &&
-            System.currentTimeMillis() < pendingCodeExpiresAt &&
-            constantTimeEquals(expected, command.code)
-        endPairing()
-        if (accepted) {
-          val token = newPairingToken()
-          store.addPairedToken(token)
-          connection.send(LinkEvent.Paired(token))
-          Log.i(LOG_TAG, "Paired with ${command.name}")
-        } else {
-          connection.send(LinkEvent.Refused("That code did not match."))
-        }
-        accepted
-      }
-      else -> {
-        beginPairing()
-        connection.send(LinkEvent.PairingRequired)
-        false
-      }
+      line = connection.readLine() ?: return false
     }
   }
 
+  /**
+   * Puts a code on screen, or leaves the one that is already there.
+   *
+   * A new number for every phone that asks sounds harmless until the asking is automatic: a phone
+   * that cannot get in retries, and the code was being replaced faster than anyone could read it.
+   * One number stands for the whole window.
+   */
   private fun beginPairing() {
+    pendingCode?.let { existing ->
+      if (System.currentTimeMillis() < pendingCodeExpiresAt) {
+        _pairingCode.value = existing
+        return
+      }
+    }
     val code = newPairingCode()
     pendingCode = code
     pendingCodeExpiresAt = System.currentTimeMillis() + PAIRING_WINDOW_MS

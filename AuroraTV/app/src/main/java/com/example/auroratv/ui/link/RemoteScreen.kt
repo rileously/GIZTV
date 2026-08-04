@@ -133,7 +133,8 @@ internal fun RemoteScreen(
       LinkStatus.Idle,
       LinkStatus.Searching -> TelevisionPicker(found, client::connect, client::discover, client::connectTo)
       is LinkStatus.Connecting -> Notice("Connecting to ${current.target.name}…")
-      is LinkStatus.AwaitingCode -> CodeEntry(current.target) { code -> client.connect(current.target, code) }
+      is LinkStatus.AwaitingCode ->
+        CodeEntry(current.target) { code -> client.submitCode(current.target, code) }
       is LinkStatus.Failed -> {
         Notice(current.reason)
         Spacer(Modifier.height(14.dp))
