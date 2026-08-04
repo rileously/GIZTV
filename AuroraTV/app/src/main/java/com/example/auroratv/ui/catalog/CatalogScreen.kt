@@ -273,6 +273,13 @@ internal fun CatalogScreen(
     runLoad(tab, trimmed)
   }
 
+  // The likeliest thing anyone is about to press, warmed without being asked to dwell on it. One
+  // title per visit to the catalog, and skipped when its stream is already known.
+  LaunchedEffect(continueWatching.firstOrNull()?.pageUrl) {
+    val first = continueWatching.firstOrNull() ?: return@LaunchedEffect
+    onConsidering(first.toPlaybackContext())
+  }
+
   // Re-read on every entry so progress and saved titles reflect what just happened in the player.
   LaunchedEffect(Unit) {
     continueWatching = historyStore.continueWatching()

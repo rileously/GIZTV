@@ -2551,11 +2551,13 @@ internal fun createHlsPlayer(
   val mediaSource = createHlsMediaSource(context, request, subtitleOffsetMs)
   val loadControl =
     DefaultLoadControl.Builder()
+      // Enough to start on, not enough to wait for. The quality ramp fills the rest in once the
+      // picture is already up, so a large opening buffer only ever delayed the first frame.
       .setBufferDurationsMs(
-        15_000,
-        60_000,
-        2_000,
-        4_000,
+        8_000,
+        30_000,
+        1_500,
+        3_000,
       )
       .setPrioritizeTimeOverSizeThresholds(true)
       .build()

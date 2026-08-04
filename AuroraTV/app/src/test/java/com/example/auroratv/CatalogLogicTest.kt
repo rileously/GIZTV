@@ -2,6 +2,7 @@ package com.example.auroratv
 
 import com.example.auroratv.data.DEFAULT_RESOLUTION_TIMEOUT_MS
 import com.example.auroratv.data.MAXIMUM_RESOLUTION_TIMEOUT_MS
+import com.example.auroratv.data.MINIMUM_RESOLUTION_TIMEOUT_MS
 import com.example.auroratv.data.WatchHistoryEntry
 import com.example.auroratv.data.formatWatchTime
 import com.example.auroratv.data.streamResolutionTimeoutMs
@@ -97,12 +98,19 @@ class CatalogLogicTest {
     )
   }
 
+  /**
+   * The wait now follows what a site has actually done, in both directions.
+   *
+   * It used to only ever grow, so a site that answers in three seconds still kept the viewer
+   * waiting thirty before admitting a stream was not coming. It is three times the measured time
+   * now, floored so a slow night is not mistaken for a failure and capped so a hung page still ends.
+   */
   @Test
-  fun resolutionTimeout_growsForSlowTitlesAndNeverShrinks() {
+  fun resolutionTimeout_followsWhatTheSiteHasActuallyDone() {
     assertEquals(DEFAULT_RESOLUTION_TIMEOUT_MS, streamResolutionTimeoutMs(0L))
-    // A title that has always been quick still gets the full default.
-    assertEquals(DEFAULT_RESOLUTION_TIMEOUT_MS, streamResolutionTimeoutMs(4_000L))
-    assertEquals(36_000L, streamResolutionTimeoutMs(24_000L))
+    assertEquals(MINIMUM_RESOLUTION_TIMEOUT_MS, streamResolutionTimeoutMs(4_000L))
+    assertEquals(36_000L, streamResolutionTimeoutMs(12_000L))
+    assertEquals(MAXIMUM_RESOLUTION_TIMEOUT_MS, streamResolutionTimeoutMs(24_000L))
     assertEquals(MAXIMUM_RESOLUTION_TIMEOUT_MS, streamResolutionTimeoutMs(120_000L))
     assertTrue(streamResolutionTimeoutMs(50_000L) <= MAXIMUM_RESOLUTION_TIMEOUT_MS)
   }
