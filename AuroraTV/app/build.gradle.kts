@@ -101,6 +101,13 @@ dependencies {
   implementation(libs.androidx.activity.compose)
   implementation(libs.androidx.appcompat)
 
+  // Background update checks that outlive the app being open
+  implementation(libs.androidx.work.runtime)
+
+  // Continue watching where the app is not: the phone home screen, and the television's own
+  implementation(libs.androidx.glance.appwidget)
+  implementation(libs.androidx.tvprovider)
+
   // Compose
   implementation(libs.androidx.compose.ui)
   implementation(libs.androidx.compose.ui.tooling.preview)

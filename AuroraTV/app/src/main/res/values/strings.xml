@@ -2,4 +2,11 @@
     <string name="app_name">GIZTV</string>
     <string name="media_channel_name">Now playing</string>
     <string name="media_channel_description">Controls for whatever is playing</string>
+    <string name="update_channel_name">App updates</string>
+    <string name="update_channel_description">Tells you when a newer GIZTV is ready to install</string>
+    <string name="update_notification_title">GIZTV %1$s is available</string>
+    <string name="update_notification_text">Open GIZTV to download and install it.</string>
+    <string name="continue_watching_widget_description">Pick up what you were watching</string>
+    <string name="continue_watching_channel_name">Continue watching</string>
+    <string name="continue_watching_channel_description">Titles you have started on GIZTV</string>
 </resources>

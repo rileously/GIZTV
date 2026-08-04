@@ -53,6 +53,7 @@ import com.example.auroratv.ui.catalog.remoteFocusNavigation
 import com.example.auroratv.update.AppUpdateInfo
 import com.example.auroratv.update.AppUpdateService
 import com.example.auroratv.update.buildInstallIntent
+import com.example.auroratv.update.cancelUpdateNotification
 import java.io.File
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -138,6 +139,8 @@ internal fun AppUpdateController(manifestUrl: String = BuildConfig.UPDATE_MANIFE
   }
 
   LaunchedEffect(manifestUrl) {
+    // Whatever the shade was saying about an update, this screen is about to say it better.
+    cancelUpdateNotification(context)
     if (manifestUrl.isBlank()) return@LaunchedEffect
     // A failed background check is intentionally quiet; the current version remains fully usable.
     AppUpdateService.checkForUpdate(manifestUrl, BuildConfig.VERSION_CODE.toLong()).getOrNull()?.let {

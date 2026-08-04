@@ -8,8 +8,11 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.net.toUri
 import com.example.auroratv.data.flushHttpResponseCache
 import com.example.auroratv.data.installHttpResponseCache
+import com.example.auroratv.home.EXTRA_RESUME_PAGE_URL
+import com.example.auroratv.home.refreshHomeSurfaces
 import com.example.auroratv.theme.AuroraTVTheme
 import com.example.auroratv.ui.AuroraTvRoot
+import com.example.auroratv.update.UpdateCheckWorker
 
 class MainActivity : AppCompatActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -20,6 +23,7 @@ class MainActivity : AppCompatActivity() {
         playerActive = false,
       )
     super.onCreate(savedInstanceState)
+    UpdateCheckWorker.schedule(this)
     val launchStreamUrl =
       intent?.data?.toString()?.takeIf {
         (it.startsWith("https://") || it.startsWith("http://")) && it.contains(".m3u8", ignoreCase = true)
@@ -30,9 +34,14 @@ class MainActivity : AppCompatActivity() {
         launchStreamUrl == null && uri.scheme == "https" &&
           (uri.host.equals("skyflix.to", ignoreCase = true) || uri.host.equals("www.skyflix.to", ignoreCase = true))
       }
+    val launchResumePageUrl = intent?.getStringExtra(EXTRA_RESUME_PAGE_URL)
     setContent {
       AuroraTVTheme {
-        AuroraTvRoot(initialStreamUrl = launchStreamUrl, initialBrowserUrl = launchBrowserUrl)
+        AuroraTvRoot(
+          initialStreamUrl = launchStreamUrl,
+          initialBrowserUrl = launchBrowserUrl,
+          initialResumePageUrl = launchResumePageUrl,
+        )
       }
     }
   }
@@ -40,6 +49,9 @@ class MainActivity : AppCompatActivity() {
   override fun onStop() {
     super.onStop()
     flushHttpResponseCache()
+    // Whatever was watched this time round changes what the home screens should be offering. Doing
+    // it on the way out rather than on every progress tick keeps one write per visit to the app.
+    refreshHomeSurfaces(applicationContext)
   }
 }
 

@@ -10,7 +10,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import com.example.auroratv.data.PlaybackContext
+import com.example.auroratv.home.resumeContextFor
 import com.example.auroratv.ui.browser.BrowserScreen
 import com.example.auroratv.ui.browser.StreamPrefetcher
 import com.example.auroratv.ui.catalog.CatalogScreen
@@ -39,24 +41,35 @@ private enum class Destination {
 }
 
 @Composable
-fun AuroraTvRoot(initialStreamUrl: String? = null, initialBrowserUrl: String? = null) {
+fun AuroraTvRoot(
+  initialStreamUrl: String? = null,
+  initialBrowserUrl: String? = null,
+  initialResumePageUrl: String? = null,
+) {
+  val appContext = LocalContext.current.applicationContext
+  val initialResume =
+    remember(initialResumePageUrl) { resumeContextFor(appContext, initialResumePageUrl) }
   // Deliberately not saveable: opening the app should always land on the catalog. Restoring these
   // would drop the viewer back into a half-loaded page or a player whose stream no longer exists.
   var destination by remember {
     mutableStateOf(
       when {
         initialStreamUrl != null -> Destination.PLAYER
-        initialBrowserUrl != null -> Destination.BROWSER
+        // A title picked from a widget or the television's own row still has to have its stream
+        // found, so it goes through the same loading page a title picked in the catalog does.
+        initialResume != null || initialBrowserUrl != null -> Destination.BROWSER
         else -> Destination.CATALOG
       }
     )
   }
-  var browserUrl by remember { mutableStateOf(initialBrowserUrl ?: SKYFLIX_URL) }
+  var browserUrl by remember {
+    mutableStateOf(initialResume?.pageUrl ?: initialBrowserUrl ?: SKYFLIX_URL)
+  }
   var browserReturnDestination by remember { mutableStateOf(Destination.CATALOG) }
   var selectedShow by remember { mutableStateOf<TmdbShow?>(null) }
   var selectedDrama by remember { mutableStateOf<ShortDrama?>(null) }
   // Held while the browser resolves a stream, then attached to the request the player receives.
-  var pendingContext by remember { mutableStateOf<PlaybackContext?>(null) }
+  var pendingContext by remember { mutableStateOf(initialResume) }
   var streamRequest by remember {
     mutableStateOf(initialStreamUrl?.let { HlsStreamRequest(url = it, headers = emptyMap()) })
   }
