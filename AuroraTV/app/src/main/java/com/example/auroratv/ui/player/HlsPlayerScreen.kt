@@ -330,7 +330,7 @@ internal fun HlsPlayerScreen(
   var selectedSubtitle by remember(request, compatibilityMode) { mutableStateOf(playerPreferences.subtitleTrack()) }
   val localPlayer =
     remember(request, compatibilityMode) {
-      createHlsPlayer(context, request, compatibilityMode, subtitleOffsetMs)
+      createHlsPlayer(context, request, compatibilityMode, subtitleOffsetMs, resumePositionMs)
     }
   val player: Player =
     remember(localPlayer, isTelevision) {
@@ -646,7 +646,11 @@ internal fun HlsPlayerScreen(
 
     player.addListener(listener)
     lifecycleOwner.lifecycle.addObserver(observer)
-    if (resumePositionMs > 0L) player.seekTo(resumePositionMs)
+    // The source already starts here; this only matters for a player that was handed a position
+    // after it was built, such as one rebuilt for compatibility mode.
+    if (resumePositionMs > 0L && player.currentPosition < resumePositionMs / 2) {
+      player.seekTo(resumePositionMs)
+    }
     player.setPlaybackSpeed(playbackSpeed)
     player.prepare()
     player.playWhenReady = resumePlayWhenReady
@@ -1190,8 +1194,17 @@ private fun ModernPlayerControls(
             // What the clock will say when the credits roll, and how much of the evening is left in
             // it. Both follow the position being scrubbed to, so dragging the bar answers "will
             // this finish before bed" while the thumb is still down.
+            // Smaller than the running time above it, so this column stays no wider than it was
+            // and the row of pills beside it keeps the room it had.
             remainingLabel(LocalContext.current, seekPreviewMs ?: positionMs, durationMs)?.let {
-              Text(it, color = MutedBlue, fontWeight = FontWeight.Medium, fontSize = 11.sp)
+              Text(
+                it,
+                color = MutedBlue,
+                fontWeight = FontWeight.Medium,
+                fontSize = 10.sp,
+                maxLines = 1,
+                softWrap = false,
+              )
             }
           }
           Spacer(Modifier.weight(1f))
@@ -1598,7 +1611,16 @@ private fun ModernPlayerActionPill(
     horizontalArrangement = Arrangement.spacedBy(7.dp),
   ) {
     Icon(icon, contentDescription = null, tint = if (focused) DeepSpace else SoftWhite, modifier = Modifier.size(19.dp))
-    Text(label, color = if (focused) DeepSpace else SoftWhite, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+    // A pill is a label, not a paragraph: "Decoder" was folding onto a second line and taking the
+    // whole row with it once the time column grew an end-time under it.
+    Text(
+      label,
+      color = if (focused) DeepSpace else SoftWhite,
+      fontWeight = FontWeight.Bold,
+      fontSize = 12.sp,
+      maxLines = 1,
+      softWrap = false,
+    )
     value?.takeIf { showValue }?.let {
       Text(it, color = if (focused) DeepSpace.copy(alpha = .7f) else MutedBlue, fontSize = 11.sp)
     }
@@ -2506,6 +2528,14 @@ internal fun createHlsPlayer(
   request: HlsStreamRequest,
   compatibilityMode: Boolean = false,
   subtitleOffsetMs: Long = 0L,
+  /**
+   * Where to begin.
+   *
+   * Given to the source rather than seeked for afterwards. A seek issued before a player has
+   * prepared is a request against a timeline that does not exist yet, and it was being dropped:
+   * every title opened from Continue watching started from the beginning.
+   */
+  startPositionMs: Long = 0L,
 ): ExoPlayer {
   val bandwidthMeter = DefaultBandwidthMeter.getSingletonInstance(context)
   val trackSelector =
@@ -2558,7 +2588,7 @@ internal fun createHlsPlayer(
         selectionBuilder.setMaxVideoSize(STARTUP_MAX_VIDEO_WIDTH, STARTUP_MAX_VIDEO_HEIGHT)
       }
       trackSelectionParameters = selectionBuilder.build()
-      setMediaSource(mediaSource)
+      if (startPositionMs > 0L) setMediaSource(mediaSource, startPositionMs) else setMediaSource(mediaSource)
     }
 }
 
