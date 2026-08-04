@@ -104,6 +104,9 @@ dependencies {
   // Background update checks that outlive the app being open
   implementation(libs.androidx.work.runtime)
 
+  // A media session standing in for the television, so a watch and a lock screen can drive it
+  implementation(libs.androidx.media)
+
   // Continue watching where the app is not: the phone home screen, and the television's own
   implementation(libs.androidx.glance.appwidget)
   implementation(libs.androidx.tvprovider)

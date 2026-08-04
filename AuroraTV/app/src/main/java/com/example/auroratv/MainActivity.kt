@@ -62,6 +62,7 @@ class MainActivity : AppCompatActivity() {
     // the remote is opened, so it is already there when it is wanted.
     if (!isTelevision() && PhoneLink.hasTelevision(this)) {
       PhoneLink.client(this).ensureConnected()
+      PhoneLink.watchForMediaSession(this)
     }
   }
 

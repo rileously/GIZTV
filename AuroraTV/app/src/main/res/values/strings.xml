@@ -9,4 +9,7 @@
     <string name="continue_watching_widget_description">Pick up what you were watching</string>
     <string name="continue_watching_channel_name">Continue watching</string>
     <string name="continue_watching_channel_description">Titles you have started on GIZTV</string>
+    <string name="television_channel_name">On the television</string>
+    <string name="television_channel_description">Controls for what GIZTV is playing on your TV</string>
+    <string name="television_playing">Playing on your television</string>
 </resources>
