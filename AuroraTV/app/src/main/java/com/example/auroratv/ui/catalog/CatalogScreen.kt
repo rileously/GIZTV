@@ -98,6 +98,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /** Long enough that a word typed at speed is one request, short enough to feel immediate. */
@@ -357,16 +358,26 @@ internal fun CatalogScreen(
   // node that does not exist yet. So the move is driven: scroll the neighbour into view first, then
   // hand it the focus. Hoisted because the personalized rail moves into the fixed ones too.
   val leadingRailItems = (if (showContinueRow) 1 else 0) + (if (showRecommendedRail) 1 else 0)
+  // One move at a time. Holding the pad down used to start a fresh animation per press, each
+  // cancelling the last part-way and each racing the scrolling that focus does on its own, which
+  // left the list parked somewhere between two rails with no way back up.
+  val railMove = remember { mutableStateOf<Job?>(null) }
   val moveToRail: (Int) -> Unit = { target ->
-    scope.launch {
-      railState.animateScrollToItem(target + leadingRailItems)
-      runCatching { railFocusRequesters[target].requestFocus() }
-        .onFailure {
-          // One frame later the rail has certainly been placed.
-          withFrameNanos {}
-          runCatching { railFocusRequesters[target].requestFocus() }
-        }
-    }
+    railMove.value?.cancel()
+    railMove.value =
+      scope.launch {
+        val index = target + leadingRailItems
+        // A rail already on screen needs no scrolling of ours: focus brings itself into view, and
+        // animating on top of that is the fight rather than the smoothness.
+        val onScreen = railState.layoutInfo.visibleItemsInfo.any { it.index == index }
+        if (!onScreen) railState.animateScrollToItem(index)
+        runCatching { railFocusRequesters[target].requestFocus() }
+          .onFailure {
+            // One frame later the rail has certainly been placed.
+            withFrameNanos {}
+            runCatching { railFocusRequesters[target].requestFocus() }
+          }
+      }
     Unit
   }
   val firstRailFocusRequester = railFocusRequesters.first()
