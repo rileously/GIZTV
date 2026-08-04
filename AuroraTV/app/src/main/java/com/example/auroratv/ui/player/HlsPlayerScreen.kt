@@ -136,7 +136,15 @@ import androidx.core.net.toUri
 import androidx.tv.material3.Text
 import com.example.auroratv.data.PlaybackContext
 import com.example.auroratv.data.WatchHistoryStore
+import com.example.auroratv.link.GROUP_AUDIO
+import com.example.auroratv.link.GROUP_QUALITY
+import com.example.auroratv.link.GROUP_RESIZE
+import com.example.auroratv.link.GROUP_SPEED
+import com.example.auroratv.link.GROUP_SUBTITLE
 import com.example.auroratv.link.RemoteControl
+import com.example.auroratv.link.RemoteOptionGroup
+import com.example.auroratv.link.RemoteOptionItem
+import com.example.auroratv.link.RemotePlayerOptions
 import com.example.auroratv.theme.AuroraBlue
 import com.example.auroratv.theme.AuroraMint
 import com.example.auroratv.theme.DeepSpace
@@ -164,6 +172,12 @@ internal data class ExternalSubtitleTrack(
   val language: String?,
   val mimeType: String,
 )
+
+/** The speeds the phone offers, which are the ones worth reaching for on a sofa. */
+private val REMOTE_SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
+
+private fun remoteSpeedLabel(speed: Float): String =
+  if (speed == 1f) "Normal" else "${speed}x".replace(".0x", "x")
 
 private const val AUTO_ADVANCE_SECONDS = 10
 private const val COMPATIBILITY_MAX_VIDEO_WIDTH = 1280
@@ -404,6 +418,100 @@ internal fun HlsPlayerScreen(
   DisposableEffect(player, request) {
     RemoteControl.attachPlayer(player, request.context)
     onDispose { RemoteControl.detachPlayer(player) }
+  }
+
+  // The same settings the television's own dialog offers, handed to whatever is holding the remote.
+  // Every pick is routed back through the handlers below rather than reimplemented, so a subtitle
+  // chosen on a phone reloads the media source exactly as one chosen on the sofa does.
+  val remoteOptions =
+    remember(player) {
+      object : RemotePlayerOptions {
+        override fun groups(): List<RemoteOptionGroup> =
+          listOf(
+              RemoteOptionGroup(
+                GROUP_SUBTITLE,
+                "Subtitles",
+                subtitleOptions.map { RemoteOptionItem(it.label, it.label, it == selectedSubtitle) },
+              ),
+              RemoteOptionGroup(
+                GROUP_AUDIO,
+                "Audio",
+                audioOptions.map { RemoteOptionItem(it.label, it.label, it == selectedAudio) },
+              ),
+              RemoteOptionGroup(
+                GROUP_QUALITY,
+                "Quality",
+                qualityOptions.map { RemoteOptionItem(it.label, it.label, it == selectedQuality) },
+              ),
+              RemoteOptionGroup(
+                GROUP_SPEED,
+                "Speed",
+                REMOTE_SPEEDS.map {
+                  RemoteOptionItem(it.toString(), remoteSpeedLabel(it), it == playbackSpeed)
+                },
+              ),
+              RemoteOptionGroup(
+                GROUP_RESIZE,
+                "Picture",
+                VideoResizeOption.entries.map {
+                  RemoteOptionItem(it.name, it.name.lowercase().replace('_', ' ').replaceFirstChar(Char::uppercase), it == videoResize)
+                },
+              ),
+            )
+            .filter { it.items.isNotEmpty() }
+
+        override fun select(groupId: String, itemId: String) {
+          when (groupId) {
+            GROUP_SUBTITLE ->
+              subtitleOptions.firstOrNull { it.label == itemId }?.let { option ->
+                selectedSubtitle = option
+                playerPreferences.setSubtitleTrack(option)
+                selectSubtitleTrack(player, option)
+              }
+            GROUP_AUDIO ->
+              audioOptions.firstOrNull { it.label == itemId }?.let { option ->
+                selectedAudio = option
+                playerPreferences.setAudioTrack(option)
+                selectAudioTrack(player, option)
+              }
+            GROUP_QUALITY ->
+              qualityOptions.firstOrNull { it.label == itemId }?.let { option ->
+                selectedQuality = option
+                selectVideoQuality(player, option)
+              }
+            GROUP_SPEED ->
+              itemId.toFloatOrNull()?.let { speed ->
+                playbackSpeed = speed
+                playerPreferences.setPlaybackSpeed(speed)
+                player.setPlaybackSpeed(speed)
+              }
+            GROUP_RESIZE ->
+              VideoResizeOption.entries.firstOrNull { it.name == itemId }?.let { videoResize = it }
+          }
+        }
+
+        override fun nudgeSubtitleSync(deltaMs: Long) {
+          // Casting hands the subtitles to the receiver, which owns their timing from then on.
+          if (isCasting) return
+          val target = subtitleOffsetMs + deltaMs
+          val currentPositionMs = player.currentPosition.coerceAtLeast(0L)
+          val keepPlaying = player.playWhenReady
+          subtitleOffsetMs = target
+          subtitleSyncStore.save(subtitleSyncKey, target)
+          resumePositionMs = currentPositionMs
+          resumePlayWhenReady = keepPlaying
+          localPlayer.setMediaSource(createHlsMediaSource(context, request, target), currentPositionMs)
+          localPlayer.prepare()
+          localPlayer.playWhenReady = keepPlaying
+        }
+
+        override fun subtitleOffsetMs(): Long = subtitleOffsetMs
+      }
+    }
+
+  DisposableEffect(remoteOptions) {
+    RemoteControl.attachOptions(remoteOptions)
+    onDispose { RemoteControl.detachOptions(remoteOptions) }
   }
 
   DisposableEffect(player, lifecycleOwner) {

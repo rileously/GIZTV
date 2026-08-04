@@ -59,11 +59,13 @@ internal class LinkServer(private val context: Context) {
     if (job != null) return
     job =
       scope.launch {
-        val socket = runCatching { ServerSocket(0) }.getOrElse {
-          Log.w(LOG_TAG, "The remote could not take a port", it)
-          return@launch
-        }
+        val socket = openServerSocket()
+          ?: run {
+            Log.w(LOG_TAG, "The remote could not take a port")
+            return@launch
+          }
         serverSocket = socket
+        store.rememberPort(socket.localPort)
         advertise(socket.localPort)
         Log.i(LOG_TAG, "Remote listening on ${socket.localPort}")
         while (isActive && !socket.isClosed) {
@@ -72,6 +74,18 @@ internal class LinkServer(private val context: Context) {
         }
       }
     scope.launch { broadcastState() }
+  }
+
+  /**
+   * Takes the same port as last time where it can.
+   *
+   * A phone remembers where its television was, and an ephemeral port picked afresh on every launch
+   * would strand it: the address it stored would answer for nothing. The old port is asked for
+   * first and any port will do if something else has taken it since.
+   */
+  private fun openServerSocket(): ServerSocket? {
+    store.lastPort()?.let { port -> runCatching { return ServerSocket(port) } }
+    return runCatching { ServerSocket(0) }.getOrNull()
   }
 
   fun stop() {
@@ -109,12 +123,15 @@ internal class LinkServer(private val context: Context) {
       // not a heartbeat.
       socket.soTimeout = 0
       synchronized(clients) { clients.add(connection) }
+      connection.send(RemoteControl.options())
       connection.send(RemoteControl.state(context))
       while (true) {
         val line = connection.readLine() ?: break
         val command = decodeCommand(line) ?: continue
         runCatching { RemoteControl.execute(context, command) }
           .onFailure { Log.w(LOG_TAG, "Command failed", it) }
+        // A pick may change what else is on offer, so the list goes back with the new state.
+        connection.send(RemoteControl.options())
         connection.send(RemoteControl.state(context))
       }
     } catch (error: Throwable) {
@@ -193,10 +210,17 @@ internal class LinkServer(private val context: Context) {
    */
   private suspend fun broadcastState() {
     var lastSent: LinkEvent.State? = null
+    var lastOptions: LinkEvent.Options? = null
     while (scope.isActive) {
       delay(STATE_INTERVAL_MS)
       val listeners = synchronized(clients) { clients.toList() }
       if (listeners.isEmpty()) continue
+      // Tracks appear a moment after a stream opens, so the list is watched rather than sent once.
+      val options = runCatching { RemoteControl.options() }.getOrNull()
+      if (options != null && options != lastOptions) {
+        lastOptions = options
+        listeners.forEach { it.send(options) }
+      }
       val state = runCatching { RemoteControl.state(context) }.getOrNull() ?: continue
       if (!state.playing && state == lastSent) continue
       lastSent = state

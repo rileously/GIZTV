@@ -1,5 +1,6 @@
 package com.example.auroratv.link
 
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -44,6 +45,12 @@ internal sealed interface LinkCommand {
 
   /** Typing, so a search box on a television is filled from a real keyboard. */
   data class Text(val text: String) : LinkCommand
+
+  /** Picking a subtitle track, an audio track, a quality or a speed from the phone. */
+  data class SelectOption(val groupId: String, val itemId: String) : LinkCommand
+
+  /** Shifting the subtitles earlier or later without leaving the sofa. */
+  data class SubtitleSync(val deltaMs: Long) : LinkCommand
 }
 
 internal enum class LinkKey {
@@ -65,6 +72,14 @@ internal sealed interface LinkEvent {
   data class Paired(val token: String) : LinkEvent
 
   data class Refused(val reason: String) : LinkEvent
+
+  /**
+   * The player's settings as they stand.
+   *
+   * Sent apart from the state and only when it changes: the tracks in a film do not move while the
+   * position does, and repeating the whole list every second would be all the traffic there is.
+   */
+  data class Options(val groups: List<RemoteOptionGroup>, val subtitleOffsetMs: Long) : LinkEvent
 
   /** What the television is doing now, sent on every change and while playing. */
   data class State(
@@ -94,6 +109,9 @@ internal fun LinkCommand.encode(): String {
     is LinkCommand.SetVolume -> json.put("cmd", "setVolume").put("percent", percent)
     is LinkCommand.Key -> json.put("cmd", "key").put("key", key.name.lowercase())
     is LinkCommand.Text -> json.put("cmd", "text").put("text", text)
+    is LinkCommand.SelectOption ->
+      json.put("cmd", "selectOption").put("groupId", groupId).put("itemId", itemId)
+    is LinkCommand.SubtitleSync -> json.put("cmd", "subtitleSync").put("deltaMs", deltaMs)
   }
   return json.toString()
 }
@@ -128,6 +146,13 @@ internal fun decodeCommand(line: String): LinkCommand? =
             .firstOrNull { it.name.equals(json.optString("key"), ignoreCase = true) }
             ?.let(LinkCommand::Key)
         "text" -> LinkCommand.Text(text = json.optString("text").take(MAX_TEXT_LENGTH))
+        "selectOption" ->
+          LinkCommand.SelectOption(
+            groupId = json.optNonBlank("groupId") ?: return@runCatching null,
+            itemId = json.optNonBlank("itemId") ?: return@runCatching null,
+          )
+        "subtitleSync" ->
+          LinkCommand.SubtitleSync(deltaMs = json.optLong("deltaMs").coerceIn(-MAX_SYNC_MS, MAX_SYNC_MS))
         else -> null
       }
     }
@@ -139,6 +164,35 @@ internal fun LinkEvent.encode(): String {
     LinkEvent.PairingRequired -> json.put("evt", "needPair")
     is LinkEvent.Paired -> json.put("evt", "paired").put("token", token)
     is LinkEvent.Refused -> json.put("evt", "refused").put("reason", reason)
+    is LinkEvent.Options ->
+      json
+        .put("evt", "options")
+        .put("subtitleOffsetMs", subtitleOffsetMs)
+        .put(
+          "groups",
+          JSONArray().apply {
+            groups.forEach { group ->
+              put(
+                JSONObject()
+                  .put("id", group.id)
+                  .put("label", group.label)
+                  .put(
+                    "items",
+                    JSONArray().apply {
+                      group.items.forEach { item ->
+                        put(
+                          JSONObject()
+                            .put("id", item.id)
+                            .put("label", item.label)
+                            .put("selected", item.selected)
+                        )
+                      }
+                    },
+                  )
+              )
+            }
+          },
+        )
     is LinkEvent.State ->
       json
         .put("evt", "state")
@@ -161,6 +215,30 @@ internal fun decodeEvent(line: String): LinkEvent? =
         "needPair" -> LinkEvent.PairingRequired
         "paired" -> LinkEvent.Paired(token = json.optNonBlank("token") ?: return@runCatching null)
         "refused" -> LinkEvent.Refused(reason = json.optString("reason").ifBlank { "Refused" })
+        "options" -> {
+          val groups = json.optJSONArray("groups") ?: JSONArray()
+          LinkEvent.Options(
+            groups =
+              (0 until groups.length()).mapNotNull { index ->
+                val group = groups.optJSONObject(index) ?: return@mapNotNull null
+                val items = group.optJSONArray("items") ?: JSONArray()
+                RemoteOptionGroup(
+                  id = group.optString("id"),
+                  label = group.optString("label"),
+                  items =
+                    (0 until items.length()).mapNotNull { itemIndex ->
+                      val item = items.optJSONObject(itemIndex) ?: return@mapNotNull null
+                      RemoteOptionItem(
+                        id = item.optString("id"),
+                        label = item.optString("label"),
+                        selected = item.optBoolean("selected"),
+                      )
+                    },
+                )
+              },
+            subtitleOffsetMs = json.optLong("subtitleOffsetMs"),
+          )
+        }
         "state" ->
           LinkEvent.State(
             playing = json.optBoolean("playing"),
@@ -178,6 +256,9 @@ internal fun decodeEvent(line: String): LinkEvent? =
 
 /** A search box is not a document; a phone that sends a novel is not obliged to be listened to. */
 private const val MAX_TEXT_LENGTH = 256
+
+/** Subtitles that are a minute out are not out of sync; they belong to a different film. */
+private const val MAX_SYNC_MS = 60_000L
 
 private fun JSONObject.optNonBlank(name: String): String? =
   if (isNull(name)) null else optString(name).takeIf { it.isNotBlank() }

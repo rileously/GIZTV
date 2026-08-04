@@ -51,6 +51,11 @@ internal class LinkClient(private val context: Context) {
   private val _status = MutableStateFlow<LinkStatus>(LinkStatus.Idle)
   val status: StateFlow<LinkStatus> = _status.asStateFlow()
 
+  private val _options = MutableStateFlow(LinkEvent.Options(emptyList(), 0L))
+
+  /** The player's settings, held apart from the state because they arrive on their own schedule. */
+  val options: StateFlow<LinkEvent.Options> = _options.asStateFlow()
+
   private val _found = MutableStateFlow<List<LinkTarget>>(emptyList())
 
   /** Televisions seen on this network, for when there is more than one to choose between. */
@@ -121,7 +126,10 @@ internal class LinkClient(private val context: Context) {
               }
             }
             .getOrElse {
-              _status.value = LinkStatus.Failed("That television did not answer.")
+              // The address it was last seen at is a hint, not a fact. If nothing answers there,
+              // go and look for it rather than leaving the viewer at a dead end.
+              _status.value = LinkStatus.Failed("That television did not answer. Looking again…")
+              discover()
               return@launch
             }
         val link = LinkConnection(socket)
@@ -152,6 +160,7 @@ internal class LinkClient(private val context: Context) {
             break
           }
           is LinkEvent.State -> _status.value = LinkStatus.Connected(target, event)
+          is LinkEvent.Options -> _options.value = event
           null -> Unit
         }
       }

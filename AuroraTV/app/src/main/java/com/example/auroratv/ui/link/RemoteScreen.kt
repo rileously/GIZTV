@@ -3,6 +3,8 @@ package com.example.auroratv.ui.link
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -60,6 +62,7 @@ import androidx.compose.ui.unit.sp
 import com.example.auroratv.data.formatWatchTime
 import com.example.auroratv.link.LinkClient
 import com.example.auroratv.link.LinkCommand
+import com.example.auroratv.link.LinkEvent
 import com.example.auroratv.link.LinkKey
 import com.example.auroratv.link.LinkStatus
 import com.example.auroratv.link.LinkTarget
@@ -104,11 +107,13 @@ internal fun RemoteScreen(onBack: () -> Unit) {
       Text("Remote", color = SoftWhite, fontSize = 22.sp, fontWeight = FontWeight.Black)
       Spacer(Modifier.weight(1f))
       if (status is LinkStatus.Connected) {
+        // Hanging up, not falling out. Forgetting the television means pairing with a code all over
+        // again, which is not what someone putting their phone down is asking for.
         Text(
           "Disconnect",
           color = MutedBlue,
           fontSize = 14.sp,
-          modifier = Modifier.clickable { client.forget() },
+          modifier = Modifier.clickable { client.disconnect() },
         )
       }
     }
@@ -179,6 +184,7 @@ private fun CodeEntry(target: LinkTarget, onSubmit: (String) -> Unit) {
 @Composable
 private fun ConnectedRemote(connected: LinkStatus.Connected, client: LinkClient) {
   val state = connected.state
+  val options by client.options.collectAsState()
   val nothingPlaying = state.title == null
 
   Text(connected.target.name, color = AuroraMint, fontSize = 12.sp, fontWeight = FontWeight.Black)
@@ -267,7 +273,90 @@ private fun ConnectedRemote(connected: LinkStatus.Connected, client: LinkClient)
   SectionLabel("TYPE ON THE TELEVISION")
   Spacer(Modifier.height(10.dp))
   TypeOnTelevision(client)
+
+  if (!nothingPlaying) {
+    Spacer(Modifier.height(22.dp))
+    PlayerSettings(options, client)
+  }
+
+  Spacer(Modifier.height(20.dp))
+  Text(
+    "Forget this television",
+    color = MutedBlue,
+    fontSize = 13.sp,
+    modifier = Modifier.clickable { client.forget() },
+  )
   Spacer(Modifier.height(28.dp))
+}
+
+/**
+ * The player's own settings, on the phone instead of behind the television's dialog.
+ *
+ * The groups are whatever the television says they are, so a stream with no subtitles simply has no
+ * subtitle row rather than an empty one.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PlayerSettings(options: LinkEvent.Options, client: LinkClient) {
+  if (options.groups.isEmpty()) return
+
+  SectionLabel("PLAYER")
+  Spacer(Modifier.height(6.dp))
+
+  options.groups.forEach { group ->
+    if (group.items.isEmpty()) return@forEach
+    Spacer(Modifier.height(10.dp))
+    Text(group.label, color = SoftWhite, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+    Spacer(Modifier.height(6.dp))
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+      group.items.forEach { item ->
+        OptionChip(item.label, item.selected) {
+          client.send(LinkCommand.SelectOption(group.id, item.id))
+        }
+      }
+    }
+  }
+
+  Spacer(Modifier.height(14.dp))
+  Text("Subtitle sync", color = SoftWhite, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+  Spacer(Modifier.height(6.dp))
+  Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    OptionChip("−0.5s", false) { client.send(LinkCommand.SubtitleSync(-500L)) }
+    Text(
+      subtitleOffsetLabel(options.subtitleOffsetMs),
+      color = AuroraMint,
+      fontSize = 14.sp,
+      fontWeight = FontWeight.Bold,
+    )
+    OptionChip("+0.5s", false) { client.send(LinkCommand.SubtitleSync(500L)) }
+  }
+}
+
+private fun subtitleOffsetLabel(offsetMs: Long): String =
+  when {
+    offsetMs == 0L -> "In sync"
+    offsetMs > 0L -> "+%.1fs".format(offsetMs / 1000f)
+    else -> "%.1fs".format(offsetMs / 1000f)
+  }
+
+@Composable
+private fun OptionChip(label: String, selected: Boolean, onClick: () -> Unit) {
+  Box(
+    modifier =
+      Modifier.background(
+          if (selected) AuroraMint else NightSurface,
+          RoundedCornerShape(10.dp),
+        )
+        .clickable(onClick = onClick)
+        .padding(horizontal = 14.dp, vertical = 9.dp)
+  ) {
+    Text(
+      label,
+      color = if (selected) DeepSpace else SoftWhite,
+      fontSize = 13.sp,
+      fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+    )
+  }
 }
 
 /**

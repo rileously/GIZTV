@@ -9,6 +9,7 @@ private const val KEY_OWN_TOKEN = "own_token"
 private const val KEY_TV_HOST = "tv_host"
 private const val KEY_TV_PORT = "tv_port"
 private const val KEY_TV_NAME = "tv_name"
+private const val KEY_OWN_PORT = "own_port"
 
 internal const val PAIRING_CODE_LENGTH = 6
 
@@ -57,6 +58,13 @@ internal class LinkStore(context: Context) {
   fun addPairedToken(token: String) {
     // The returned set must not be edited in place; SharedPreferences hands back its own instance.
     preferences.edit().putStringSet(KEY_TOKENS, pairedTokens() + token).apply()
+  }
+
+  /** The port this television listened on last time, so a phone's stored address keeps working. */
+  fun lastPort(): Int? = preferences.getInt(KEY_OWN_PORT, 0).takeIf { it in 1024..65535 }
+
+  fun rememberPort(port: Int) {
+    preferences.edit().putInt(KEY_OWN_PORT, port).apply()
   }
 
   fun forgetPairedPhones() {

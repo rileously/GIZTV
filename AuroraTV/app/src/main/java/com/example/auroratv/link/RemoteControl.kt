@@ -24,6 +24,7 @@ internal object RemoteControl {
   private var activityRef = WeakReference<Activity>(null)
   private var playerRef = WeakReference<Player>(null)
   @Volatile private var playbackContext: PlaybackContext? = null
+  @Volatile private var playerOptions: RemotePlayerOptions? = null
 
   @Synchronized
   fun attachActivity(activity: Activity) {
@@ -40,6 +41,26 @@ internal object RemoteControl {
     playerRef = WeakReference(player)
     playbackContext = context
   }
+
+  @Synchronized
+  fun attachOptions(options: RemotePlayerOptions) {
+    playerOptions = options
+  }
+
+  @Synchronized
+  fun detachOptions(options: RemotePlayerOptions) {
+    if (playerOptions === options) playerOptions = null
+  }
+
+  /** The player's settings as the phone should see them, read on the thread that owns them. */
+  suspend fun options(): LinkEvent.Options =
+    withContext(Dispatchers.Main.immediate) {
+      val source = playerOptions
+      LinkEvent.Options(
+        groups = source?.groups().orEmpty(),
+        subtitleOffsetMs = source?.subtitleOffsetMs() ?: 0L,
+      )
+    }
 
   @Synchronized
   fun detachPlayer(player: Player) {
@@ -104,6 +125,8 @@ internal object RemoteControl {
         is LinkCommand.SetVolume -> setVolume(context, command.percent)
         is LinkCommand.Key -> dispatchKey(command.key.toKeyCode())
         is LinkCommand.Text -> dispatchText(command.text)
+        is LinkCommand.SelectOption -> playerOptions?.select(command.groupId, command.itemId)
+        is LinkCommand.SubtitleSync -> playerOptions?.nudgeSubtitleSync(command.deltaMs)
       }
     }
   }

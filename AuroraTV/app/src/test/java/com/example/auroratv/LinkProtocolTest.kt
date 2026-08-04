@@ -4,6 +4,8 @@ import com.example.auroratv.link.LinkCommand
 import com.example.auroratv.link.LinkEvent
 import com.example.auroratv.link.LinkKey
 import com.example.auroratv.link.PAIRING_CODE_LENGTH
+import com.example.auroratv.link.RemoteOptionGroup
+import com.example.auroratv.link.RemoteOptionItem
 import com.example.auroratv.link.constantTimeEquals
 import com.example.auroratv.link.decodeCommand
 import com.example.auroratv.link.decodeEvent
@@ -38,6 +40,8 @@ class LinkProtocolTest {
         LinkCommand.Key(LinkKey.CENTER),
         LinkCommand.Key(LinkKey.BACKSPACE),
         LinkCommand.Text(text = "the odyssey"),
+        LinkCommand.SelectOption(groupId = "subtitle", itemId = "English"),
+        LinkCommand.SubtitleSync(deltaMs = -500L),
       )
 
     commands.forEach { assertEquals(it, roundTrip(it)) }
@@ -50,6 +54,21 @@ class LinkProtocolTest {
         LinkEvent.PairingRequired,
         LinkEvent.Paired(token = "deadbeef"),
         LinkEvent.Refused(reason = "Wrong code"),
+        LinkEvent.Options(
+          groups =
+            listOf(
+              RemoteOptionGroup(
+                id = "subtitle",
+                label = "Subtitles",
+                items =
+                  listOf(
+                    RemoteOptionItem("English", "English", true),
+                    RemoteOptionItem("Off", "Off", false),
+                  ),
+              )
+            ),
+          subtitleOffsetMs = -1_500L,
+        ),
         LinkEvent.State(
           playing = true,
           title = "The Odyssey",
@@ -133,6 +152,21 @@ class LinkProtocolTest {
     assertEquals(0, quiet.percent)
   }
 
+  /** An empty list is a real answer: a stream with no subtitles has no subtitle row. */
+  @Test
+  fun optionsWithNoGroupsSurviveTheWire() {
+    val bare = LinkEvent.Options(groups = emptyList(), subtitleOffsetMs = 0L)
+
+    assertEquals(bare, decodeEvent(bare.encode()))
+  }
+
+  @Test
+  fun anAbsurdSubtitleOffsetIsClamped() {
+    val far = decodeCommand("""{"v":1,"cmd":"subtitleSync","deltaMs":900000}""") as LinkCommand.SubtitleSync
+
+    assertEquals(60_000L, far.deltaMs)
+  }
+
   @Test
   fun aPairingCodeIsSixDigitsAndNotAlwaysTheSame() {
     val codes = (1..50).map { newPairingCode() }
@@ -155,11 +189,14 @@ class LinkProtocolTest {
 
   @Test
   fun tokenComparisonAcceptsOnlyAnExactMatch() {
-    val token = newPairingToken()
+    // Fixed rather than generated: a random token ending in the same character the test appends
+    // would make a correct comparison look wrong once every sixteen runs.
+    val token = "a".repeat(48)
 
     assertTrue(constantTimeEquals(token, token))
     assertFalse(constantTimeEquals(token, token.dropLast(1)))
-    assertFalse(constantTimeEquals(token, token.dropLast(1) + "0"))
+    assertFalse(constantTimeEquals(token, token.dropLast(1) + "b"))
+    assertFalse(constantTimeEquals("b" + token.drop(1), token))
     assertFalse(constantTimeEquals("", token))
   }
 }
