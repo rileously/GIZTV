@@ -98,6 +98,8 @@ private val LiveRed = Color(0xFFFF5A6E)
 @Composable
 internal fun SportsScreen(
   onPlay: (PlaybackContext) -> Unit,
+  /** A fixture the viewer has paused on, worth finding the stream for before they ask. */
+  onConsidering: (PlaybackContext) -> Unit = {},
   onBack: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -326,6 +328,7 @@ internal fun SportsScreen(
               SportEventCard(
                 event = event,
                 onClick = { dismissKeyboard(); onPlay(event.toPlayback()) },
+                onDwell = { onConsidering(event.toPlayback()) },
                 modifier =
                   if (event.id == visible.first().id) {
                     Modifier.focusRequester(gridFocusRequester)
@@ -406,9 +409,25 @@ private fun SportsFilterRow(
  * A match has two sides and a time, and a viewer picks one by reading exactly those; a poster-shaped
  * card would give most of its area to a badge and push half the schedule under the fold.
  */
+/** Long enough to separate running down a list of fixtures from choosing one. */
+private const val FIXTURE_DWELL_MS = 1_200L
+
 @Composable
-private fun SportEventCard(event: SportEvent, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun SportEventCard(
+  event: SportEvent,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier,
+  /** Said once this fixture has sat under the focus long enough to count as being considered. */
+  onDwell: (() -> Unit)? = null,
+) {
   var focused by remember { mutableStateOf(false) }
+  if (onDwell != null) {
+    LaunchedEffect(focused) {
+      if (!focused) return@LaunchedEffect
+      delay(FIXTURE_DWELL_MS)
+      onDwell()
+    }
+  }
   val scale by animateFloatAsState(if (focused) 1.035f else 1f, label = "fixture focus scale")
   val outline by
     animateColorAsState(

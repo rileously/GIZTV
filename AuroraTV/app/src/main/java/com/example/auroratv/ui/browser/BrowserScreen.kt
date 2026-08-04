@@ -117,6 +117,15 @@ import org.json.JSONTokener
 
 private const val HOME_URL = "https://skyflix.to/"
 private const val SUBTITLE_DISCOVERY_DELAY_MS = 2_500L
+
+/**
+ * How long a page gets to produce a first subtitle before the video is opened without one.
+ *
+ * The full wait above exists so a straggling subtitle request is not missed, and it is worth it on
+ * a film. A live fixture has no subtitles at all, so every second of it was dead time between
+ * finding the match and watching it.
+ */
+private const val SUBTITLE_GRACE_MS = 700L
 private const val MAX_SUBTITLE_CATALOG_WAIT_MS = 8_000L
 private const val SUBTITLE_CATALOG_POLL_MS = 250L
 /** Silent attempts before the viewer is told anything went wrong. */
@@ -798,6 +807,12 @@ internal class AdBlockingWebViewClient(
           mainHandler.postDelayed(this, SUBTITLE_CATALOG_POLL_MS)
           return
         }
+        // Something has turned up, so the rest of the window is worth giving to its stragglers.
+        // Nothing has, and nothing is being fetched, so there is nothing left to wait for.
+        if (subtitles.isNotEmpty() && elapsedMs < SUBTITLE_DISCOVERY_DELAY_MS) {
+          mainHandler.postDelayed(this, SUBTITLE_CATALOG_POLL_MS)
+          return
+        }
         val discovered =
           subtitles.values.sortedWith(
             compareBy<ExternalSubtitleTrack>({ englishSubtitleRank(it.label) }, { it.label.lowercase() })
@@ -920,7 +935,7 @@ internal class AdBlockingWebViewClient(
       onStatus("Video found · collecting separate subtitles…")
       collectPageSubtitles(view)
       mainHandler.removeCallbacks(dispatchPendingStream)
-      mainHandler.postDelayed(dispatchPendingStream, SUBTITLE_DISCOVERY_DELAY_MS)
+      mainHandler.postDelayed(dispatchPendingStream, SUBTITLE_GRACE_MS)
     }
   }
 

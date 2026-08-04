@@ -213,7 +213,11 @@ fun AuroraTvRoot(
     // Behind whatever is on screen. While the player is up this finds the next episode; on the
     // catalog it finds whatever the viewer has stopped on, so pressing play has nothing left to
     // wait for. Either way it is covered by the screen in front of it and takes no focus.
-    if (destination == Destination.PLAYER || destination == Destination.CATALOG) {
+    if (
+      destination == Destination.PLAYER ||
+        destination == Destination.CATALOG ||
+        destination == Destination.SPORTS
+    ) {
       StreamPrefetcher(
         target = prefetchTarget,
         onResolved = { context, stream ->
@@ -294,6 +298,14 @@ fun AuroraTvRoot(
       Destination.SPORTS ->
         SportsScreen(
           onPlay = { context -> openForPlayback(context, Destination.SPORTS) },
+          onConsidering = { considered ->
+            if (
+              streamCache.find(considered.pageUrl) == null &&
+                prefetchTarget?.pageUrl != considered.pageUrl
+            ) {
+              prefetchTarget = considered
+            }
+          },
           onBack = { destination = Destination.CATALOG },
         )
       Destination.WEB_HOME ->
