@@ -136,6 +136,7 @@ import androidx.core.net.toUri
 import androidx.tv.material3.Text
 import com.example.auroratv.data.PlaybackContext
 import com.example.auroratv.data.WatchHistoryStore
+import com.example.auroratv.link.RemoteControl
 import com.example.auroratv.theme.AuroraBlue
 import com.example.auroratv.theme.AuroraMint
 import com.example.auroratv.theme.DeepSpace
@@ -396,6 +397,13 @@ internal fun HlsPlayerScreen(
       }
       PlayerBackAction.EXIT_PLAYER -> onExit()
     }
+  }
+
+  // What a paired phone's transport controls act on. Registered for as long as this player is the
+  // one on screen, so a command that arrives afterwards finds nothing rather than a dead player.
+  DisposableEffect(player, request) {
+    RemoteControl.attachPlayer(player, request.context)
+    onDispose { RemoteControl.detachPlayer(player) }
   }
 
   DisposableEffect(player, lifecycleOwner) {

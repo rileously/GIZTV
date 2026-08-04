@@ -38,9 +38,12 @@ internal fun WatchHistoryStore.continueWatchingAnywhere(
  * the app looks the rest up in the same history the surface was drawn from.
  */
 internal fun resumeIntent(context: Context, entry: WatchHistoryEntry): Intent =
+  resumeIntent(context, entry.pageUrl)
+
+internal fun resumeIntent(context: Context, pageUrl: String): Intent =
   Intent(context, MainActivity::class.java)
     .setAction(Intent.ACTION_VIEW)
-    .putExtra(EXTRA_RESUME_PAGE_URL, entry.pageUrl)
+    .putExtra(EXTRA_RESUME_PAGE_URL, pageUrl)
     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
 
 /**

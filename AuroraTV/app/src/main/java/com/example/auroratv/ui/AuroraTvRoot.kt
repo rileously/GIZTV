@@ -12,6 +12,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import com.example.auroratv.data.PlaybackContext
+import com.example.auroratv.home.isTelevision
 import com.example.auroratv.home.resumeContextFor
 import com.example.auroratv.ui.browser.BrowserScreen
 import com.example.auroratv.ui.browser.StreamPrefetcher
@@ -25,6 +26,8 @@ import com.example.auroratv.ui.main.AuroraTvApp
 import com.example.auroratv.ui.sports.SportsScreen
 import com.example.auroratv.ui.player.HlsPlayerScreen
 import com.example.auroratv.ui.player.HlsStreamRequest
+import com.example.auroratv.ui.link.PairingCodeOverlay
+import com.example.auroratv.ui.link.RemoteScreen
 import com.example.auroratv.ui.update.AppUpdateController
 
 private const val SKYFLIX_URL = "https://skyflix.to/"
@@ -35,6 +38,7 @@ private enum class Destination {
   SHORT_DRAMAS,
   DRAMA_DETAIL,
   SPORTS,
+  REMOTE,
   WEB_HOME,
   BROWSER,
   PLAYER,
@@ -47,6 +51,7 @@ fun AuroraTvRoot(
   initialResumePageUrl: String? = null,
 ) {
   val appContext = LocalContext.current.applicationContext
+  val isTelevision = remember(appContext) { appContext.isTelevision() }
   val initialResume =
     remember(initialResumePageUrl) { resumeContextFor(appContext, initialResumePageUrl) }
   // Deliberately not saveable: opening the app should always land on the catalog. Restoring these
@@ -84,7 +89,8 @@ fun AuroraTvRoot(
     enabled =
       destination == Destination.SHORT_DRAMAS ||
         destination == Destination.DRAMA_DETAIL ||
-        destination == Destination.SPORTS
+        destination == Destination.SPORTS ||
+        destination == Destination.REMOTE
   ) {
     destination =
       if (destination == Destination.DRAMA_DETAIL) Destination.SHORT_DRAMAS else Destination.CATALOG
@@ -117,6 +123,9 @@ fun AuroraTvRoot(
       onOpenWeb = { destination = Destination.WEB_HOME },
       onOpenShortDramas = { destination = Destination.SHORT_DRAMAS },
       onOpenSports = { destination = Destination.SPORTS },
+      // A television is what a remote points at, so it is not offered one of its own.
+      onOpenRemote =
+        if (isTelevision) null else ({ destination = Destination.REMOTE }),
     )
   }
 
@@ -164,6 +173,7 @@ fun AuroraTvRoot(
           Catalog()
         }
       }
+      Destination.REMOTE -> RemoteScreen(onBack = { destination = Destination.CATALOG })
       Destination.SPORTS ->
         SportsScreen(
           onPlay = { context -> openForPlayback(context, Destination.SPORTS) },
@@ -214,5 +224,9 @@ fun AuroraTvRoot(
     if (destination != Destination.PLAYER && destination != Destination.BROWSER) {
       AppUpdateController()
     }
+
+    // Unlike the update prompt, this one belongs over the player too: someone pairing a phone is
+    // most likely doing it because they want to control what is playing right now.
+    PairingCodeOverlay()
   }
 }

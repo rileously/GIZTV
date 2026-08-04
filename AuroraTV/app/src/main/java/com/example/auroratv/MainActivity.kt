@@ -10,6 +10,8 @@ import com.example.auroratv.data.flushHttpResponseCache
 import com.example.auroratv.data.installHttpResponseCache
 import com.example.auroratv.home.EXTRA_RESUME_PAGE_URL
 import com.example.auroratv.home.refreshHomeSurfaces
+import com.example.auroratv.link.LinkHost
+import com.example.auroratv.link.RemoteControl
 import com.example.auroratv.theme.AuroraTVTheme
 import com.example.auroratv.ui.AuroraTvRoot
 import com.example.auroratv.update.UpdateCheckWorker
@@ -50,12 +52,36 @@ class MainActivity : AppCompatActivity() {
     }
   }
 
+  override fun onStart() {
+    super.onStart()
+    // Only a television takes this up; on a phone it returns having done nothing.
+    LinkHost.start(this)
+  }
+
+  override fun onResume() {
+    super.onResume()
+    // Keys and typing sent from a phone are handed to whichever window is actually in front.
+    RemoteControl.attachActivity(this)
+  }
+
+  override fun onPause() {
+    super.onPause()
+    RemoteControl.detachActivity(this)
+  }
+
   override fun onStop() {
     super.onStop()
     flushHttpResponseCache()
     // Whatever was watched this time round changes what the home screens should be offering. Doing
     // it on the way out rather than on every progress tick keeps one write per visit to the app.
     refreshHomeSurfaces(applicationContext)
+  }
+
+  override fun onDestroy() {
+    super.onDestroy()
+    // A phone holding the remote loses it when the app it is pointing at is gone, rather than
+    // sitting on a socket that answers for nothing.
+    if (isFinishing) LinkHost.stop()
   }
 }
 

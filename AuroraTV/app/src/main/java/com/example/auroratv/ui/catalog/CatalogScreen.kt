@@ -37,6 +37,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SettingsRemote
 import androidx.compose.material.icons.filled.SportsBasketball
 import androidx.compose.material.icons.filled.Theaters
 import androidx.compose.runtime.Composable
@@ -113,6 +114,8 @@ internal fun CatalogScreen(
   onOpenWeb: () -> Unit,
   onOpenShortDramas: () -> Unit,
   onOpenSports: () -> Unit,
+  /** Absent on a television, which is the thing being pointed at rather than the thing pointing. */
+  onOpenRemote: (() -> Unit)? = null,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -387,6 +390,7 @@ internal fun CatalogScreen(
         onOpenWeb = { dismissKeyboard(); onOpenWeb() },
         onOpenShortDramas = { dismissKeyboard(); onOpenShortDramas() },
         onOpenSports = { dismissKeyboard(); onOpenSports() },
+        onOpenRemote = onOpenRemote?.let { open -> { dismissKeyboard(); open() } },
         openWebModifier =
           Modifier.focusRequester(openWebFocusRequester).focusProperties {
             left = shortDramasFocusRequester
@@ -775,6 +779,7 @@ private fun CatalogTopBar(
   onOpenWeb: () -> Unit,
   onOpenShortDramas: () -> Unit,
   onOpenSports: () -> Unit,
+  onOpenRemote: (() -> Unit)?,
   openWebModifier: Modifier,
   shortDramasModifier: Modifier,
   sportsModifier: Modifier,
@@ -811,6 +816,14 @@ private fun CatalogTopBar(
         onClick = onOpenWeb,
         modifier = openWebModifier,
       )
+      onOpenRemote?.let { open ->
+        CatalogActionButton(
+          label = "Remote",
+          icon = Icons.Filled.SettingsRemote,
+          showLabel = labelled,
+          onClick = open,
+        )
+      }
     }
   }
   Column(
