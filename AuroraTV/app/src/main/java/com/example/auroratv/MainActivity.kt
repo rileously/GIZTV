@@ -10,7 +10,9 @@ import com.example.auroratv.data.flushHttpResponseCache
 import com.example.auroratv.data.installHttpResponseCache
 import com.example.auroratv.home.EXTRA_RESUME_PAGE_URL
 import com.example.auroratv.home.refreshHomeSurfaces
+import com.example.auroratv.home.isTelevision
 import com.example.auroratv.link.LinkHost
+import com.example.auroratv.link.PhoneLink
 import com.example.auroratv.link.RemoteControl
 import com.example.auroratv.theme.AuroraTVTheme
 import com.example.auroratv.ui.AuroraTvRoot
@@ -56,6 +58,11 @@ class MainActivity : AppCompatActivity() {
     super.onStart()
     // Only a television takes this up; on a phone it returns having done nothing.
     LinkHost.start(this)
+    // And the other way about: a phone that has a television reaches for it now rather than when
+    // the remote is opened, so it is already there when it is wanted.
+    if (!isTelevision() && PhoneLink.hasTelevision(this)) {
+      PhoneLink.client(this).ensureConnected()
+    }
   }
 
   override fun onResume() {

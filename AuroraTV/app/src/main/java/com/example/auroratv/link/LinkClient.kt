@@ -14,6 +14,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -28,6 +29,9 @@ private const val CONNECT_TIMEOUT_MS = 6_000
  * ever, which is exactly what a sweep across a whole subnet will eventually find.
  */
 private const val HANDSHAKE_TIMEOUT_MS = 8_000
+
+/** Long enough to be past whatever interrupted it, short enough that nobody reaches for a button. */
+private const val RECONNECT_DELAY_MS = 3_000L
 
 /** Where the phone thinks it stands with the television. */
 internal sealed interface LinkStatus {
@@ -59,6 +63,17 @@ internal class LinkClient(private val context: Context) {
 
   /** Held until the television has let this phone in, then sent. */
   @Volatile private var pending: LinkCommand? = null
+
+  /**
+   * Which attempt is the live one.
+   *
+   * A connection replaced by a newer attempt must not announce its own death: the screen would be
+   * told the television had disconnected at the exact moment it was being connected to.
+   */
+  @Volatile private var generation = 0
+
+  /** Set while the viewer is the one hanging up, so a deliberate close is not treated as a drop. */
+  @Volatile private var hangingUp = false
 
   private val _status = MutableStateFlow<LinkStatus>(LinkStatus.Idle)
   val status: StateFlow<LinkStatus> = _status.asStateFlow()
@@ -147,8 +162,27 @@ internal class LinkClient(private val context: Context) {
       }
     }
 
+  /**
+   * Connects only if this phone is not already talking to the television.
+   *
+   * Opening the remote should not disturb a connection that is already carrying something — the
+   * handover makes one moments before the remote appears, and reconnecting on top of it killed the
+   * very socket that had just been used.
+   */
+  fun ensureConnected() {
+    when (_status.value) {
+      is LinkStatus.Connected,
+      is LinkStatus.Connecting,
+      is LinkStatus.AwaitingCode -> return
+      else -> Unit
+    }
+    val target = store.lastTelevision()
+    if (target == null) discover() else connect(target)
+  }
+
   /** Connects, pairing first if this phone has not been let in before. */
   fun connect(target: LinkTarget, code: String? = null) {
+    val attempt = ++generation
     job?.cancel()
     job =
       scope.launch {
@@ -176,11 +210,16 @@ internal class LinkClient(private val context: Context) {
         } else {
           link.send(LinkCommand.Hello(token = token.orEmpty().ifEmpty { "none" }, name = phoneName))
         }
-        listen(link, socket, target)
+        listen(link, socket, target, attempt)
       }
   }
 
-  private suspend fun listen(link: LinkConnection, socket: Socket, target: LinkTarget) {
+  private suspend fun listen(
+    link: LinkConnection,
+    socket: Socket,
+    target: LinkTarget,
+    attempt: Int,
+  ) {
     withContext(Dispatchers.IO) {
       var heardAnything = false
       while (true) {
@@ -215,12 +254,19 @@ internal class LinkClient(private val context: Context) {
         }
       }
       link.close()
+      // Superseded by a newer attempt, or hung up on purpose. Either way this one has nothing to
+      // report: saying anything here would overwrite the state of the connection that replaced it.
+      if (attempt != generation || hangingUp) return@withContext
       when {
-        _status.value is LinkStatus.Connected ->
-          _status.value = LinkStatus.Failed("The television disconnected.")
+        // A television that goes quiet mid-evening is almost always a phone that changed network or
+        // an app that was reopened, and the viewer should not have to go and press anything.
+        heardAnything -> {
+          _status.value = LinkStatus.Failed("Reconnecting to ${target.name}…")
+          delay(RECONNECT_DELAY_MS)
+          if (attempt == generation && !hangingUp) connect(target)
+        }
         // Answered the door and said nothing: not a television, whatever it is.
-        !heardAnything ->
-          _status.value = LinkStatus.Failed("Nothing at ${target.host} answered as a television.")
+        else -> _status.value = LinkStatus.Failed("Nothing at ${target.host} answered as a television.")
       }
       Log.i(LOG_TAG, "Remote connection closed")
     }
@@ -249,11 +295,14 @@ internal class LinkClient(private val context: Context) {
   }
 
   fun disconnect() {
+    hangingUp = true
+    generation++
     job?.cancel()
     job = null
     connection?.close()
     connection = null
     _status.value = LinkStatus.Idle
+    hangingUp = false
   }
 
   /** Forgetting the television, so the next connection has to be approved on screen again. */

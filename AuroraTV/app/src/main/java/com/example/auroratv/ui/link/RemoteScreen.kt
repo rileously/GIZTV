@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -97,8 +98,9 @@ internal fun RemoteScreen(
   val found by client.found.collectAsState()
 
   DisposableEffect(client) {
-    // A television this phone already knows is worth trying before making the viewer pick one.
-    client.pairedTelevision()?.let(client::connect) ?: client.discover()
+    // Only if it is not already connected. The handover opens a connection moments before this
+    // screen appears, and reconnecting on top of it tore down the one just used.
+    client.ensureConnected()
     onDispose {}
   }
 
@@ -268,13 +270,15 @@ private fun ConnectedRemote(
 
   // The bar keeps its place whether or not anything is playing, so the buttons below never jump
   // under a thumb that is already reaching for them.
-  Box(modifier = Modifier.fillMaxWidth().height(56.dp), contentAlignment = Alignment.TopStart) {
-    if (!nothingPlaying && state.durationMs > 0L) {
+  // Reserved only while something is playing: holding the space open with nothing in it left a
+  // hole between the title and the controls.
+  if (!nothingPlaying && state.durationMs > 0L) {
+    Box(modifier = Modifier.fillMaxWidth().height(56.dp), contentAlignment = Alignment.TopStart) {
       Column {
         Slider(
           value = (state.positionMs.toFloat() / state.durationMs.toFloat()).coerceIn(0f, 1f),
           onValueChange = { client.send(LinkCommand.Seek((it * state.durationMs).toLong())) },
-          colors = SliderDefaults.colors(thumbColor = AuroraMint, activeTrackColor = AuroraMint),
+          colors = remoteSliderColours(),
         )
         Row(Modifier.fillMaxWidth()) {
           Text(formatWatchTime(state.positionMs), color = MutedBlue, fontSize = 12.sp)
@@ -295,46 +299,35 @@ private fun ConnectedRemote(
     }
   }
 
-  Spacer(Modifier.height(10.dp))
-  SectionLabel("PLAYBACK")
-  Spacer(Modifier.height(10.dp))
-  Row(
-    modifier = Modifier.fillMaxWidth(),
-    horizontalArrangement = Arrangement.SpaceEvenly,
-    verticalAlignment = Alignment.CenterVertically,
-  ) {
-    RoundButton(Icons.Filled.Replay10, "Back ten seconds") { client.send(LinkCommand.SeekBy(-SKIP_MS)) }
-    RoundButton(
-      if (state.playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-      if (state.playing) "Pause" else "Play",
-      large = true,
+  Spacer(Modifier.height(18.dp))
+  RemoteSection("PLAYBACK") {
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.SpaceEvenly,
+      verticalAlignment = Alignment.CenterVertically,
     ) {
-      client.send(if (state.playing) LinkCommand.Pause else LinkCommand.Resume)
+      RoundButton(Icons.Filled.Replay10, "Back ten seconds") { client.send(LinkCommand.SeekBy(-SKIP_MS)) }
+      RoundButton(
+        if (state.playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+        if (state.playing) "Pause" else "Play",
+        large = true,
+      ) {
+        client.send(if (state.playing) LinkCommand.Pause else LinkCommand.Resume)
+      }
+      RoundButton(Icons.Filled.Forward10, "Forward ten seconds") { client.send(LinkCommand.SeekBy(SKIP_MS)) }
+      RoundButton(Icons.Filled.Stop, "Stop") { client.send(LinkCommand.Stop) }
     }
-    RoundButton(Icons.Filled.Forward10, "Forward ten seconds") { client.send(LinkCommand.SeekBy(SKIP_MS)) }
-    RoundButton(Icons.Filled.Stop, "Stop") { client.send(LinkCommand.Stop) }
   }
 
-  Spacer(Modifier.height(20.dp))
-  SectionLabel("VOLUME")
-  VolumeControls(state.volume, client)
+  RemoteSection("VOLUME") { VolumeControls(state.volume, client) }
 
-  Spacer(Modifier.height(20.dp))
-  SectionLabel("NAVIGATE")
-  Spacer(Modifier.height(10.dp))
-  DirectionPad(client)
+  RemoteSection("NAVIGATE") { DirectionPad(client) }
 
-  Spacer(Modifier.height(20.dp))
-  SectionLabel("TYPE ON THE TELEVISION")
-  Spacer(Modifier.height(10.dp))
-  TypeOnTelevision(client)
+  RemoteSection("TYPE ON THE TELEVISION") { TypeOnTelevision(client) }
 
-  if (!nothingPlaying) {
-    Spacer(Modifier.height(22.dp))
-    PlayerSettings(options, client)
-  }
+  if (!nothingPlaying) PlayerSettings(options, client)
 
-  Spacer(Modifier.height(20.dp))
+  Spacer(Modifier.height(22.dp))
   Text(
     "Forget this television",
     color = MutedBlue,
@@ -345,72 +338,23 @@ private fun ConnectedRemote(
 }
 
 /**
- * The player's own settings, on the phone instead of behind the television's dialog.
+ * One titled block of the remote.
  *
- * The groups are whatever the television says they are, so a stream with no subtitles simply has no
- * subtitle row rather than an empty one.
+ * The controls were a single column of loose rows, which on a phone reads as one long list of
+ * unrelated buttons. Boxing each group gives the eye somewhere to stop.
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun PlayerSettings(options: LinkEvent.Options, client: LinkClient) {
-  if (options.groups.isEmpty()) return
-
-  SectionLabel("PLAYER")
-  Spacer(Modifier.height(6.dp))
-
-  options.groups.forEach { group ->
-    if (group.items.isEmpty()) return@forEach
-    Spacer(Modifier.height(10.dp))
-    Text(group.label, color = SoftWhite, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-    Spacer(Modifier.height(6.dp))
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-      group.items.forEach { item ->
-        OptionChip(item.label, item.selected) {
-          client.send(LinkCommand.SelectOption(group.id, item.id))
-        }
-      }
-    }
-  }
-
+private fun RemoteSection(title: String, content: @Composable ColumnScope.() -> Unit) {
   Spacer(Modifier.height(14.dp))
-  Text("Subtitle sync", color = SoftWhite, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-  Spacer(Modifier.height(6.dp))
-  Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-    OptionChip("−0.5s", false) { client.send(LinkCommand.SubtitleSync(-500L)) }
-    Text(
-      subtitleOffsetLabel(options.subtitleOffsetMs),
-      color = AuroraMint,
-      fontSize = 14.sp,
-      fontWeight = FontWeight.Bold,
-    )
-    OptionChip("+0.5s", false) { client.send(LinkCommand.SubtitleSync(500L)) }
-  }
-}
-
-private fun subtitleOffsetLabel(offsetMs: Long): String =
-  when {
-    offsetMs == 0L -> "In sync"
-    offsetMs > 0L -> "+%.1fs".format(offsetMs / 1000f)
-    else -> "%.1fs".format(offsetMs / 1000f)
-  }
-
-@Composable
-private fun OptionChip(label: String, selected: Boolean, onClick: () -> Unit) {
-  Box(
+  Column(
     modifier =
-      Modifier.background(
-          if (selected) AuroraMint else NightSurface,
-          RoundedCornerShape(10.dp),
-        )
-        .clickable(onClick = onClick)
-        .padding(horizontal = 14.dp, vertical = 9.dp)
+      Modifier.fillMaxWidth()
+        .background(NightSurface.copy(alpha = .55f), RoundedCornerShape(18.dp))
+        .padding(horizontal = 16.dp, vertical = 14.dp)
   ) {
-    Text(
-      label,
-      color = if (selected) DeepSpace else SoftWhite,
-      fontSize = 13.sp,
-      fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-    )
+    SectionLabel(title)
+    Spacer(Modifier.height(12.dp))
+    content()
   }
 }
 
@@ -427,12 +371,21 @@ private fun VolumeControls(volume: Int, client: LinkClient) {
     Slider(
       value = volume / 100f,
       onValueChange = { client.send(LinkCommand.SetVolume((it * 100).toInt())) },
-      colors = SliderDefaults.colors(thumbColor = AuroraMint, activeTrackColor = AuroraMint),
+      colors = remoteSliderColours(),
       modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
     )
     RoundButton(Icons.AutoMirrored.Filled.VolumeUp, "Louder") { client.send(LinkCommand.Volume(1)) }
   }
 }
+
+/** The unfilled part of a slider defaults to near-white, which glares on this screen. */
+@Composable
+private fun remoteSliderColours() =
+  SliderDefaults.colors(
+    thumbColor = AuroraMint,
+    activeTrackColor = AuroraMint,
+    inactiveTrackColor = MutedBlue.copy(alpha = .35f),
+  )
 
 @Composable
 private fun SectionLabel(text: String) {
@@ -514,6 +467,81 @@ private fun remoteFieldColours() =
     focusedLabelColor = AuroraMint,
     unfocusedLabelColor = MutedBlue,
   )
+
+/**
+ * The player's own settings, one titled row per thing that can be changed.
+ *
+ * The groups are whatever the television says they are, so a stream with no subtitles simply has no
+ * subtitle row rather than an empty one.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PlayerSettings(options: LinkEvent.Options, client: LinkClient) {
+  if (options.groups.isEmpty()) return
+
+  RemoteSection("PLAYER") {
+    options.groups.forEachIndexed { index, group ->
+      if (group.items.isEmpty()) return@forEachIndexed
+      if (index > 0) Spacer(Modifier.height(16.dp))
+      Text(group.label, color = SoftWhite, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+      Spacer(Modifier.height(8.dp))
+      FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        group.items.forEach { item ->
+          OptionChip(item.label, item.selected) {
+            client.send(LinkCommand.SelectOption(group.id, item.id))
+          }
+        }
+      }
+    }
+
+    Spacer(Modifier.height(16.dp))
+    Text("Subtitle sync", color = SoftWhite, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+    Spacer(Modifier.height(8.dp))
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+      OptionChip("−0.5s", false) { client.send(LinkCommand.SubtitleSync(-500L)) }
+      Text(
+        subtitleOffsetLabel(options.subtitleOffsetMs),
+        color = AuroraMint,
+        fontSize = 14.sp,
+        fontWeight = FontWeight.Bold,
+      )
+      OptionChip("+0.5s", false) { client.send(LinkCommand.SubtitleSync(500L)) }
+    }
+  }
+}
+
+private fun subtitleOffsetLabel(offsetMs: Long): String =
+  when {
+    offsetMs == 0L -> "In sync"
+    offsetMs > 0L -> "+%.1fs".format(offsetMs / 1000f)
+    else -> "%.1fs".format(offsetMs / 1000f)
+  }
+
+@Composable
+private fun OptionChip(label: String, selected: Boolean, onClick: () -> Unit) {
+  Box(
+    modifier =
+      Modifier.background(
+          if (selected) AuroraMint else NightSurface,
+          RoundedCornerShape(10.dp),
+        )
+        .clickable(onClick = onClick)
+        .padding(horizontal = 14.dp, vertical = 9.dp)
+  ) {
+    Text(
+      label,
+      color = if (selected) DeepSpace else SoftWhite,
+      fontSize = 13.sp,
+      fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+    )
+  }
+}
 
 @Composable
 private fun Notice(message: String) {
