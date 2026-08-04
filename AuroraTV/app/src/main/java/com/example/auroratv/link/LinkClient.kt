@@ -61,6 +61,9 @@ internal class LinkClient(private val context: Context) {
   private var connection: LinkConnection? = null
   private var job: Job? = null
 
+  /** The search in progress, kept so it can be stopped before another is started on top. */
+  private var discovery: NsdManager.DiscoveryListener? = null
+
   /** Held until the television has let this phone in, then sent. */
   @Volatile private var pending: LinkCommand? = null
 
@@ -106,6 +109,10 @@ internal class LinkClient(private val context: Context) {
       _status.value = LinkStatus.Failed("This phone cannot look for televisions.")
       return
     }
+    // Android allows only a handful of searches at once and counts every one that was started and
+    // never stopped. Reconnecting falls back to searching, so leaving them running meant a phone
+    // that lost its television a few times could never look for it again.
+    stopDiscovery(manager)
     val listener =
       object : NsdManager.DiscoveryListener {
         override fun onDiscoveryStarted(serviceType: String) = Unit
@@ -126,9 +133,16 @@ internal class LinkClient(private val context: Context) {
 
         override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) = Unit
       }
+    discovery = listener
     runCatching {
       manager.discoverServices(LINK_SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
     }
+      .onFailure { discovery = null }
+  }
+
+  private fun stopDiscovery(manager: NsdManager) {
+    discovery?.let { runCatching { manager.stopServiceDiscovery(it) } }
+    discovery = null
   }
 
   /** Knocks on every address on this network, and adds whatever answers to the list. */
@@ -182,6 +196,8 @@ internal class LinkClient(private val context: Context) {
 
   /** Connects, pairing first if this phone has not been let in before. */
   fun connect(target: LinkTarget, code: String? = null) {
+    // Found what it was looking for; the search can stop.
+    (context.getSystemService(Context.NSD_SERVICE) as? NsdManager)?.let(::stopDiscovery)
     val attempt = ++generation
     job?.cancel()
     job =

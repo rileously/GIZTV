@@ -14,6 +14,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -28,6 +29,12 @@ private const val PAIRING_WINDOW_MS = 120_000L
 
 /** How often the phone is told where playback has got to. */
 private const val STATE_INTERVAL_MS = 1_000L
+
+/** A socket that refuses this many times running has stopped being a socket worth waiting on. */
+private const val MAX_ACCEPT_FAILURES = 20
+
+/** Long enough that a repeated failure costs nothing, short enough to not miss a phone. */
+private const val ACCEPT_RETRY_MS = 500L
 
 /** A phone that connects and then says nothing is not left holding a socket open. */
 private const val HANDSHAKE_TIMEOUT_MS = 30_000
@@ -75,14 +82,23 @@ internal class LinkServer(private val context: Context) {
         _address.value = localIpAddresses().firstOrNull()?.let { "$it:${socket.localPort}" }
         advertise(socket.localPort)
         Log.i(LOG_TAG, "Remote listening on ${socket.localPort}")
+        var failures = 0
         while (isActive && !socket.isClosed) {
-          // One refused handshake must not end the remote for the rest of the evening: a failed
-          // accept is only fatal when the socket itself has gone, and otherwise the next phone to
-          // knock deserves an answer.
-          val client =
-            runCatching { socket.accept() }
-              .onFailure { if (socket.isClosed) return@launch }
-              .getOrNull() ?: continue
+          // One refused handshake must not end the remote for the rest of the evening, but nor
+          // should a failure that keeps repeating spin this loop as fast as the processor will go:
+          // a television left overnight would burn a core on it. Each failure waits, and a socket
+          // that has stopped accepting entirely is given up on.
+          val client = runCatching { socket.accept() }.getOrNull()
+          if (client == null) {
+            if (socket.isClosed) return@launch
+            if (++failures >= MAX_ACCEPT_FAILURES) {
+              Log.w(LOG_TAG, "The remote gave up listening after $failures refusals")
+              return@launch
+            }
+            delay(ACCEPT_RETRY_MS)
+            continue
+          }
+          failures = 0
           launch { serve(client) }
         }
       }
@@ -116,7 +132,10 @@ internal class LinkServer(private val context: Context) {
   }
 
   fun stop() {
-    job?.cancel()
+    // The whole scope, not just the accept loop: the state broadcast was launched separately and
+    // would otherwise tick on for the life of the process, joined by a second one each time a new
+    // server was started.
+    scope.cancel()
     job = null
     runCatching { serverSocket?.close() }
     serverSocket = null
