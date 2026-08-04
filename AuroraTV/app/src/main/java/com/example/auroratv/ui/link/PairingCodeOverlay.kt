@@ -1,5 +1,6 @@
 package com.example.auroratv.ui.link
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -41,6 +42,10 @@ internal fun PairingCodeOverlay() {
   val address by LinkHost.address.collectAsState()
   val showing = code ?: return
 
+  // Takes the back press ahead of whatever is behind it, which is the point: the code is the thing
+  // in the way, so back should clear the code rather than leave the film.
+  BackHandler(enabled = true) { LinkHost.cancelPairing() }
+
   Box(
     modifier = Modifier.fillMaxSize().padding(48.dp).testTag("pairing_overlay"),
     contentAlignment = Alignment.BottomEnd,
@@ -79,6 +84,8 @@ internal fun PairingCodeOverlay() {
         Spacer(Modifier.height(6.dp))
         Text("If your phone cannot find this TV, enter  $it", color = MutedBlue, fontSize = 12.sp)
       }
+      Spacer(Modifier.height(8.dp))
+      Text("Press Back to dismiss", color = MutedBlue.copy(alpha = .8f), fontSize = 12.sp)
     }
   }
 }

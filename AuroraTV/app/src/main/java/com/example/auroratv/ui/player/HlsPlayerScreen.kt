@@ -146,6 +146,7 @@ import com.example.auroratv.link.GROUP_SUBTITLE
 import com.example.auroratv.link.LinkCommand
 import com.example.auroratv.link.PhoneLink
 import com.example.auroratv.link.RemoteControl
+import java.util.concurrent.atomic.AtomicLong
 import com.example.auroratv.link.RemoteOptionGroup
 import com.example.auroratv.link.RemoteOptionItem
 import com.example.auroratv.link.RemotePlayerOptions
@@ -320,6 +321,9 @@ internal fun HlsPlayerScreen(
   var subtitleStyle by remember(request) { mutableStateOf(playerPreferences.subtitleStyle()) }
   // Read before the player is built, so the stream starts already in sync rather than reloading.
   var subtitleOffsetMs by remember(subtitleSyncKey) { mutableLongStateOf(subtitleSyncStore.load(subtitleSyncKey)) }
+  // What the parser actually reads. Shared with the media source so a change reaches it without
+  // the source being rebuilt underneath the picture.
+  val subtitleOffset = remember(subtitleSyncKey) { AtomicLong(subtitleOffsetMs) }
   var playbackSpeed by remember(request) { mutableStateOf(playerPreferences.playbackSpeed()) }
   var videoResize by remember(request) { mutableStateOf(VideoResizeOption.FIT) }
   var isCasting by remember(request) { mutableStateOf(false) }
@@ -330,7 +334,7 @@ internal fun HlsPlayerScreen(
   var selectedSubtitle by remember(request, compatibilityMode) { mutableStateOf(playerPreferences.subtitleTrack()) }
   val localPlayer =
     remember(request, compatibilityMode) {
-      createHlsPlayer(context, request, compatibilityMode, subtitleOffsetMs, resumePositionMs)
+      createHlsPlayer(context, request, compatibilityMode, subtitleOffset, resumePositionMs)
     }
   val player: Player =
     remember(localPlayer, isTelevision) {
@@ -352,6 +356,22 @@ internal fun HlsPlayerScreen(
   val surfaceFocusRequester = remember { FocusRequester() }
   val nextEntry = request.context?.nextEntry
   val nextPromptVisible = playbackFinished && nextEntry != null
+
+  /**
+   * Moves the captions, and nothing else.
+   *
+   * The parser reads the offset as it goes, so the only thing needed is to discard cues already
+   * parsed under the old one. A seek to where the picture already is does that: the segment is
+   * still buffered, so it costs a moment rather than a reload, and the video never stops.
+   */
+  fun applySubtitleOffset(offsetMs: Long) {
+    // Casting hands the subtitles to the receiver, which owns their timing from then on.
+    if (isCasting || offsetMs == subtitleOffsetMs) return
+    subtitleOffsetMs = offsetMs
+    subtitleOffset.set(offsetMs)
+    subtitleSyncStore.save(subtitleSyncKey, offsetMs)
+    runCatching { player.seekTo(player.currentPosition.coerceAtLeast(0L)) }
+  }
 
   fun savePlaybackProgress() {
     progressStore.update(
@@ -499,18 +519,7 @@ internal fun HlsPlayerScreen(
         }
 
         override fun nudgeSubtitleSync(deltaMs: Long) {
-          // Casting hands the subtitles to the receiver, which owns their timing from then on.
-          if (isCasting) return
-          val target = subtitleOffsetMs + deltaMs
-          val currentPositionMs = player.currentPosition.coerceAtLeast(0L)
-          val keepPlaying = player.playWhenReady
-          subtitleOffsetMs = target
-          subtitleSyncStore.save(subtitleSyncKey, target)
-          resumePositionMs = currentPositionMs
-          resumePlayWhenReady = keepPlaying
-          localPlayer.setMediaSource(createHlsMediaSource(context, request, target), currentPositionMs)
-          localPlayer.prepare()
-          localPlayer.playWhenReady = keepPlaying
+          applySubtitleOffset(subtitleOffsetMs + deltaMs)
         }
 
         override fun subtitleOffsetMs(): Long = subtitleOffsetMs
@@ -918,19 +927,7 @@ internal fun HlsPlayerScreen(
           subtitleStyle = it
           playerPreferences.setSubtitleStyle(it)
         },
-        onSubtitleOffsetSelected = { offsetMs ->
-          if (offsetMs != subtitleOffsetMs && !isCasting) {
-            val currentPositionMs = player.currentPosition.coerceAtLeast(0L)
-            val keepPlaying = player.playWhenReady
-            subtitleOffsetMs = offsetMs
-            subtitleSyncStore.save(subtitleSyncKey, offsetMs)
-            resumePositionMs = currentPositionMs
-            resumePlayWhenReady = keepPlaying
-            localPlayer.setMediaSource(createHlsMediaSource(context, request, offsetMs), currentPositionMs)
-            localPlayer.prepare()
-            localPlayer.playWhenReady = keepPlaying
-          }
-        },
+        onSubtitleOffsetSelected = { offsetMs -> applySubtitleOffset(offsetMs) },
         onPlaybackSpeedSelected = { speed ->
           playbackSpeed = speed
           playerPreferences.setPlaybackSpeed(speed)
@@ -2145,33 +2142,43 @@ private fun SubtitleSyncControls(
         )
       }
       Spacer(Modifier.weight(1f))
-      Text(if (isCasting) "CAST" else subtitleSyncLabel(offsetMs), color = AuroraMint, fontWeight = FontWeight.Black, fontSize = 15.sp)
+      Text(
+        if (isCasting) "CAST" else subtitleSyncHeadline(offsetMs),
+        color = AuroraMint,
+        fontWeight = FontWeight.Black,
+        fontSize = 15.sp,
+        maxLines = 1,
+        softWrap = false,
+      )
     }
     if (!isCasting) {
-      Spacer(Modifier.height(8.dp))
+      Spacer(Modifier.height(10.dp))
+      // Named by what they do rather than by their sign. "+0.5s" does not say whether a caption is
+      // about to arrive sooner or later, and getting it the wrong way round means watching the film
+      // drift further out before you realise which way to go.
       Row(
         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(7.dp),
       ) {
         SettingsChoiceChip(
-          label = "−0.5s",
+          label = "Earlier ½s",
           selected = false,
           onClick = { onOffsetSelected(adjustSubtitleSync(offsetMs, -500L)) },
           modifier = firstChoiceModifier,
         )
         SettingsChoiceChip(
-          label = "−0.1s",
+          label = "Earlier a touch",
           selected = false,
           onClick = { onOffsetSelected(adjustSubtitleSync(offsetMs, -100L)) },
         )
-        SettingsChoiceChip(label = "Reset", selected = offsetMs == 0L, onClick = { onOffsetSelected(0L) })
+        SettingsChoiceChip(label = "In sync", selected = offsetMs == 0L, onClick = { onOffsetSelected(0L) })
         SettingsChoiceChip(
-          label = "+0.1s",
+          label = "Later a touch",
           selected = false,
           onClick = { onOffsetSelected(adjustSubtitleSync(offsetMs, 100L)) },
         )
         SettingsChoiceChip(
-          label = "+0.5s",
+          label = "Later ½s",
           selected = false,
           onClick = { onOffsetSelected(adjustSubtitleSync(offsetMs, 500L)) },
         )
@@ -2253,6 +2260,19 @@ private fun SettingsChoiceChip(
 }
 
 private fun speedLabel(speed: Float): String = if (speed == 1f) "1×" else "${speed}×"
+
+/**
+ * What the sync is doing, in words.
+ *
+ * A signed number tells the viewer how far but not which way, and which way is the only thing they
+ * are trying to work out while a caption drifts against the speech.
+ */
+internal fun subtitleSyncHeadline(offsetMs: Long): String =
+  when {
+    offsetMs == 0L -> "In sync"
+    offsetMs < 0L -> "${subtitleSyncMagnitudeLabel(offsetMs)} earlier"
+    else -> "${subtitleSyncMagnitudeLabel(offsetMs)} later"
+  }
 
 internal fun subtitleSyncLabel(offsetMs: Long): String =
   when {
@@ -2527,7 +2547,7 @@ internal fun createHlsPlayer(
   context: android.content.Context,
   request: HlsStreamRequest,
   compatibilityMode: Boolean = false,
-  subtitleOffsetMs: Long = 0L,
+  subtitleOffset: AtomicLong,
   /**
    * Where to begin.
    *
@@ -2548,7 +2568,7 @@ internal fun createHlsPlayer(
         AUTO_QUALITY_BANDWIDTH_FRACTION,
       ),
     )
-  val mediaSource = createHlsMediaSource(context, request, subtitleOffsetMs)
+  val mediaSource = createHlsMediaSource(context, request, subtitleOffset)
   val loadControl =
     DefaultLoadControl.Builder()
       // Enough to start on, not enough to wait for. The quality ramp fills the rest in once the
@@ -2598,7 +2618,8 @@ internal fun createHlsPlayer(
 internal fun createHlsMediaSource(
   context: android.content.Context,
   request: HlsStreamRequest,
-  subtitleOffsetMs: Long = 0L,
+  /** Read as each cue is parsed, so it can be moved without this source being rebuilt. */
+  subtitleOffset: AtomicLong = AtomicLong(0L),
 ): MediaSource {
   val bandwidthMeter = DefaultBandwidthMeter.getSingletonInstance(context)
   val safeHeaders =
@@ -2618,7 +2639,7 @@ internal fun createHlsMediaSource(
   val dataSourceFactory = DefaultDataSource.Factory(context, httpFactory)
   val mediaItem = createMediaItem(request)
   return DefaultMediaSourceFactory(dataSourceFactory)
-    .setSubtitleParserFactory(OffsetSubtitleParserFactory(subtitleOffsetMs))
+    .setSubtitleParserFactory(OffsetSubtitleParserFactory(subtitleOffset))
     .createMediaSource(mediaItem)
 }
 

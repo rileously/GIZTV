@@ -148,6 +148,17 @@ internal class LinkServer(private val context: Context) {
     _pairingCode.value = null
   }
 
+  /**
+   * The viewer waving the code away.
+   *
+   * It sits over whatever is playing and there was no way to be rid of it but to wait two minutes.
+   * Cancelling refuses the phone that asked; it is free to ask again, and will be shown a new code
+   * when it does.
+   */
+  fun cancelPairing() {
+    endPairing()
+  }
+
   /** The viewer turning a phone away, and every phone it let in with it. */
   fun forgetPairedPhones() {
     store.forgetPairedPhones()

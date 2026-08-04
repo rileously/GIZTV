@@ -38,6 +38,11 @@ internal object LinkHost {
     server = null
   }
 
+  /** Dismisses the code the television is showing, without turning away phones already let in. */
+  fun cancelPairing() {
+    server?.cancelPairing()
+  }
+
   fun forgetPairedPhones() {
     server?.forgetPairedPhones()
   }
