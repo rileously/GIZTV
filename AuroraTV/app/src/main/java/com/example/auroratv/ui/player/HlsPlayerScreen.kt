@@ -196,6 +196,7 @@ private const val QUALITY_RAMP_FINAL_STEP_MS = 30_000L
 private const val QUALITY_RAMP_RECHECK_MS = 5_000L
 private const val QUALITY_RAMP_BALANCED_BUFFER_MS = 20_000L
 private const val QUALITY_RAMP_UNRESTRICTED_BUFFER_MS = 40_000L
+private const val AUTO_QUALITY_RECOVERY_HOLD_MS = 120_000L
 private const val AUTO_QUALITY_INCREASE_BUFFER_MS = 30_000
 private const val AUTO_QUALITY_DECREASE_BUFFER_MS = 45_000
 private const val AUTO_QUALITY_RETAIN_BUFFER_MS = 40_000
@@ -216,7 +217,7 @@ private const val RELIABLE_HLS_RETRY_COUNT = 6
 private const val PROLONGED_STALL_TIMEOUT_MS = 45_000L
 private const val STABLE_PLAYBACK_RESET_MS = 60_000L
 private const val LOCAL_STALL_RECOVERY_ATTEMPTS = 1
-internal const val STABLE_QUALITY_LABEL = "Stable 360p"
+internal const val STABLE_QUALITY_LABEL = "Data Saver"
 
 internal enum class AutomaticQualityPhase {
   LOW_STARTUP,
@@ -455,6 +456,8 @@ internal fun HlsPlayerScreen(
   var controlsInteractionVersion by remember { mutableIntStateOf(0) }
   var playbackFinished by remember(request) { mutableStateOf(false) }
   var automaticQualityPhase by remember(player) { mutableStateOf(AutomaticQualityPhase.LOW_STARTUP) }
+  var automaticQualityRecoveryLock by remember(player) { mutableStateOf(false) }
+  var dataSaverFallbackRank by remember(player) { mutableIntStateOf(0) }
   var hasStartedPlayback by remember(player) { mutableStateOf(false) }
   var wantsPlayback by remember(player) { mutableStateOf(true) }
   var stallRecoveryAttempts by remember(player) { mutableIntStateOf(0) }
@@ -616,6 +619,7 @@ internal fun HlsPlayerScreen(
             GROUP_QUALITY ->
               qualityOptions.firstOrNull { it.label == itemId }?.let { option ->
                 selectedQuality = option
+                dataSaverFallbackRank = 0
                 playerPreferences.setStablePlayback(option.isStable)
                 selectVideoQuality(player, option)
               }
@@ -682,6 +686,14 @@ internal fun HlsPlayerScreen(
           isBuffering = playbackState == Player.STATE_BUFFERING
           when (playbackState) {
             Player.STATE_BUFFERING -> {
+              if (
+                hasStartedPlayback &&
+                  selectedQuality.isAuto &&
+                  !selectedQuality.isStable &&
+                  !compatibilityMode
+              ) {
+                automaticQualityRecoveryLock = true
+              }
               val nextPhase =
                 automaticQualityPhaseAfterBuffering(
                   hasStartedPlayback = hasStartedPlayback,
@@ -718,7 +730,7 @@ internal fun HlsPlayerScreen(
           subtitleOptions = subtitleTrackOptions(tracks)
           selectedSubtitle =
             subtitleOptions.firstOrNull { it.label == selectedSubtitle.label } ?: subtitleOptions.first()
-          selectVideoQuality(player, selectedQuality)
+          selectVideoQuality(player, selectedQuality, dataSaverFallbackRank)
           selectAudioTrack(player, selectedAudio)
           selectSubtitleTrack(player, selectedSubtitle)
         }
@@ -745,6 +757,22 @@ internal fun HlsPlayerScreen(
 
         override fun onPlayerError(playerError: PlaybackException) {
           android.util.Log.e("AuroraHls", "Playback failed for ${request.url}", playerError)
+          if (selectedQuality.isStable && isHlsTrackMappingFailure(playerError)) {
+            val nextRank = dataSaverFallbackRank + 1
+            if (selectVideoQuality(player, selectedQuality, nextRank)) {
+              dataSaverFallbackRank = nextRank
+              resumePositionMs = player.currentPosition.coerceAtLeast(0L)
+              savePlaybackProgress()
+              isVideoPlaying = false
+              error = null
+              status = "Lowest source track was malformed - retrying the next-lowest quality"
+              player.stop()
+              player.seekTo(resumePositionMs)
+              player.prepare()
+              player.play()
+              return
+            }
+          }
           // A decoder that cannot cope is this device's problem and the address is fine; anything
           // else and the address is the first suspect.
           val decoderFailure = isVideoDecoderFailure(playerError)
@@ -807,10 +835,12 @@ internal fun HlsPlayerScreen(
     }
   }
 
-  // Changing back to Auto always earns a fresh conservative start. Stable uses the same adaptive
-  // selection but deliberately never removes its low-bandwidth ceiling.
+  // Changing back to Auto always earns a fresh conservative start. Data Saver pins the source's
+  // actual lowest supported rendition once the HLS tracks are known.
   LaunchedEffect(player, selectedQuality, compatibilityMode) {
     if (compatibilityMode && !selectedQuality.isStable) return@LaunchedEffect
+    automaticQualityRecoveryLock = false
+    dataSaverFallbackRank = 0
     automaticQualityPhase =
       if (selectedQuality.isAuto) AutomaticQualityPhase.LOW_STARTUP
       else AutomaticQualityPhase.UNRESTRICTED
@@ -821,20 +851,37 @@ internal fun HlsPlayerScreen(
       isTelevision = isTelevision || !selectedQuality.isAuto,
     )
     if (selectedQuality.isStable) {
-      status = "Stable mode - capped at 360p for fewer interruptions"
+      status = "Data Saver - using the lowest available quality"
     }
   }
 
   // Quality only climbs after uninterrupted playback and a real forward safety buffer. A slow or
-  // unstable link can therefore remain at 360p/720p instead of oscillating into an unsustainable
-  // rendition. Any later rebuffer resets this progression to LOW_STARTUP in the player listener.
-  LaunchedEffect(player, selectedQuality, compatibilityMode, isVideoPlaying, automaticQualityPhase) {
+  // unstable link can therefore remain low instead of oscillating into an unsustainable rendition.
+  // After a real rebuffer, Auto needs two uninterrupted minutes before it may begin climbing again.
+  LaunchedEffect(
+    player,
+    selectedQuality,
+    compatibilityMode,
+    isVideoPlaying,
+    automaticQualityPhase,
+    automaticQualityRecoveryLock,
+  ) {
     if (
       compatibilityMode ||
         !selectedQuality.isAuto ||
         selectedQuality.isStable ||
         !isVideoPlaying
     ) {
+      return@LaunchedEffect
+    }
+    if (automaticQualityRecoveryLock) {
+      status = "Auto quality - holding low after a connection slowdown"
+      delay(AUTO_QUALITY_RECOVERY_HOLD_MS)
+      while (player.totalBufferedDuration < QUALITY_RAMP_UNRESTRICTED_BUFFER_MS) {
+        status = "Auto quality - waiting for a safe recovery buffer"
+        delay(QUALITY_RAMP_RECHECK_MS)
+      }
+      automaticQualityRecoveryLock = false
       return@LaunchedEffect
     }
     val promotion = automaticQualityPromotion(automaticQualityPhase) ?: run {
@@ -1101,6 +1148,7 @@ internal fun HlsPlayerScreen(
         isCasting = isCasting,
         onQualitySelected = { option ->
           selectedQuality = option
+          dataSaverFallbackRank = 0
           playerPreferences.setStablePlayback(option.isStable)
           selectVideoQuality(player, option)
         },
@@ -1994,7 +2042,7 @@ private fun PlayerControlDialogOverlay(
       PlayerControlDialog.SUBTITLES -> "Choose any detected subtitle track and its appearance"
       PlayerControlDialog.SUBTITLE_SYNC -> "Match captions to the spoken line"
       PlayerControlDialog.AUDIO -> "Choose the language or audio mix"
-      PlayerControlDialog.QUALITY -> "Auto adapts; Stable stays at 360p for weak connections"
+      PlayerControlDialog.QUALITY -> "Auto adapts; Data Saver uses the lowest available quality"
       PlayerControlDialog.PICTURE -> "Fit shows the complete picture without cropping"
       PlayerControlDialog.SPEED -> "Change how quickly the video plays"
       PlayerControlDialog.DECODER -> "Use compatibility mode only when video decoding fails"
@@ -2554,27 +2602,64 @@ private fun qualityLabel(width: Int, height: Int): String =
   }
 
 @androidx.annotation.OptIn(UnstableApi::class)
-internal fun selectVideoQuality(player: Player, option: VideoQualityOption) {
+internal fun selectVideoQuality(
+  player: Player,
+  option: VideoQualityOption,
+  dataSaverRank: Int = 0,
+): Boolean {
   val parameters = player.trackSelectionParameters.buildUpon().clearOverridesOfType(C.TRACK_TYPE_VIDEO)
-  if (!option.isAuto) {
-    val candidate =
-      player.currentTracks.groups
-        .filter { it.type == C.TRACK_TYPE_VIDEO }
-        .flatMap { group ->
-          (0 until group.length)
-            .filter(group::isTrackSupported)
-            .map { index -> Triple(group, index, group.getTrackFormat(index)) }
-        }
-        .filter { (_, _, format) -> format.width == option.width && format.height == option.height }
-        .maxByOrNull { (_, _, format) -> format.bitrate }
-    candidate?.let { (group, index, _) ->
-      parameters.setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, index))
+  val candidates =
+    player.currentTracks.groups
+      .filter { it.type == C.TRACK_TYPE_VIDEO }
+      .flatMap { group ->
+        (0 until group.length)
+          .filter(group::isTrackSupported)
+          .map { index -> Triple(group, index, group.getTrackFormat(index)) }
+      }
+  val candidate =
+    when {
+      option.isStable -> {
+        val orderedIndices = dataSaverVideoFormatOrder(candidates.map { it.third })
+        orderedIndices.getOrNull(dataSaverRank)?.let(candidates::get)
+      }
+      !option.isAuto ->
+        candidates
+          .filter { (_, _, format) -> format.width == option.width && format.height == option.height }
+          .maxByOrNull { (_, _, format) -> format.bitrate }
+      else -> null
     }
+  if (option.isStable && candidate == null) return false
+  candidate?.let { (group, index, _) ->
+    parameters.setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, index))
   }
   val updatedParameters = parameters.build()
   if (updatedParameters != player.trackSelectionParameters) {
     player.trackSelectionParameters = updatedParameters
   }
+  return option.isAuto || candidate != null
+}
+
+/**
+ * Finds the least demanding supported rendition. HLS manifests normally publish a bitrate; when
+ * they do not, resolution is the safest available proxy for the data rate.
+ */
+internal fun lowestDataVideoFormatIndex(formats: List<Format>): Int? {
+  return dataSaverVideoFormatOrder(formats).firstOrNull()
+}
+
+internal fun dataSaverVideoFormatOrder(formats: List<Format>): List<Int> {
+  return formats.indices.sortedWith(
+    compareBy<Int> {
+      formats[it].bitrate.takeIf { bitrate -> bitrate > 0 } ?: Int.MAX_VALUE
+    }.thenBy {
+      val format = formats[it]
+      if (format.width > 0 && format.height > 0) {
+        format.width.toLong() * format.height.toLong()
+      } else {
+        Long.MAX_VALUE
+      }
+    }
+  )
 }
 
 @androidx.annotation.OptIn(UnstableApi::class)
@@ -2926,6 +3011,11 @@ internal fun isVideoDecoderFailure(error: Throwable): Boolean =
   generateSequence(error) { it.cause }.any { cause ->
     cause.javaClass.simpleName.contains("MediaCodecVideo", ignoreCase = true) ||
       cause.message?.contains("MediaCodecVideoRenderer", ignoreCase = true) == true
+  }
+
+internal fun isHlsTrackMappingFailure(error: Throwable): Boolean =
+  generateSequence(error) { it.cause }.any { cause ->
+    cause.javaClass.simpleName == "SampleQueueMappingException"
   }
 
 internal fun createMediaItem(request: HlsStreamRequest): MediaItem {

@@ -1,6 +1,7 @@
 package com.example.auroratv
 
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.Player
 import com.example.auroratv.ui.StreamFailureAction
 import com.example.auroratv.ui.streamFailureAction
@@ -12,6 +13,9 @@ import com.example.auroratv.ui.player.VideoQualityOption
 import com.example.auroratv.ui.player.adjustSubtitleSync
 import com.example.auroratv.ui.player.automaticQualityPhaseAfterBuffering
 import com.example.auroratv.ui.player.automaticQualityPromotion
+import com.example.auroratv.ui.player.dataSaverVideoFormatOrder
+import com.example.auroratv.ui.player.isHlsTrackMappingFailure
+import com.example.auroratv.ui.player.lowestDataVideoFormatIndex
 import com.example.auroratv.ui.player.playerBackAction
 import com.example.auroratv.ui.player.playerControllerTimeoutMs
 import com.example.auroratv.ui.player.playbackBufferProfile
@@ -135,13 +139,48 @@ class PlaybackLogicTest {
   }
 
   @Test
-  fun stableQuality_remainsAdaptiveButIsDistinctFromNormalAuto() {
-    val stable = VideoQualityOption(STABLE_QUALITY_LABEL, stable = true)
+  fun dataSaver_isDistinctFromNormalAutoAndFixedQuality() {
+    val dataSaver = VideoQualityOption(STABLE_QUALITY_LABEL, stable = true)
 
-    assertTrue(stable.isAuto)
-    assertTrue(stable.isStable)
+    assertEquals("Data Saver", dataSaver.label)
+    assertTrue(dataSaver.isAuto)
+    assertTrue(dataSaver.isStable)
     assertFalse(VideoQualityOption("Auto").isStable)
     assertFalse(VideoQualityOption("720p", width = 1280, height = 720).isAuto)
+  }
+
+  @Test
+  fun dataSaver_choosesTheLowestManifestBitrateEvenWhenItIs480p() {
+    val formats =
+      listOf(
+        Format.Builder().setWidth(1920).setHeight(1080).setAverageBitrate(5_000_000).build(),
+        Format.Builder().setWidth(854).setHeight(480).setAverageBitrate(650_000).build(),
+        Format.Builder().setWidth(1280).setHeight(720).setAverageBitrate(2_000_000).build(),
+      )
+
+    assertEquals(1, lowestDataVideoFormatIndex(formats))
+    assertEquals(listOf(1, 2, 0), dataSaverVideoFormatOrder(formats))
+  }
+
+  @Test
+  fun dataSaver_fallsBackToTheSmallestResolutionWhenBitratesAreMissing() {
+    val formats =
+      listOf(
+        Format.Builder().setWidth(1280).setHeight(720).build(),
+        Format.Builder().setWidth(640).setHeight(360).build(),
+        Format.Builder().setWidth(854).setHeight(480).build(),
+      )
+
+    assertEquals(1, lowestDataVideoFormatIndex(formats))
+    assertNull(lowestDataVideoFormatIndex(emptyList()))
+  }
+
+  @Test
+  fun malformedLowestHlsTrack_isRecognizedForLocalQualityFallback() {
+    val mappingFailure = RuntimeException("source failed", SampleQueueMappingException())
+
+    assertTrue(isHlsTrackMappingFailure(mappingFailure))
+    assertFalse(isHlsTrackMappingFailure(IllegalStateException("ordinary source failure")))
   }
 
   @Test
@@ -171,4 +210,6 @@ class PlaybackLogicTest {
     assertEquals(5_000, television.startBufferMs)
     assertEquals(12_000, television.rebufferMs)
   }
+
+  private class SampleQueueMappingException : RuntimeException()
 }

@@ -285,7 +285,7 @@ class HlsPlaybackTest {
   }
 
   @Test
-  fun adaptiveHlsStream_exposesAndAppliesManualQualityChoices() {
+  fun adaptiveHlsStream_appliesDataSaverAndManualQualityChoices() {
     val instrumentation = InstrumentationRegistry.getInstrumentation()
     val videoTracksReady = CountDownLatch(1)
     val playbackError = AtomicReference<PlaybackException?>()
@@ -314,6 +314,12 @@ class HlsPlaybackTest {
       instrumentation.runOnMainSync {
         val options = videoQualityOptions(player.currentTracks, compatibilityMode = false)
         assertTrue("No fixed video quality was exposed", options.any { !it.isAuto })
+        val dataSaver = options.first { it.isStable }
+        selectVideoQuality(player, dataSaver)
+        assertTrue(
+          "Data Saver did not pin the source's lowest video rendition",
+          player.trackSelectionParameters.overrides.values.any { it.type == C.TRACK_TYPE_VIDEO },
+        )
         val fixedQuality = options.first { !it.isAuto }
         selectVideoQuality(player, fixedQuality)
         assertTrue(
