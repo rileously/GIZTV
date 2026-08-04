@@ -2,9 +2,11 @@ package com.example.auroratv
 
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.runtime.mutableStateOf
 import androidx.core.net.toUri
 import com.example.auroratv.data.flushHttpResponseCache
 import com.example.auroratv.data.installHttpResponseCache
@@ -19,6 +21,15 @@ import com.example.auroratv.ui.AuroraTvRoot
 import com.example.auroratv.update.UpdateCheckWorker
 
 class MainActivity : AppCompatActivity() {
+  /**
+   * The title a home screen, a widget or a phone has asked for.
+   *
+   * Held as state rather than read once, because with a single instance the request now arrives at
+   * an activity that is already running: tearing the activity down to deliver it was what closed
+   * the remote's socket every time a film was handed over.
+   */
+  private val resumeRequest = mutableStateOf<String?>(null)
+
   override fun onCreate(savedInstanceState: Bundle?) {
     installHttpResponseCache(this)
     requestedOrientation =
@@ -42,16 +53,22 @@ class MainActivity : AppCompatActivity() {
         launchStreamUrl == null && uri.scheme == "https" &&
           (uri.host.equals("skyflix.to", ignoreCase = true) || uri.host.equals("www.skyflix.to", ignoreCase = true))
       }
-    val launchResumePageUrl = intent?.getStringExtra(EXTRA_RESUME_PAGE_URL)
+    resumeRequest.value = intent?.getStringExtra(EXTRA_RESUME_PAGE_URL)
     setContent {
       AuroraTVTheme {
         AuroraTvRoot(
           initialStreamUrl = launchStreamUrl,
           initialBrowserUrl = launchBrowserUrl,
-          initialResumePageUrl = launchResumePageUrl,
+          initialResumePageUrl = resumeRequest.value,
         )
       }
     }
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    intent.getStringExtra(EXTRA_RESUME_PAGE_URL)?.let { resumeRequest.value = it }
   }
 
   override fun onStart() {

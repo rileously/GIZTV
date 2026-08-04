@@ -11,6 +11,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.platform.LocalContext
@@ -136,6 +137,17 @@ fun AuroraTvRoot(
       return
     }
     destination = Destination.BROWSER
+  }
+
+  // A title asked for while the app was already open — from a widget, the television's own row,
+  // or a phone handing one over. The first one is handled by the starting destination above; this
+  // catches every one after it, which previously needed the activity to be destroyed to arrive.
+  var lastResumed by remember { mutableStateOf(initialResumePageUrl) }
+  LaunchedEffect(initialResumePageUrl) {
+    val pageUrl = initialResumePageUrl ?: return@LaunchedEffect
+    if (pageUrl == lastResumed) return@LaunchedEffect
+    lastResumed = pageUrl
+    resumeContextFor(appContext, pageUrl)?.let { openForPlayback(it, Destination.CATALOG) }
   }
 
   @Composable
