@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.VolumeDown
@@ -33,6 +34,7 @@ import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
@@ -165,6 +167,7 @@ private fun CodeEntry(target: LinkTarget, onSubmit: (String) -> Unit) {
     onValueChange = { entered -> code = entered.filter(Char::isDigit).take(PAIRING_CODE_LENGTH) },
     label = { Text("Pairing code") },
     singleLine = true,
+    colors = remoteFieldColours(),
     modifier = Modifier.fillMaxWidth().testTag("pairing_code_field"),
   )
   Spacer(Modifier.height(14.dp))
@@ -212,21 +215,33 @@ private fun ConnectedRemote(connected: LinkStatus.Connected, client: LinkClient)
 
   Spacer(Modifier.height(16.dp))
 
-  if (!nothingPlaying && state.durationMs > 0L) {
-    Slider(
-      value = (state.positionMs.toFloat() / state.durationMs.toFloat()).coerceIn(0f, 1f),
-      onValueChange = { client.send(LinkCommand.Seek((it * state.durationMs).toLong())) },
-      colors = SliderDefaults.colors(thumbColor = AuroraMint, activeTrackColor = AuroraMint),
-    )
-    Row(Modifier.fillMaxWidth()) {
-      Text(formatWatchTime(state.positionMs), color = MutedBlue, fontSize = 12.sp)
-      Spacer(Modifier.weight(1f))
-      Text(formatWatchTime(state.durationMs), color = MutedBlue, fontSize = 12.sp)
+  // The bar keeps its place whether or not anything is playing, so the buttons below never jump
+  // under a thumb that is already reaching for them.
+  Box(modifier = Modifier.fillMaxWidth().height(56.dp), contentAlignment = Alignment.TopStart) {
+    if (!nothingPlaying && state.durationMs > 0L) {
+      Column {
+        Slider(
+          value = (state.positionMs.toFloat() / state.durationMs.toFloat()).coerceIn(0f, 1f),
+          onValueChange = { client.send(LinkCommand.Seek((it * state.durationMs).toLong())) },
+          colors = SliderDefaults.colors(thumbColor = AuroraMint, activeTrackColor = AuroraMint),
+        )
+        Row(Modifier.fillMaxWidth()) {
+          Text(formatWatchTime(state.positionMs), color = MutedBlue, fontSize = 12.sp)
+          Spacer(Modifier.weight(1f))
+          Text(formatWatchTime(state.durationMs), color = MutedBlue, fontSize = 12.sp)
+        }
+      }
     }
-    Spacer(Modifier.height(10.dp))
   }
 
-  Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+  Spacer(Modifier.height(10.dp))
+  SectionLabel("PLAYBACK")
+  Spacer(Modifier.height(10.dp))
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.SpaceEvenly,
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
     RoundButton(Icons.Filled.Replay10, "Back ten seconds") { client.send(LinkCommand.SeekBy(-SKIP_MS)) }
     RoundButton(
       if (state.playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
@@ -236,21 +251,48 @@ private fun ConnectedRemote(connected: LinkStatus.Connected, client: LinkClient)
       client.send(if (state.playing) LinkCommand.Pause else LinkCommand.Resume)
     }
     RoundButton(Icons.Filled.Forward10, "Forward ten seconds") { client.send(LinkCommand.SeekBy(SKIP_MS)) }
-    Spacer(Modifier.weight(1f))
     RoundButton(Icons.Filled.Stop, "Stop") { client.send(LinkCommand.Stop) }
   }
 
-  Spacer(Modifier.height(18.dp))
-  Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
-    RoundButton(Icons.AutoMirrored.Filled.VolumeDown, "Quieter") { client.send(LinkCommand.Volume(-1)) }
-    RoundButton(Icons.AutoMirrored.Filled.VolumeUp, "Louder") { client.send(LinkCommand.Volume(1)) }
-  }
+  Spacer(Modifier.height(20.dp))
+  SectionLabel("VOLUME")
+  VolumeControls(state.volume, client)
 
-  Spacer(Modifier.height(22.dp))
+  Spacer(Modifier.height(20.dp))
+  SectionLabel("NAVIGATE")
+  Spacer(Modifier.height(10.dp))
   DirectionPad(client)
 
-  Spacer(Modifier.height(22.dp))
+  Spacer(Modifier.height(20.dp))
+  SectionLabel("TYPE ON THE TELEVISION")
+  Spacer(Modifier.height(10.dp))
   TypeOnTelevision(client)
+  Spacer(Modifier.height(28.dp))
+}
+
+/**
+ * The television's own level, dragged rather than nudged.
+ *
+ * The slider shows the television's actual volume rather than this screen's idea of it, so a change
+ * made with the television's own remote turns up here too.
+ */
+@Composable
+private fun VolumeControls(volume: Int, client: LinkClient) {
+  Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+    RoundButton(Icons.AutoMirrored.Filled.VolumeDown, "Quieter") { client.send(LinkCommand.Volume(-1)) }
+    Slider(
+      value = volume / 100f,
+      onValueChange = { client.send(LinkCommand.SetVolume((it * 100).toInt())) },
+      colors = SliderDefaults.colors(thumbColor = AuroraMint, activeTrackColor = AuroraMint),
+      modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
+    )
+    RoundButton(Icons.AutoMirrored.Filled.VolumeUp, "Louder") { client.send(LinkCommand.Volume(1)) }
+  }
+}
+
+@Composable
+private fun SectionLabel(text: String) {
+  Text(text, color = MutedBlue, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.5.sp)
 }
 
 /** The pad, for everything on the television that is not the player. */
@@ -289,16 +331,45 @@ private fun TypeOnTelevision(client: LinkClient) {
   OutlinedTextField(
     value = text,
     onValueChange = { text = it },
-    label = { Text("Type on the television") },
+    placeholder = { Text("Search on the television", color = MutedBlue) },
     singleLine = true,
+    colors = remoteFieldColours(),
     modifier = Modifier.fillMaxWidth().testTag("remote_text_field"),
   )
   Spacer(Modifier.height(10.dp))
-  WideButton("Send", enabled = text.isNotBlank()) {
-    client.send(LinkCommand.Text(text))
-    text = ""
+  Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    Box(Modifier.weight(1f)) {
+      WideButton("Send", enabled = text.isNotBlank()) {
+        client.send(LinkCommand.Text(text))
+        text = ""
+      }
+    }
+    // Rubs out on the television rather than here: what is wrong is what is already up there.
+    RoundButton(Icons.AutoMirrored.Filled.Backspace, "Backspace on the television") {
+      client.send(LinkCommand.Key(LinkKey.BACKSPACE))
+    }
   }
 }
+
+/**
+ * Text that can actually be read.
+ *
+ * A default field paints its text in the Material scheme's onSurface, which against this screen's
+ * near-black background is very nearly the background.
+ */
+@Composable
+private fun remoteFieldColours() =
+  OutlinedTextFieldDefaults.colors(
+    focusedTextColor = SoftWhite,
+    unfocusedTextColor = SoftWhite,
+    cursorColor = AuroraMint,
+    focusedBorderColor = AuroraMint,
+    unfocusedBorderColor = MutedBlue,
+    focusedContainerColor = NightSurface,
+    unfocusedContainerColor = NightSurface,
+    focusedLabelColor = AuroraMint,
+    unfocusedLabelColor = MutedBlue,
+  )
 
 @Composable
 private fun Notice(message: String) {

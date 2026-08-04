@@ -36,6 +36,9 @@ internal sealed interface LinkCommand {
 
   data class Volume(val delta: Int) : LinkCommand
 
+  /** Setting the level outright, which is what dragging the phone's own slider sends. */
+  data class SetVolume(val percent: Int) : LinkCommand
+
   /** A press of the remote's own pad, for driving the parts of the app that are not the player. */
   data class Key(val key: LinkKey) : LinkCommand
 
@@ -50,6 +53,9 @@ internal enum class LinkKey {
   RIGHT,
   CENTER,
   BACK,
+
+  /** Rubbing out the last letter, since a search typed from a phone is usually typed wrong once. */
+  BACKSPACE,
 }
 
 internal sealed interface LinkEvent {
@@ -68,6 +74,8 @@ internal sealed interface LinkEvent {
     val posterUrl: String?,
     val positionMs: Long,
     val durationMs: Long,
+    /** Where the television's own volume sits, 0..100, so the phone's slider tells the truth. */
+    val volume: Int = 0,
   ) : LinkEvent
 }
 
@@ -83,6 +91,7 @@ internal fun LinkCommand.encode(): String {
     is LinkCommand.Seek -> json.put("cmd", "seek").put("positionMs", positionMs)
     is LinkCommand.SeekBy -> json.put("cmd", "seekBy").put("deltaMs", deltaMs)
     is LinkCommand.Volume -> json.put("cmd", "volume").put("delta", delta)
+    is LinkCommand.SetVolume -> json.put("cmd", "setVolume").put("percent", percent)
     is LinkCommand.Key -> json.put("cmd", "key").put("key", key.name.lowercase())
     is LinkCommand.Text -> json.put("cmd", "text").put("text", text)
   }
@@ -113,6 +122,7 @@ internal fun decodeCommand(line: String): LinkCommand? =
         "seek" -> LinkCommand.Seek(positionMs = json.optLong("positionMs").coerceAtLeast(0L))
         "seekBy" -> LinkCommand.SeekBy(deltaMs = json.optLong("deltaMs"))
         "volume" -> LinkCommand.Volume(delta = json.optInt("delta").coerceIn(-10, 10))
+        "setVolume" -> LinkCommand.SetVolume(percent = json.optInt("percent").coerceIn(0, 100))
         "key" ->
           LinkKey.entries
             .firstOrNull { it.name.equals(json.optString("key"), ignoreCase = true) }
@@ -138,6 +148,7 @@ internal fun LinkEvent.encode(): String {
         .put("posterUrl", posterUrl ?: JSONObject.NULL)
         .put("positionMs", positionMs)
         .put("durationMs", durationMs)
+        .put("volume", volume)
   }
   return json.toString()
 }
@@ -158,6 +169,7 @@ internal fun decodeEvent(line: String): LinkEvent? =
             posterUrl = json.optNonBlank("posterUrl"),
             positionMs = json.optLong("positionMs"),
             durationMs = json.optLong("durationMs"),
+            volume = json.optInt("volume").coerceIn(0, 100),
           )
         else -> null
       }

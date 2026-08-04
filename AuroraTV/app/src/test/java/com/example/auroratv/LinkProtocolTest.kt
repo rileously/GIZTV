@@ -34,7 +34,9 @@ class LinkProtocolTest {
         LinkCommand.Seek(positionMs = 90_000L),
         LinkCommand.SeekBy(deltaMs = -10_000L),
         LinkCommand.Volume(delta = -1),
+        LinkCommand.SetVolume(percent = 40),
         LinkCommand.Key(LinkKey.CENTER),
+        LinkCommand.Key(LinkKey.BACKSPACE),
         LinkCommand.Text(text = "the odyssey"),
       )
 
@@ -55,6 +57,7 @@ class LinkProtocolTest {
           posterUrl = "https://image.tmdb.org/t/p/w300/x.jpg",
           positionMs = 61_000L,
           durationMs = 9_935_000L,
+          volume = 35,
         ),
       )
 
@@ -119,6 +122,15 @@ class LinkProtocolTest {
     val rewound = decodeCommand("""{"v":1,"cmd":"seek","positionMs":-5000}""") as LinkCommand.Seek
 
     assertEquals(0L, rewound.positionMs)
+  }
+
+  @Test
+  fun anAbsoluteVolumeIsClampedToAPercentage() {
+    val loud = decodeCommand("""{"v":1,"cmd":"setVolume","percent":400}""") as LinkCommand.SetVolume
+    val quiet = decodeCommand("""{"v":1,"cmd":"setVolume","percent":-8}""") as LinkCommand.SetVolume
+
+    assertEquals(100, loud.percent)
+    assertEquals(0, quiet.percent)
   }
 
   @Test

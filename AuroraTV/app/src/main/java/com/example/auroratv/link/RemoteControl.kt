@@ -3,6 +3,7 @@ package com.example.auroratv.link
 import android.app.Activity
 import android.content.Context
 import android.media.AudioManager
+import android.view.InputDevice
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import androidx.media3.common.C
@@ -58,7 +59,7 @@ internal object RemoteControl {
    * Read on the main thread because a player may only be asked from the thread it was built on, and
    * handed back as a plain value the socket thread can send whenever it likes.
    */
-  suspend fun state(): LinkEvent.State =
+  suspend fun state(context0: Context? = null): LinkEvent.State =
     withContext(Dispatchers.Main.immediate) {
       val player = player()
       val context = playbackContext
@@ -69,6 +70,7 @@ internal object RemoteControl {
         posterUrl = context?.posterUrl,
         positionMs = player?.currentPosition?.coerceAtLeast(0L) ?: 0L,
         durationMs = player?.duration?.takeIf { it != C.TIME_UNSET }?.coerceAtLeast(0L) ?: 0L,
+        volume = context0?.let(::currentVolumePercent) ?: 0,
       )
     }
 
@@ -99,10 +101,25 @@ internal object RemoteControl {
             it.seekTo(if (end != null) target.coerceAtMost(end) else target)
           }
         is LinkCommand.Volume -> adjustVolume(context, command.delta)
+        is LinkCommand.SetVolume -> setVolume(context, command.percent)
         is LinkCommand.Key -> dispatchKey(command.key.toKeyCode())
         is LinkCommand.Text -> dispatchText(command.text)
       }
     }
+  }
+
+  /** Where the television's own music volume sits, as a percentage the phone's slider can show. */
+  private fun currentVolumePercent(context: Context): Int {
+    val audio = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return 0
+    val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).takeIf { it > 0 } ?: return 0
+    return (audio.getStreamVolume(AudioManager.STREAM_MUSIC) * 100 / max).coerceIn(0, 100)
+  }
+
+  private fun setVolume(context: Context, percent: Int) {
+    val audio = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+    val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).takeIf { it > 0 } ?: return
+    val level = (percent.coerceIn(0, 100) * max / 100).coerceIn(0, max)
+    runCatching { audio.setStreamVolume(AudioManager.STREAM_MUSIC, level, 0) }
   }
 
   private fun adjustVolume(context: Context, delta: Int) {
@@ -130,9 +147,25 @@ internal object RemoteControl {
   private fun dispatchKey(keyCode: Int) {
     val activity = activity() ?: return
     val now = android.os.SystemClock.uptimeMillis()
+    // A key event with no input source is dropped by the focus system, which is why an event built
+    // from the short constructor moves nothing. The device and source below are what make this
+    // count as a real press arriving from a real pad.
+    fun event(action: Int) =
+      KeyEvent(
+        now,
+        now,
+        action,
+        keyCode,
+        0,
+        0,
+        KeyCharacterMap.VIRTUAL_KEYBOARD,
+        0,
+        0,
+        InputDevice.SOURCE_KEYBOARD,
+      )
     runCatching {
-      activity.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0))
-      activity.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0))
+      activity.dispatchKeyEvent(event(KeyEvent.ACTION_DOWN))
+      activity.dispatchKeyEvent(event(KeyEvent.ACTION_UP))
     }
   }
 
@@ -156,4 +189,5 @@ private fun LinkKey.toKeyCode(): Int =
     LinkKey.RIGHT -> KeyEvent.KEYCODE_DPAD_RIGHT
     LinkKey.CENTER -> KeyEvent.KEYCODE_DPAD_CENTER
     LinkKey.BACK -> KeyEvent.KEYCODE_BACK
+    LinkKey.BACKSPACE -> KeyEvent.KEYCODE_DEL
   }

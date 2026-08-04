@@ -109,13 +109,13 @@ internal class LinkServer(private val context: Context) {
       // not a heartbeat.
       socket.soTimeout = 0
       synchronized(clients) { clients.add(connection) }
-      connection.send(RemoteControl.state())
+      connection.send(RemoteControl.state(context))
       while (true) {
         val line = connection.readLine() ?: break
         val command = decodeCommand(line) ?: continue
         runCatching { RemoteControl.execute(context, command) }
           .onFailure { Log.w(LOG_TAG, "Command failed", it) }
-        connection.send(RemoteControl.state())
+        connection.send(RemoteControl.state(context))
       }
     } catch (error: Throwable) {
       Log.w(LOG_TAG, "A phone dropped out", error)
@@ -197,7 +197,7 @@ internal class LinkServer(private val context: Context) {
       delay(STATE_INTERVAL_MS)
       val listeners = synchronized(clients) { clients.toList() }
       if (listeners.isEmpty()) continue
-      val state = runCatching { RemoteControl.state() }.getOrNull() ?: continue
+      val state = runCatching { RemoteControl.state(context) }.getOrNull() ?: continue
       if (!state.playing && state == lastSent) continue
       lastSent = state
       listeners.forEach { it.send(state) }
