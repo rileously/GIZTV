@@ -14,6 +14,7 @@ import com.example.auroratv.ui.player.automaticQualityPhaseAfterBuffering
 import com.example.auroratv.ui.player.automaticQualityPromotion
 import com.example.auroratv.ui.player.playerBackAction
 import com.example.auroratv.ui.player.playerControllerTimeoutMs
+import com.example.auroratv.ui.player.playbackBufferProfile
 import com.example.auroratv.ui.player.prolongedStallAction
 import com.example.auroratv.ui.player.reliableHlsLoadErrorPolicy
 import com.example.auroratv.ui.player.resumablePlaybackPosition
@@ -156,5 +157,18 @@ class PlaybackLogicTest {
     assertEquals(StreamFailureAction.RESOLVE_FRESH_STREAM, streamFailureAction(true, 1))
     assertEquals(StreamFailureAction.SHOW_PLAYER_ERROR, streamFailureAction(true, 2))
     assertEquals(StreamFailureAction.SHOW_PLAYER_ERROR, streamFailureAction(false, 0))
+  }
+
+  @Test
+  fun phone_restartsSoonerWhileTvKeepsItsDeepRebufferTarget() {
+    val phone = playbackBufferProfile(isTelevision = false)
+    val television = playbackBufferProfile(isTelevision = true)
+
+    assertEquals(30_000, phone.minBufferMs)
+    assertEquals(75_000, phone.maxBufferMs)
+    assertEquals(2_500, phone.startBufferMs)
+    assertEquals(5_000, phone.rebufferMs)
+    assertEquals(5_000, television.startBufferMs)
+    assertEquals(12_000, television.rebufferMs)
   }
 }

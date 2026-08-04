@@ -204,6 +204,12 @@ private const val RELIABLE_MIN_BUFFER_MS = 30_000
 private const val RELIABLE_MAX_BUFFER_MS = 75_000
 private const val RELIABLE_START_BUFFER_MS = 5_000
 private const val RELIABLE_REBUFFER_MS = 12_000
+private const val PHONE_START_BUFFER_MS = 2_500
+private const val PHONE_REBUFFER_MS = 5_000
+private const val PHONE_AUTO_MAX_VIDEO_WIDTH = 1280
+private const val PHONE_AUTO_MAX_VIDEO_HEIGHT = 720
+private const val PHONE_AUTO_MAX_VIDEO_BITRATE = 3_000_000
+private const val PHONE_AUTO_MAX_VIDEO_FRAME_RATE = 30
 private const val RELIABLE_HTTP_CONNECT_TIMEOUT_MS = 20_000
 private const val RELIABLE_HTTP_READ_TIMEOUT_MS = 60_000
 private const val RELIABLE_HLS_RETRY_COUNT = 6
@@ -217,6 +223,21 @@ internal enum class AutomaticQualityPhase {
   BALANCED,
   UNRESTRICTED,
 }
+
+internal data class PlaybackBufferProfile(
+  val minBufferMs: Int,
+  val maxBufferMs: Int,
+  val startBufferMs: Int,
+  val rebufferMs: Int,
+)
+
+internal fun playbackBufferProfile(isTelevision: Boolean): PlaybackBufferProfile =
+  PlaybackBufferProfile(
+    minBufferMs = RELIABLE_MIN_BUFFER_MS,
+    maxBufferMs = RELIABLE_MAX_BUFFER_MS,
+    startBufferMs = if (isTelevision) RELIABLE_START_BUFFER_MS else PHONE_START_BUFFER_MS,
+    rebufferMs = if (isTelevision) RELIABLE_REBUFFER_MS else PHONE_REBUFFER_MS,
+  )
 
 internal data class AutomaticQualityPromotion(
   val nextPhase: AutomaticQualityPhase,
@@ -410,7 +431,14 @@ internal fun HlsPlayerScreen(
   var selectedSubtitle by remember(request, compatibilityMode) { mutableStateOf(playerPreferences.subtitleTrack()) }
   val localPlayer =
     remember(request, compatibilityMode) {
-      createHlsPlayer(context, request, compatibilityMode, subtitleOffset, resumePositionMs)
+      createHlsPlayer(
+        context = context,
+        request = request,
+        compatibilityMode = compatibilityMode,
+        subtitleOffset = subtitleOffset,
+        startPositionMs = resumePositionMs,
+        isTelevision = isTelevision,
+      )
     }
   val player: Player =
     remember(localPlayer, isTelevision) {
@@ -663,7 +691,7 @@ internal fun HlsPlayerScreen(
                 )
               if (nextPhase != automaticQualityPhase) {
                 automaticQualityPhase = nextPhase
-                applyAutomaticQualityPhase(player, nextPhase)
+                applyAutomaticQualityPhase(player, nextPhase, isTelevision)
                 status = "Connection slowed - rebuilding a safety buffer in low quality"
               }
             }
@@ -786,7 +814,12 @@ internal fun HlsPlayerScreen(
     automaticQualityPhase =
       if (selectedQuality.isAuto) AutomaticQualityPhase.LOW_STARTUP
       else AutomaticQualityPhase.UNRESTRICTED
-    applyAutomaticQualityPhase(player, automaticQualityPhase)
+    // A manual fixed rendition is explicit permission to exceed the phone Auto ceiling.
+    applyAutomaticQualityPhase(
+      player,
+      automaticQualityPhase,
+      isTelevision = isTelevision || !selectedQuality.isAuto,
+    )
     if (selectedQuality.isStable) {
       status = "Stable mode - capped at 360p for fewer interruptions"
     }
@@ -815,7 +848,7 @@ internal fun HlsPlayerScreen(
       status = "Auto quality - holding low quality until the buffer is safe"
       delay(QUALITY_RAMP_RECHECK_MS)
     }
-    applyAutomaticQualityPhase(player, promotion.nextPhase)
+    applyAutomaticQualityPhase(player, promotion.nextPhase, isTelevision)
     automaticQualityPhase = promotion.nextPhase
   }
 
@@ -2748,6 +2781,9 @@ internal fun createHlsPlayer(
    * every title opened from Continue watching started from the beginning.
    */
   startPositionMs: Long = 0L,
+  /** Phones use a faster restart profile; televisions retain the deeper safety buffer. */
+  isTelevision: Boolean =
+    context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK),
 ): ExoPlayer {
   val bandwidthMeter = DefaultBandwidthMeter.getSingletonInstance(context)
   val trackSelector =
@@ -2761,15 +2797,16 @@ internal fun createHlsPlayer(
       ),
     )
   val mediaSource = createHlsMediaSource(context, request, subtitleOffset)
+  val bufferProfile = playbackBufferProfile(isTelevision)
   val loadControl =
     DefaultLoadControl.Builder()
       // Slow links need time rather than bytes: keep up to 75 seconds ahead, wait for a useful five
       // seconds before the first frame, and rebuild a larger cushion after any interruption.
       .setBufferDurationsMsForStreaming(
-        RELIABLE_MIN_BUFFER_MS,
-        RELIABLE_MAX_BUFFER_MS,
-        RELIABLE_START_BUFFER_MS,
-        RELIABLE_REBUFFER_MS,
+        bufferProfile.minBufferMs,
+        bufferProfile.maxBufferMs,
+        bufferProfile.startBufferMs,
+        bufferProfile.rebufferMs,
       )
       .setPrioritizeTimeOverSizeThresholdsForStreaming(true)
       .build()
@@ -2802,6 +2839,9 @@ internal fun createHlsPlayer(
         selectionBuilder
           .setMaxVideoSize(STARTUP_MAX_VIDEO_WIDTH, STARTUP_MAX_VIDEO_HEIGHT)
           .setMaxVideoBitrate(STABLE_MAX_VIDEO_BITRATE)
+        if (!isTelevision) {
+          selectionBuilder.setMaxVideoFrameRate(PHONE_AUTO_MAX_VIDEO_FRAME_RATE)
+        }
       }
       trackSelectionParameters = selectionBuilder.build()
       if (startPositionMs > 0L) setMediaSource(mediaSource, startPositionMs) else setMediaSource(mediaSource)
@@ -2845,19 +2885,36 @@ internal fun reliableHlsLoadErrorPolicy(): DefaultLoadErrorHandlingPolicy =
 
 /** Applies only a temporary ceiling; the adaptive selector remains responsible for the rendition. */
 @androidx.annotation.OptIn(UnstableApi::class)
-internal fun applyAutomaticQualityPhase(player: Player, phase: AutomaticQualityPhase) {
+internal fun applyAutomaticQualityPhase(
+  player: Player,
+  phase: AutomaticQualityPhase,
+  isTelevision: Boolean = true,
+) {
   val builder = player.trackSelectionParameters.buildUpon()
   when (phase) {
     AutomaticQualityPhase.LOW_STARTUP ->
       builder
         .setMaxVideoSize(STARTUP_MAX_VIDEO_WIDTH, STARTUP_MAX_VIDEO_HEIGHT)
         .setMaxVideoBitrate(STABLE_MAX_VIDEO_BITRATE)
+        .setMaxVideoFrameRate(if (isTelevision) Int.MAX_VALUE else PHONE_AUTO_MAX_VIDEO_FRAME_RATE)
     AutomaticQualityPhase.BALANCED ->
       builder
         .setMaxVideoSize(COMPATIBILITY_MAX_VIDEO_WIDTH, COMPATIBILITY_MAX_VIDEO_HEIGHT)
-        .setMaxVideoBitrate(Int.MAX_VALUE)
-    AutomaticQualityPhase.UNRESTRICTED ->
-      builder.clearVideoSizeConstraints().setMaxVideoBitrate(Int.MAX_VALUE)
+        .setMaxVideoBitrate(if (isTelevision) Int.MAX_VALUE else PHONE_AUTO_MAX_VIDEO_BITRATE)
+        .setMaxVideoFrameRate(if (isTelevision) Int.MAX_VALUE else PHONE_AUTO_MAX_VIDEO_FRAME_RATE)
+    AutomaticQualityPhase.UNRESTRICTED -> {
+      if (isTelevision) {
+        builder.clearVideoSizeConstraints().setMaxVideoBitrate(Int.MAX_VALUE)
+      } else {
+        // Fast access to the internet does not guarantee a streaming host can sustain its highest
+        // rendition. Keep phone Auto inside an efficient 720p/30fps envelope; fixed quality choices
+        // still clear this ceiling when the viewer explicitly asks for one.
+        builder
+          .setMaxVideoSize(PHONE_AUTO_MAX_VIDEO_WIDTH, PHONE_AUTO_MAX_VIDEO_HEIGHT)
+          .setMaxVideoBitrate(PHONE_AUTO_MAX_VIDEO_BITRATE)
+          .setMaxVideoFrameRate(PHONE_AUTO_MAX_VIDEO_FRAME_RATE)
+      }
+    }
   }
   val updatedParameters = builder.build()
   if (updatedParameters != player.trackSelectionParameters) {

@@ -443,7 +443,12 @@ class HlsPlaybackTest {
     lateinit var player: ExoPlayer
 
     instrumentation.runOnMainSync {
-      player = createHlsPlayer(instrumentation.targetContext, HlsStreamRequest(TEST_HLS_URL, emptyMap()))
+      player =
+        createHlsPlayer(
+          instrumentation.targetContext,
+          HlsStreamRequest(TEST_HLS_URL, emptyMap()),
+          isTelevision = true,
+        )
     }
 
     try {
@@ -461,6 +466,16 @@ class HlsPlaybackTest {
         assertEquals(Int.MAX_VALUE, player.trackSelectionParameters.maxVideoWidth)
         assertEquals(Int.MAX_VALUE, player.trackSelectionParameters.maxVideoHeight)
         assertEquals(Int.MAX_VALUE, player.trackSelectionParameters.maxVideoBitrate)
+
+        applyAutomaticQualityPhase(
+          player,
+          AutomaticQualityPhase.UNRESTRICTED,
+          isTelevision = false,
+        )
+        assertEquals(1280, player.trackSelectionParameters.maxVideoWidth)
+        assertEquals(720, player.trackSelectionParameters.maxVideoHeight)
+        assertEquals(3_000_000, player.trackSelectionParameters.maxVideoBitrate)
+        assertEquals(30, player.trackSelectionParameters.maxVideoFrameRate)
       }
     } finally {
       instrumentation.runOnMainSync { player.release() }
