@@ -9,7 +9,11 @@ import android.view.KeyEvent
 import androidx.media3.common.C
 import androidx.media3.common.Player
 import com.example.auroratv.data.PlaybackContext
+import com.example.auroratv.data.WatchHistoryEntry
+import com.example.auroratv.data.WatchHistoryStore
 import com.example.auroratv.home.resumeIntent
+import com.example.auroratv.ui.player.PlaybackProgressStore
+import com.example.auroratv.ui.player.playbackProgressKeyForPage
 import java.lang.ref.WeakReference
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -102,10 +106,7 @@ internal object RemoteControl {
         // Answered during the handshake, not here.
         is LinkCommand.Hello,
         is LinkCommand.Pair -> Unit
-        is LinkCommand.Play ->
-          context.applicationContext.startActivity(
-            resumeIntent(context.applicationContext, command.pageUrl)
-          )
+        is LinkCommand.Play -> receiveHandover(context.applicationContext, command)
         LinkCommand.Pause -> player?.pause()
         LinkCommand.Resume -> player?.play()
         LinkCommand.Stop -> {
@@ -129,6 +130,44 @@ internal object RemoteControl {
         is LinkCommand.SubtitleSync -> playerOptions?.nudgeSubtitleSync(command.deltaMs)
       }
     }
+  }
+
+  /**
+   * Takes a title sent from a phone and opens it.
+   *
+   * The television resumes from what it already knows about a title, so the phone's title and
+   * position are written into its own stores first. Otherwise a film watched entirely on a phone
+   * would arrive here as an unknown page and start from the beginning, which is the one thing
+   * handing it over was meant to avoid.
+   */
+  private fun receiveHandover(context: Context, command: LinkCommand.Play) {
+    val existing = WatchHistoryStore(context).find(command.pageUrl)
+    WatchHistoryStore(context)
+      .save(
+        WatchHistoryEntry(
+          pageUrl = command.pageUrl,
+          title = command.title,
+          subtitle = command.subtitle,
+          posterUrl = command.posterUrl,
+          positionMs = command.positionMs,
+          durationMs = existing?.durationMs ?: 0L,
+          completed = false,
+          updatedAtMs = System.currentTimeMillis(),
+          showId = existing?.showId,
+          seasonNumber = existing?.seasonNumber,
+          episodeNumber = existing?.episodeNumber,
+          shortForm = existing?.shortForm ?: false,
+        )
+      )
+    // The player reads its resume position from here rather than from the history.
+    PlaybackProgressStore(context)
+      .update(
+        key = playbackProgressKeyForPage(command.pageUrl),
+        positionMs = command.positionMs,
+        durationMs = existing?.durationMs ?: 0L,
+        playbackState = Player.STATE_READY,
+      )
+    context.startActivity(resumeIntent(context, command.pageUrl))
   }
 
   /** Where the television's own music volume sits, as a percentage the phone's slider can show. */

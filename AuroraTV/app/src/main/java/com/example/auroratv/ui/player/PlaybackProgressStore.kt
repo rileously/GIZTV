@@ -36,8 +36,24 @@ internal class PlaybackProgressStore(context: Context) {
   }
 }
 
+/**
+ * The same key, worked out from a catalog page alone.
+ *
+ * A title arriving from a phone has no request yet — the stream has not been found on this device —
+ * but it has the page it came from, which is exactly what the key is built from anyway.
+ */
+internal fun playbackProgressKeyForPage(pageUrl: String): String =
+  hashProgressIdentity(
+    runCatching { pageUrl.toUri().buildUpon().fragment(null).build().toString() }
+      .getOrDefault(pageUrl.substringBefore('#'))
+  )
+
 internal fun playbackProgressKey(request: HlsStreamRequest): String {
   val identity = playbackProgressIdentity(request)
+  return hashProgressIdentity(identity)
+}
+
+private fun hashProgressIdentity(identity: String): String {
   val digest = MessageDigest.getInstance("SHA-256").digest(identity.toByteArray(Charsets.UTF_8))
   return digest.joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) }
 }

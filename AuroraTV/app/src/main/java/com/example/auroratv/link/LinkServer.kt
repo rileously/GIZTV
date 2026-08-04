@@ -7,6 +7,7 @@ import android.os.Build
 import android.util.Log
 import java.io.BufferedReader
 import java.io.BufferedWriter
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import kotlinx.coroutines.CoroutineScope
@@ -75,7 +76,13 @@ internal class LinkServer(private val context: Context) {
         advertise(socket.localPort)
         Log.i(LOG_TAG, "Remote listening on ${socket.localPort}")
         while (isActive && !socket.isClosed) {
-          val client = runCatching { socket.accept() }.getOrNull() ?: break
+          // One refused handshake must not end the remote for the rest of the evening: a failed
+          // accept is only fatal when the socket itself has gone, and otherwise the next phone to
+          // knock deserves an answer.
+          val client =
+            runCatching { socket.accept() }
+              .onFailure { if (socket.isClosed) return@launch }
+              .getOrNull() ?: continue
           launch { serve(client) }
         }
       }
@@ -94,7 +101,17 @@ internal class LinkServer(private val context: Context) {
     // The fixed port first, so a phone that has only been told an address can still get in. The
     // port used last time is the next best thing, and any port at all rather than no remote.
     val preferred = (listOf(LINK_DEFAULT_PORT) + listOfNotNull(store.lastPort())).distinct()
-    preferred.forEach { port -> runCatching { return ServerSocket(port) } }
+    preferred.forEach { port ->
+      // Reusing the address matters on a relaunch: the socket the last run held lingers for a
+      // minute or so afterwards, and without this the fixed port is exactly the one not available
+      // when the app is restarted.
+      runCatching {
+        return ServerSocket().apply {
+          reuseAddress = true
+          bind(InetSocketAddress(port))
+        }
+      }
+    }
     return runCatching { ServerSocket(0) }.getOrNull()
   }
 

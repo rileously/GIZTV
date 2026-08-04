@@ -22,7 +22,20 @@ internal sealed interface LinkCommand {
   /** First thing an unpaired phone says, carrying the code being shown on the television. */
   data class Pair(val code: String, val name: String) : LinkCommand
 
-  data class Play(val pageUrl: String) : LinkCommand
+  /**
+   * Handing a title over to the television.
+   *
+   * Carries what the television needs to show it, because the title being sent is usually one the
+   * television has never seen: it was found, and watched, on the phone. The position comes with it
+   * so the picture picks up where the phone left it rather than at the beginning.
+   */
+  data class Play(
+    val pageUrl: String,
+    val title: String,
+    val subtitle: String?,
+    val posterUrl: String?,
+    val positionMs: Long,
+  ) : LinkCommand
 
   data object Pause : LinkCommand
 
@@ -99,7 +112,14 @@ internal fun LinkCommand.encode(): String {
   when (this) {
     is LinkCommand.Hello -> json.put("cmd", "hello").put("token", token).put("name", name)
     is LinkCommand.Pair -> json.put("cmd", "pair").put("code", code).put("name", name)
-    is LinkCommand.Play -> json.put("cmd", "play").put("pageUrl", pageUrl)
+    is LinkCommand.Play ->
+      json
+        .put("cmd", "play")
+        .put("pageUrl", pageUrl)
+        .put("title", title)
+        .put("subtitle", subtitle ?: JSONObject.NULL)
+        .put("posterUrl", posterUrl ?: JSONObject.NULL)
+        .put("positionMs", positionMs)
     LinkCommand.Pause -> json.put("cmd", "pause")
     LinkCommand.Resume -> json.put("cmd", "resume")
     LinkCommand.Stop -> json.put("cmd", "stop")
@@ -132,8 +152,16 @@ internal fun decodeCommand(line: String): LinkCommand? =
             code = json.optNonBlank("code") ?: return@runCatching null,
             name = json.optString("name").ifBlank { "A phone" },
           )
-        "play" ->
-          LinkCommand.Play(pageUrl = json.optNonBlank("pageUrl") ?: return@runCatching null)
+        "play" -> {
+          val pageUrl = json.optNonBlank("pageUrl") ?: return@runCatching null
+          LinkCommand.Play(
+            pageUrl = pageUrl,
+            title = json.optNonBlank("title") ?: pageUrl,
+            subtitle = json.optNonBlank("subtitle"),
+            posterUrl = json.optNonBlank("posterUrl"),
+            positionMs = json.optLong("positionMs").coerceAtLeast(0L),
+          )
+        }
         "pause" -> LinkCommand.Pause
         "resume" -> LinkCommand.Resume
         "stop" -> LinkCommand.Stop

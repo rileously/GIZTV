@@ -67,6 +67,7 @@ import com.example.auroratv.link.LinkKey
 import com.example.auroratv.link.LINK_DEFAULT_PORT
 import com.example.auroratv.link.LinkStatus
 import com.example.auroratv.link.LinkTarget
+import com.example.auroratv.link.PhoneLink
 import com.example.auroratv.link.PAIRING_CODE_LENGTH
 import com.example.auroratv.theme.AuroraMint
 import com.example.auroratv.theme.DeepSpace
@@ -87,14 +88,14 @@ private const val SKIP_MS = 10_000L
 @Composable
 internal fun RemoteScreen(onBack: () -> Unit) {
   val context = LocalContext.current
-  val client = remember { LinkClient(context) }
+  val client = remember(context) { PhoneLink.client(context) }
   val status by client.status.collectAsState()
   val found by client.found.collectAsState()
 
   DisposableEffect(client) {
     // A television this phone already knows is worth trying before making the viewer pick one.
     client.pairedTelevision()?.let(client::connect) ?: client.discover()
-    onDispose(client::disconnect)
+    onDispose {}
   }
 
   Column(

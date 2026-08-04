@@ -48,6 +48,9 @@ internal class LinkClient(private val context: Context) {
   private var connection: LinkConnection? = null
   private var job: Job? = null
 
+  /** Held until the television has let this phone in, then sent. */
+  @Volatile private var pending: LinkCommand? = null
+
   private val _status = MutableStateFlow<LinkStatus>(LinkStatus.Idle)
   val status: StateFlow<LinkStatus> = _status.asStateFlow()
 
@@ -181,7 +184,15 @@ internal class LinkClient(private val context: Context) {
             _status.value = LinkStatus.Failed(event.reason)
             break
           }
-          is LinkEvent.State -> _status.value = LinkStatus.Connected(target, event)
+          is LinkEvent.State -> {
+            _status.value = LinkStatus.Connected(target, event)
+            // The first state is the television saying the phone is in. Anything queued while it
+            // was still connecting goes now.
+            pending?.let { queued ->
+              pending = null
+              link.send(queued)
+            }
+          }
           is LinkEvent.Options -> _options.value = event
           null -> Unit
         }
@@ -197,6 +208,23 @@ internal class LinkClient(private val context: Context) {
   fun send(command: LinkCommand) {
     val link = connection ?: return
     scope.launch { link.send(command) }
+  }
+
+  /**
+   * Sends a title to the television, connecting first if this phone is not already talking to it.
+   *
+   * Returns whether there was a television to send it to at all: without one there is nothing to
+   * offer and the caller should not pretend otherwise.
+   */
+  fun playOnTelevision(command: LinkCommand.Play): Boolean {
+    if (_status.value is LinkStatus.Connected) {
+      send(command)
+      return true
+    }
+    val target = store.lastTelevision() ?: return false
+    pending = command
+    connect(target)
+    return true
   }
 
   fun disconnect() {

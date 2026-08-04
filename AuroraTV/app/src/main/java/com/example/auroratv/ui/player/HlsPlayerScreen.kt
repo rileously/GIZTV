@@ -12,6 +12,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -51,6 +52,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme as ComposeMaterialTheme
@@ -141,6 +143,8 @@ import com.example.auroratv.link.GROUP_QUALITY
 import com.example.auroratv.link.GROUP_RESIZE
 import com.example.auroratv.link.GROUP_SPEED
 import com.example.auroratv.link.GROUP_SUBTITLE
+import com.example.auroratv.link.LinkCommand
+import com.example.auroratv.link.PhoneLink
 import com.example.auroratv.link.RemoteControl
 import com.example.auroratv.link.RemoteOptionGroup
 import com.example.auroratv.link.RemoteOptionItem
@@ -514,6 +518,35 @@ internal fun HlsPlayerScreen(
     onDispose { RemoteControl.detachOptions(remoteOptions) }
   }
 
+  // Sending what is on this phone to the television. Only offered on a phone, only when a
+  // television has been paired, and only for a catalog title, since a stream found by browsing has
+  // no page the television could resolve for itself.
+  val handoverContext = request.context
+  val canHandOver =
+    !isTelevision && handoverContext != null && remember(context) { PhoneLink.hasTelevision(context) }
+  var handoverSent by remember(request) { mutableStateOf(false) }
+
+  fun handOverToTelevision() {
+    val playback = handoverContext ?: return
+    val sent =
+      PhoneLink.client(context)
+        .playOnTelevision(
+          LinkCommand.Play(
+            pageUrl = playback.pageUrl,
+            title = playback.title,
+            subtitle = playback.subtitle,
+            posterUrl = playback.posterUrl,
+            positionMs = player.currentPosition.coerceAtLeast(0L),
+          )
+        )
+    if (sent) {
+      // Stop here as it starts there, so the film is not playing in two rooms at once.
+      savePlaybackProgress()
+      player.pause()
+      handoverSent = true
+    }
+  }
+
   DisposableEffect(player, lifecycleOwner) {
     val listener =
       object : Player.Listener {
@@ -815,6 +848,16 @@ internal fun HlsPlayerScreen(
         Text("Stream unavailable", color = SoftWhite, fontWeight = FontWeight.Bold, fontSize = 22.sp)
         Text(it, color = MutedBlue, fontSize = 14.sp, modifier = Modifier.padding(top = 8.dp))
         Text("Press Back to return", color = AuroraMint, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.padding(top = 14.dp))
+      }
+    }
+
+    if (canHandOver && controlsVisible) {
+      Box(modifier = Modifier.fillMaxSize().padding(horizontal = 22.dp, vertical = 92.dp)) {
+        HandoverPill(
+          sent = handoverSent,
+          onClick = ::handOverToTelevision,
+          modifier = Modifier.align(Alignment.TopEnd),
+        )
       }
     }
 
@@ -1460,6 +1503,33 @@ private fun ModernTransportControl(
       contentDescription = null,
       tint = foreground,
       modifier = Modifier.size(size * if (prominent) .48f else .44f),
+    )
+  }
+}
+
+/** "Play on TV", and afterwards a note that it went. */
+@Composable
+private fun HandoverPill(sent: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+  Row(
+    modifier =
+      modifier
+        .background(if (sent) NightSurface else AuroraMint.copy(alpha = .92f), RoundedCornerShape(20.dp))
+        .clickable(enabled = !sent, onClick = onClick)
+        .padding(horizontal = 16.dp, vertical = 10.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Icon(
+      Icons.Filled.Tv,
+      contentDescription = null,
+      tint = if (sent) SoftWhite else DeepSpace,
+      modifier = Modifier.size(20.dp),
+    )
+    Spacer(Modifier.width(8.dp))
+    Text(
+      if (sent) "Playing on TV" else "Play on TV",
+      color = if (sent) SoftWhite else DeepSpace,
+      fontWeight = FontWeight.Bold,
+      fontSize = 13.sp,
     )
   }
 }

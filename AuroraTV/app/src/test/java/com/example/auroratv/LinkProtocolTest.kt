@@ -29,7 +29,13 @@ class LinkProtocolTest {
       listOf(
         LinkCommand.Hello(token = "abc123", name = "Pixel 8"),
         LinkCommand.Pair(code = "482913", name = "Pixel 8"),
-        LinkCommand.Play(pageUrl = "https://vidfast.pro/movie/1234"),
+        LinkCommand.Play(
+          pageUrl = "https://vidfast.pro/movie/1234",
+          title = "The Odyssey",
+          subtitle = "2026",
+          posterUrl = "https://image.tmdb.org/t/p/w300/x.jpg",
+          positionMs = 4_930_000L,
+        ),
         LinkCommand.Pause,
         LinkCommand.Resume,
         LinkCommand.Stop,
@@ -165,6 +171,23 @@ class LinkProtocolTest {
     val far = decodeCommand("""{"v":1,"cmd":"subtitleSync","deltaMs":900000}""") as LinkCommand.SubtitleSync
 
     assertEquals(60_000L, far.deltaMs)
+  }
+
+  /** A title handed over with nothing but a page still opens, named after the page. */
+  @Test
+  fun aHandoverWithoutDetailFallsBackToThePage() {
+    val bare = decodeCommand("""{"v":1,"cmd":"play","pageUrl":"https://example.com/x"}""") as LinkCommand.Play
+
+    assertEquals("https://example.com/x", bare.pageUrl)
+    assertEquals("https://example.com/x", bare.title)
+    assertEquals(0L, bare.positionMs)
+  }
+
+  @Test
+  fun aHandoverCannotArriveAtANegativePosition() {
+    val odd = decodeCommand("""{"v":1,"cmd":"play","pageUrl":"https://example.com/x","positionMs":-9}""") as LinkCommand.Play
+
+    assertEquals(0L, odd.positionMs)
   }
 
   @Test
