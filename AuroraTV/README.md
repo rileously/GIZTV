@@ -23,6 +23,7 @@ GIZTV is an Android phone and TV app built with Kotlin and Compose. It browses a
 - Tap-outside keyboard dismissal on the URL launcher
 - D-pad navigation with clear scale and outline focus feedback
 - TV timeline that also accepts touch: tap to seek, or drag to scrub with a live preview that commits on release
+- Phone player gestures: swipe vertically on the left for brightness or on the right for media volume
 - URL entry with automatic `https://` normalization and validation
 - Quick-access button for Skyflix
 - Embedded browser with Google Safe Browsing left enabled

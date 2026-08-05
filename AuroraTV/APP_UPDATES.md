@@ -45,7 +45,7 @@ The repository workflow in `../.github/workflows/release.yml` does everything el
 
 `https://github.com/OWNER/REPOSITORY/releases/latest/download/update.json`
 
-The check is quiet if the network is unavailable or the installed version is current. A newer version displays a D-pad-friendly update screen. The app downloads into its private cache, verifies the SHA-256 checksum, package name, version, and signing certificate, then opens Android's installer.
+The check is quiet if the network is unavailable or the installed version is current. A newer version displays a D-pad-friendly update screen. The app downloads into persistent private storage, verifies the SHA-256 checksum, package name, version, and signing certificate, then opens Android's installer. If the installer is dismissed, the verified APK remains available through **Install now** and is re-verified instead of downloaded again.
 
 ## Local testing with another update feed
 

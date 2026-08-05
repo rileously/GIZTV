@@ -106,6 +106,20 @@ class WatchHistoryStoreTest {
   }
 
   @Test
+  fun clear_forgetsFinishedAndUnfinishedTitles() {
+    store.record(episodeContext, positionMs = 30_000L, durationMs = 600_000L, completed = false)
+    store.markCompleted(
+      PlaybackContext(pageUrl = "https://vidfast.vc/movie/2", title = "Finished"),
+      durationMs = 600_000L,
+    )
+
+    store.clear()
+
+    assertTrue(store.all().isEmpty())
+    assertTrue(store.continueWatching().isEmpty())
+  }
+
+  @Test
   fun formatWatchTime_usesHoursOnlyWhenNeeded() {
     assertEquals("0:45", formatWatchTime(45_000L))
     assertEquals("1:30", formatWatchTime(90_000L))

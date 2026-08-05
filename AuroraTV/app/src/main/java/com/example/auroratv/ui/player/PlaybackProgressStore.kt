@@ -1,6 +1,7 @@
 package com.example.auroratv.ui.player
 
 import android.content.Context
+import androidx.core.content.edit
 import androidx.core.net.toUri
 import androidx.media3.common.C
 import androidx.media3.common.Player
@@ -33,6 +34,11 @@ internal class PlaybackProgressStore(context: Context) {
 
   fun clear(key: String) {
     preferences.edit().remove(key).apply()
+  }
+
+  /** Forgets every saved resume point without changing any of the viewer's player settings. */
+  fun clearAll() {
+    preferences.edit { clear() }
   }
 }
 

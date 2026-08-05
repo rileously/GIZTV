@@ -49,15 +49,19 @@ internal object AppUpdateService {
     onProgress: suspend (Int?) -> Unit,
   ): Result<File> =
     withContext(Dispatchers.IO) {
-      val updateDirectory = File(context.cacheDir, "updates")
+      val updateDirectory = updateDirectory(context)
       val partialFile = File(updateDirectory, "giztv-${update.versionCode}.part.apk")
-      val finalFile = File(updateDirectory, "giztv-${update.versionCode}.apk")
+      val finalFile = verifiedUpdateFile(context, update.versionCode)
       try {
         check(updateDirectory.exists() || updateDirectory.mkdirs()) {
           "The update folder could not be created."
         }
         partialFile.delete()
-        finalFile.delete()
+
+        findVerifiedDownloadOnDisk(context, update)?.let { cachedFile ->
+          withContext(Dispatchers.Main.immediate) { onProgress(100) }
+          return@withContext Result.success(cachedFile)
+        }
 
         val connection = openConnection(update.apkUrl)
         try {
@@ -105,10 +109,59 @@ internal object AppUpdateService {
         Result.success(finalFile)
       } catch (error: Throwable) {
         partialFile.delete()
-        finalFile.delete()
         Result.failure(error)
       }
     }
+
+  /** Returns a previously downloaded update only after repeating every integrity check. */
+  suspend fun findVerifiedDownload(context: Context, update: AppUpdateInfo): File? =
+    withContext(Dispatchers.IO) { findVerifiedDownloadOnDisk(context, update) }
+
+  /** Removes APKs that have already been installed, while keeping every newer retry candidate. */
+  suspend fun removeInstalledDownloads(context: Context, currentVersionCode: Long) =
+    withContext(Dispatchers.IO) {
+      updateDirectory(context).listFiles().orEmpty().forEach { file ->
+        val savedVersion =
+          Regex("giztv-(\\d+)\\.apk").matchEntire(file.name)?.groupValues?.get(1)?.toLongOrNull()
+        if (savedVersion != null && savedVersion <= currentVersionCode) file.delete()
+        if (file.name.endsWith(".part.apk")) file.delete()
+      }
+    }
+
+  private fun findVerifiedDownloadOnDisk(context: Context, update: AppUpdateInfo): File? {
+    val file = restoreLegacyCachedUpdate(context, update.versionCode)
+    if (!file.exists()) return null
+    return runCatching {
+        check(file.isFile && file.length() in 1..MAX_APK_BYTES) {
+          "The saved update file size is invalid."
+        }
+        check(file.sha256().equals(update.sha256, ignoreCase = true)) {
+          "The saved update failed its checksum check."
+        }
+        verifyDownloadedApk(context, file, update)
+        file
+      }
+      .getOrElse {
+        file.delete()
+        null
+      }
+  }
+
+  private fun restoreLegacyCachedUpdate(context: Context, versionCode: Long): File {
+    val persistentFile = verifiedUpdateFile(context, versionCode)
+    if (persistentFile.exists()) return persistentFile
+    val legacyFile = File(File(context.cacheDir, "updates"), persistentFile.name)
+    if (!legacyFile.isFile) return persistentFile
+    return runCatching {
+        check(persistentFile.parentFile?.let { it.exists() || it.mkdirs() } == true) {
+          "The update folder could not be created."
+        }
+        legacyFile.copyTo(persistentFile, overwrite = true)
+        legacyFile.delete()
+        persistentFile
+      }
+      .getOrDefault(persistentFile)
+  }
 
   private fun readManifest(manifestUrl: String): AppUpdateInfo {
     val connection = openConnection(manifestUrl)
@@ -176,6 +229,24 @@ internal object AppUpdateService {
       "The downloaded update is not signed by this app."
     }
   }
+}
+
+private fun updateDirectory(context: Context): File = File(context.filesDir, "updates")
+
+private fun verifiedUpdateFile(context: Context, versionCode: Long): File =
+  File(updateDirectory(context), "giztv-$versionCode.apk")
+
+private fun File.sha256(): String {
+  val digest = MessageDigest.getInstance("SHA-256")
+  inputStream().buffered().use { input ->
+    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+    while (true) {
+      val count = input.read(buffer)
+      if (count == -1) break
+      digest.update(buffer, 0, count)
+    }
+  }
+  return digest.digest().toHexString()
 }
 
 internal fun parseUpdateManifest(jsonText: String): AppUpdateInfo {
