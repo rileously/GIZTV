@@ -31,8 +31,10 @@ import java.util.concurrent.atomic.AtomicReference
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.C
 import androidx.media3.common.Tracks
-import androidx.media3.extractor.text.CuesWithTiming
+import androidx.media3.common.text.CueGroup
+import androidx.media3.exoplayer.NoSampleRenderer
 import com.google.android.gms.cast.MediaTrack
+import java.util.concurrent.atomic.AtomicLong
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -563,16 +565,103 @@ class HlsPlaybackTest {
   }
 
   @Test
-  fun subtitleSync_shiftsCueTimingAndClipsAtVideoStart() {
-    val cues = CuesWithTiming(emptyList(), 2_000_000L, 1_000_000L)
+  fun subtitleSync_movesTheRendererClockImmediatelyInBothDirections() {
+    val recordingRenderer =
+      object : NoSampleRenderer() {
+        var renderedPositionUs = C.TIME_UNSET
 
-    val delayed = shiftSubtitleCues(cues, 500_000L)
-    assertEquals(2_500_000L, delayed.startTimeUs)
-    assertEquals(1_000_000L, delayed.durationUs)
+        override fun getName(): String = "Recording text renderer"
 
-    val advanced = shiftSubtitleCues(cues, -2_500_000L)
-    assertEquals(0L, advanced.startTimeUs)
-    assertEquals(500_000L, advanced.durationUs)
+        override fun render(positionUs: Long, elapsedRealtimeUs: Long) {
+          renderedPositionUs = positionUs
+        }
+      }
+    val offsetMs = AtomicLong(500L)
+    val renderer = SubtitleOffsetRenderer(recordingRenderer, offsetMs)
+
+    renderer.render(2_000_000L, 0L)
+    assertEquals(1_500_000L, recordingRenderer.renderedPositionUs)
+
+    offsetMs.set(-500L)
+    renderer.render(2_000_000L, 0L)
+    assertEquals(2_500_000L, recordingRenderer.renderedPositionUs)
+
+    offsetMs.set(MAX_SUBTITLE_SYNC_MS)
+    renderer.render(2_000_000L, 0L)
+    assertEquals(0L, recordingRenderer.renderedPositionUs)
+  }
+
+  @Test
+  fun subtitleSync_refreshesAnAlreadyLoadedCueWithoutRestartingVideo() {
+    val instrumentation = InstrumentationRegistry.getInstrumentation()
+    val ready = CountDownLatch(1)
+    val synchronizedCue = CountDownLatch(1)
+    val playbackError = AtomicReference<PlaybackException?>()
+    val visibleCueText = AtomicReference<List<String>>(emptyList())
+    val offsetMs = AtomicLong(5_000L)
+    lateinit var player: ExoPlayer
+
+    instrumentation.runOnMainSync {
+      player =
+        createHlsPlayer(
+          context = instrumentation.targetContext,
+          request =
+            HlsStreamRequest(
+              url = TEST_HLS_URL,
+              headers = emptyMap(),
+              subtitles =
+                listOf(
+                  ExternalSubtitleTrack(
+                    url = "asset:///subtitle-sync-test.vtt",
+                    label = "English",
+                    language = "en",
+                    mimeType = MimeTypes.TEXT_VTT,
+                  )
+                ),
+            ),
+          subtitleOffset = offsetMs,
+          startPositionMs = 7_000L,
+        )
+      player.addListener(
+        object : Player.Listener {
+          override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playbackState == Player.STATE_READY) ready.countDown()
+          }
+
+          override fun onCues(cueGroup: CueGroup) {
+            val text = cueGroup.cues.mapNotNull { it.text?.toString() }
+            visibleCueText.set(text)
+            if ("Subtitle sync renderer test." in text) synchronizedCue.countDown()
+          }
+
+          override fun onPlayerError(error: PlaybackException) {
+            playbackError.set(error)
+            ready.countDown()
+            synchronizedCue.countDown()
+          }
+        }
+      )
+      player.prepare()
+    }
+
+    try {
+      assertTrue("Playback did not become ready", ready.await(45, TimeUnit.SECONDS))
+      assertNull("Playback failed: ${playbackError.get()?.message}", playbackError.get())
+      assertFalse("The +5s delay was ignored", "Subtitle sync renderer test." in visibleCueText.get())
+
+      instrumentation.runOnMainSync {
+        offsetMs.set(0L)
+        refreshSubtitleRenderer(player)
+      }
+
+      assertTrue("The loaded cue did not update after sync changed", synchronizedCue.await(10, TimeUnit.SECONDS))
+      assertNull("Playback failed after subtitle refresh", playbackError.get())
+      val positionAfterRefresh = AtomicLong()
+      instrumentation.runOnMainSync { positionAfterRefresh.set(player.currentPosition) }
+      assertEquals(7_000L, positionAfterRefresh.get())
+    } finally {
+      instrumentation.runOnMainSync { player.release() }
+    }
   }
 
   @Test

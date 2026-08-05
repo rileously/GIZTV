@@ -51,6 +51,8 @@ import androidx.compose.material.icons.filled.Brightness6
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Memory
@@ -85,6 +87,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -94,6 +97,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick as semanticsOnClick
@@ -127,7 +131,6 @@ import androidx.media3.cast.RemoteCastPlayer
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
-import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
 import androidx.media3.exoplayer.drm.FrameworkMediaDrm
@@ -252,6 +255,12 @@ private const val LOCAL_STALL_RECOVERY_ATTEMPTS = 1
 private const val PLAYER_SWIPE_SENSITIVITY = 1.25f
 private const val PLAYER_GESTURE_FEEDBACK_MS = 650L
 private const val MINIMUM_WINDOW_BRIGHTNESS = .01f
+/** One row of a quick panel: the chips, and whatever has to line up beside them. */
+private val CHOICE_CHIP_HEIGHT = 36.dp
+private const val PLAYER_DOUBLE_TAP_SEEK_MS = 10_000L
+private const val PLAYER_DOUBLE_TAP_EDGE_FRACTION = .35f
+/** How long a seek burst stays on screen, and how long further taps keep winding it on. */
+private const val PLAYER_SEEK_BURST_WINDOW_MS = 800L
 internal const val STABLE_QUALITY_LABEL = "Data Saver"
 
 internal enum class PlayerSwipeControl {
@@ -285,6 +294,41 @@ internal fun playerSwipeLevel(
 
 internal fun mediaVolumeIndex(level: Float, maximumVolume: Int): Int =
   (level.coerceIn(0f, 1f) * maximumVolume.coerceAtLeast(0)).roundToInt()
+
+internal enum class PlayerSeekSide {
+  BACKWARD,
+  FORWARD,
+}
+
+/** A run of taps on one edge, shown as a single total rather than one jump after another. */
+private data class PlayerSeekBurst(
+  val side: PlayerSeekSide,
+  val totalMs: Long,
+)
+
+/**
+ * The outer edges own double-tap seeking.
+ *
+ * The middle stays a plain tap target: a thumb landing in the centre of the picture is reaching for
+ * the controls, and the play button sits there once they are up.
+ */
+internal fun playerSeekSide(tapX: Float, widthPx: Int): PlayerSeekSide? {
+  val width = widthPx.toFloat()
+  if (width <= 0f) return null
+  return when {
+    tapX < width * PLAYER_DOUBLE_TAP_EDGE_FRACTION -> PlayerSeekSide.BACKWARD
+    tapX > width * (1f - PLAYER_DOUBLE_TAP_EDGE_FRACTION) -> PlayerSeekSide.FORWARD
+    else -> null
+  }
+}
+
+/** Keeps a burst inside the media, so taps at either end settle on the edge instead of overshooting. */
+internal fun playerSeekTarget(positionMs: Long, deltaMs: Long, durationMs: Long): Long {
+  val target = (positionMs + deltaMs).coerceAtLeast(0L)
+  // Live playlists and streams still being read report no duration; there is no far end to clamp to.
+  if (durationMs <= 0L) return target
+  return target.coerceAtMost(durationMs)
+}
 
 internal enum class AutomaticQualityPhase {
   LOW_STARTUP,
@@ -466,6 +510,7 @@ internal fun HlsPlayerScreen(
   val isTelevision = remember(context) { context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK) }
   val activity = remember(context) { context.findActivity() }
   val audioManager = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+  val haptics = LocalHapticFeedback.current
   var brightnessLevel by
     remember(activity) { mutableFloatStateOf(currentPlayerBrightness(context, activity)) }
   var status by
@@ -498,10 +543,9 @@ internal fun HlsPlayerScreen(
   var subtitleSize by remember(request) { mutableStateOf(playerPreferences.subtitleSize()) }
   var subtitlePosition by remember(request) { mutableStateOf(playerPreferences.subtitlePosition()) }
   var subtitleStyle by remember(request) { mutableStateOf(playerPreferences.subtitleStyle()) }
-  // Read before the player is built, so the stream starts already in sync rather than reloading.
+  // Read before the player is built, so its text renderer starts on the saved subtitle clock.
   var subtitleOffsetMs by remember(subtitleSyncKey) { mutableLongStateOf(subtitleSyncStore.load(subtitleSyncKey)) }
-  // What the parser actually reads. Shared with the media source so a change reaches it without
-  // the source being rebuilt underneath the picture.
+  // Shared with the text renderer, which reads it on every render pass.
   val subtitleOffset = remember(subtitleSyncKey) { AtomicLong(subtitleOffsetMs) }
   var playbackSpeed by remember(request) { mutableStateOf(playerPreferences.playbackSpeed()) }
   var videoResize by remember(request) { mutableStateOf(VideoResizeOption.FIT) }
@@ -542,6 +586,7 @@ internal fun HlsPlayerScreen(
   var controlsInteractionVersion by remember { mutableIntStateOf(0) }
   var swipeFeedback by remember(request) { mutableStateOf<PlayerSwipeFeedback?>(null) }
   var swipeInProgress by remember(request) { mutableStateOf(false) }
+  var seekBurst by remember(request) { mutableStateOf<PlayerSeekBurst?>(null) }
   var playbackFinished by remember(request) { mutableStateOf(false) }
   var automaticQualityPhase by remember(player) { mutableStateOf(AutomaticQualityPhase.LOW_STARTUP) }
   var automaticQualityRecoveryLock by remember(player) { mutableStateOf(false) }
@@ -562,17 +607,40 @@ internal fun HlsPlayerScreen(
   /**
    * Moves the captions, and nothing else.
    *
-   * The parser reads the offset as it goes, so the only thing needed is to discard cues already
-   * parsed under the old one. A seek to where the picture already is does that: the segment is
-   * still buffered, so it costs a moment rather than a reload, and the video never stops.
+   * The text renderer reads the offset on every frame. Cycling only the text track clears the cue
+   * currently on screen and immediately resolves it against the new clock; video and audio keep
+   * their buffer and never restart.
    */
   fun applySubtitleOffset(offsetMs: Long) {
     // Casting hands the subtitles to the receiver, which owns their timing from then on.
-    if (isCasting || offsetMs == subtitleOffsetMs) return
-    subtitleOffsetMs = offsetMs
-    subtitleOffset.set(offsetMs)
-    subtitleSyncStore.save(subtitleSyncKey, offsetMs)
-    runCatching { player.seekTo(player.currentPosition.coerceAtLeast(0L)) }
+    val safeOffsetMs = offsetMs.coerceIn(-MAX_SUBTITLE_SYNC_MS, MAX_SUBTITLE_SYNC_MS)
+    if (isCasting || safeOffsetMs == subtitleOffsetMs) return
+    subtitleOffsetMs = safeOffsetMs
+    subtitleOffset.set(safeOffsetMs)
+    subtitleSyncStore.save(subtitleSyncKey, safeOffsetMs)
+    refreshSubtitleRenderer(localPlayer)
+  }
+
+  /**
+   * Jumps one step and folds it into the burst on screen.
+   *
+   * Each tap moves the player another step from where it already is, while the overlay counts the
+   * run as one total — so four taps read "40 seconds" rather than flashing "10" four times.
+   */
+  fun seekByTap(side: PlayerSeekSide) {
+    if (!player.isCurrentMediaItemSeekable) return
+    val stepMs =
+      if (side == PlayerSeekSide.BACKWARD) -PLAYER_DOUBLE_TAP_SEEK_MS else PLAYER_DOUBLE_TAP_SEEK_MS
+    player.seekTo(playerSeekTarget(player.currentPosition, stepMs, player.duration))
+    val running = seekBurst
+    seekBurst =
+      PlayerSeekBurst(
+        side = side,
+        totalMs =
+          if (running?.side == side) running.totalMs + PLAYER_DOUBLE_TAP_SEEK_MS
+          else PLAYER_DOUBLE_TAP_SEEK_MS,
+      )
+    controlsInteractionVersion++
   }
 
   fun savePlaybackProgress() {
@@ -629,6 +697,14 @@ internal fun HlsPlayerScreen(
       delay(PLAYER_GESTURE_FEEDBACK_MS)
       swipeFeedback = null
     }
+  }
+
+  // Every tap replaces the burst, which restarts this wait — the overlay only clears once the
+  // viewer has stopped tapping, and clearing it is what ends the run.
+  LaunchedEffect(seekBurst) {
+    if (seekBurst == null) return@LaunchedEffect
+    delay(PLAYER_SEEK_BURST_WINDOW_MS)
+    seekBurst = null
   }
 
   // Roll into the next episode once one finishes, unless the viewer steps in first.
@@ -1159,13 +1235,43 @@ internal fun HlsPlayerScreen(
         }
       }
       .focusable(enabled = !controlsVisible && !settingsOpen)
-      .pointerInput(settingsOpen, controlsVisible) {
-        detectTapGestures {
-          if (!settingsOpen) {
-            controlsVisible = !controlsVisible
-            controlsInteractionVersion++
-          }
+      .pointerInput(isTelevision, settingsOpen, player) {
+        fun toggleControls() {
+          if (settingsOpen) return
+          controlsVisible = !controlsVisible
+          controlsInteractionVersion++
         }
+
+        // A remote never double-taps, and waiting for a second tap that cannot come would only
+        // put a delay in front of every press of the select button.
+        if (isTelevision) {
+          detectTapGestures { toggleControls() }
+          return@pointerInput
+        }
+
+        detectTapGestures(
+          onDoubleTap = { offset ->
+            if (settingsOpen) return@detectTapGestures
+            val side = playerSeekSide(offset.x, size.width)
+            if (side == null) {
+              toggleControls()
+              return@detectTapGestures
+            }
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+            seekByTap(side)
+          },
+          onTap = { offset ->
+            if (settingsOpen) return@detectTapGestures
+            // Once a burst is up, single taps on the same edge keep winding it on: after the first
+            // double-tap the viewer should not have to double-tap again for every ten seconds.
+            val side = playerSeekSide(offset.x, size.width)
+            if (side != null && seekBurst?.side == side) {
+              seekByTap(side)
+              return@detectTapGestures
+            }
+            toggleControls()
+          },
+        )
       }
       .pointerInput(isTelevision, settingsOpen, inPictureInPicture, player) {
         if (isTelevision || settingsOpen || inPictureInPicture) return@pointerInput
@@ -1279,7 +1385,20 @@ internal fun HlsPlayerScreen(
                 if (feedback.control == PlayerSwipeControl.BRIGHTNESS) Alignment.CenterStart
                 else Alignment.CenterEnd
               )
-              .padding(horizontal = 28.dp),
+              .padding(horizontal = 24.dp),
+        )
+      }
+
+      // Sits under the swipe pill in the file so a burst never paints over a level being dragged.
+      seekBurst?.let { burst ->
+        PlayerSeekBurstOverlay(
+          burst = burst,
+          modifier =
+            Modifier.align(
+                if (burst.side == PlayerSeekSide.BACKWARD) Alignment.CenterStart
+                else Alignment.CenterEnd
+              )
+              .fillMaxWidth(PLAYER_DOUBLE_TAP_EDGE_FRACTION),
         )
       }
     }
@@ -1441,31 +1560,61 @@ private fun PlayerSwipeFeedbackOverlay(
       level == 0f -> Icons.AutoMirrored.Filled.VolumeOff
       else -> Icons.AutoMirrored.Filled.VolumeUp
     }
+  // Standing up rather than lying down: the bar fills the way the thumb is moving, so the gesture
+  // and the readout point the same direction.
+  val shape = RoundedCornerShape(28.dp)
   Column(
     modifier =
-      modifier.width(164.dp).clip(RoundedCornerShape(18.dp))
+      modifier.width(56.dp).clip(shape)
         .background(Color.Black.copy(alpha = .82f))
-        .border(1.dp, SoftWhite.copy(alpha = .2f), RoundedCornerShape(18.dp))
+        .border(1.dp, SoftWhite.copy(alpha = .2f), shape)
         .semantics { contentDescription = "$label $percentage percent" }
-        .padding(horizontal = 18.dp, vertical = 16.dp),
+        .padding(horizontal = 10.dp, vertical = 16.dp),
+    horizontalAlignment = Alignment.CenterHorizontally,
   ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-      Icon(icon, contentDescription = null, tint = AuroraMint, modifier = Modifier.size(23.dp))
-      Spacer(Modifier.width(9.dp))
-      Text(label, color = SoftWhite, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-      Spacer(Modifier.weight(1f))
-      Text("$percentage%", color = AuroraMint, fontWeight = FontWeight.Black, fontSize = 13.sp)
-    }
+    Text("$percentage%", color = AuroraMint, fontWeight = FontWeight.Black, fontSize = 12.sp)
     Spacer(Modifier.height(12.dp))
     Box(
       modifier =
-        Modifier.fillMaxWidth().height(5.dp).clip(RoundedCornerShape(3.dp))
-          .background(SoftWhite.copy(alpha = .18f))
+        Modifier.width(6.dp).height(124.dp).clip(RoundedCornerShape(3.dp))
+          .background(SoftWhite.copy(alpha = .18f)),
+      contentAlignment = Alignment.BottomCenter,
     ) {
       Box(
-        Modifier.fillMaxWidth(level).fillMaxHeight().background(AuroraMint)
+        Modifier.fillMaxWidth().fillMaxHeight(level).clip(RoundedCornerShape(3.dp))
+          .background(AuroraMint)
       )
     }
+    Spacer(Modifier.height(12.dp))
+    Icon(icon, contentDescription = null, tint = AuroraMint, modifier = Modifier.size(22.dp))
+  }
+}
+
+@Composable
+private fun PlayerSeekBurstOverlay(burst: PlayerSeekBurst, modifier: Modifier = Modifier) {
+  val backward = burst.side == PlayerSeekSide.BACKWARD
+  val label = "${burst.totalMs / 1_000L} seconds"
+  // A half-round wash off the edge it was tapped on, so the side that moved is unmistakable.
+  val shape =
+    if (backward) RoundedCornerShape(topEnd = 360.dp, bottomEnd = 360.dp)
+    else RoundedCornerShape(topStart = 360.dp, bottomStart = 360.dp)
+  Column(
+    modifier =
+      modifier.fillMaxHeight().clip(shape).background(Color.Black.copy(alpha = .36f))
+        .semantics {
+          contentDescription = if (backward) "Rewound $label" else "Forward $label"
+        },
+    horizontalAlignment = Alignment.CenterHorizontally,
+    verticalArrangement = Arrangement.Center,
+  ) {
+    Icon(
+      if (backward) Icons.Filled.FastRewind else Icons.Filled.FastForward,
+      contentDescription = null,
+      tint = SoftWhite,
+      modifier = Modifier.size(40.dp),
+    )
+    Spacer(Modifier.height(8.dp))
+    Text(label, color = SoftWhite, fontWeight = FontWeight.Bold, fontSize = 14.sp)
   }
 }
 
@@ -2224,39 +2373,72 @@ private fun SubtitleSyncMiniOverlay(
     delay(100L)
     runCatching { firstChoiceFocus.requestFocus() }
   }
-  // The state was being said three times over — as a heading, as a sentence, and as a figure — in a
-  // panel twice the height it needed. It is said once now, beside the title.
-  PlayerQuickPanel(
-    title = "Subtitle sync",
-    description = if (isCasting) "The receiver owns the timing while casting" else subtitleSyncHeadline(offsetMs),
-    onClose = onClose,
-  ) {
-    if (isCasting) return@PlayerQuickPanel
+  // Nudging the captions means watching them, so this one keeps out of the picture: a single pill
+  // wide enough for its own buttons, no dimming scrim, and no heading repeating what the readout
+  // already says. The full-width panel it used to borrow covered the band the subtitles sit in.
+  Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
     Row(
-      modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-      horizontalArrangement = Arrangement.spacedBy(8.dp),
+      modifier =
+        Modifier
+          // Clear of the transport row underneath, so both are usable at once.
+          .padding(bottom = 104.dp, start = 20.dp, end = 20.dp)
+          .clip(RoundedCornerShape(26.dp))
+          .background(NightSurface.copy(alpha = .96f))
+          .border(1.dp, SoftWhite.copy(alpha = .16f), RoundedCornerShape(26.dp))
+          // Only bites on a narrow upright screen; in landscape the pill wraps its own buttons.
+          .horizontalScroll(rememberScrollState())
+          .padding(horizontal = 10.dp, vertical = 8.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(7.dp),
     ) {
-      SettingsChoiceChip(
-        label = "Earlier ½s",
-        selected = false,
-        onClick = { onOffsetSelected(adjustSubtitleSync(offsetMs, -500L)) },
-        modifier = Modifier.focusRequester(firstChoiceFocus),
+      Icon(
+        Icons.Filled.ClosedCaption,
+        contentDescription = "Subtitle sync",
+        tint = AuroraMint,
+        modifier = Modifier.size(20.dp),
       )
-      SettingsChoiceChip(
-        label = "Earlier a touch",
-        selected = false,
-        onClick = { onOffsetSelected(adjustSubtitleSync(offsetMs, -100L)) },
+      Text(
+        if (isCasting) "The receiver owns the timing while casting" else subtitleSyncHeadline(offsetMs),
+        color = SoftWhite,
+        fontWeight = FontWeight.Bold,
+        fontSize = 12.sp,
+        maxLines = 1,
+        softWrap = false,
       )
-      SettingsChoiceChip(label = "In sync", selected = offsetMs == 0L, onClick = { onOffsetSelected(0L) })
-      SettingsChoiceChip(
-        label = "Later a touch",
-        selected = false,
-        onClick = { onOffsetSelected(adjustSubtitleSync(offsetMs, 100L)) },
-      )
-      SettingsChoiceChip(
-        label = "Later ½s",
-        selected = false,
-        onClick = { onOffsetSelected(adjustSubtitleSync(offsetMs, 500L)) },
+      if (!isCasting) {
+        Spacer(Modifier.width(3.dp))
+        SettingsChoiceChip(
+          label = "-0.5s",
+          selected = false,
+          onClick = { onOffsetSelected(adjustSubtitleSync(offsetMs, -500L)) },
+          modifier = Modifier.focusRequester(firstChoiceFocus),
+        )
+        SettingsChoiceChip(
+          label = "-0.1s",
+          selected = false,
+          onClick = { onOffsetSelected(adjustSubtitleSync(offsetMs, -100L)) },
+        )
+        SettingsChoiceChip(
+          label = "+0.1s",
+          selected = false,
+          onClick = { onOffsetSelected(adjustSubtitleSync(offsetMs, 100L)) },
+        )
+        SettingsChoiceChip(
+          label = "+0.5s",
+          selected = false,
+          onClick = { onOffsetSelected(adjustSubtitleSync(offsetMs, 500L)) },
+        )
+        // Nothing to undo while the captions are already on the source timing.
+        if (offsetMs != 0L) {
+          SettingsChoiceChip(label = "Reset", selected = false, onClick = { onOffsetSelected(0L) })
+        }
+      }
+      ModernTransportControl(
+        icon = Icons.Filled.Close,
+        label = "Close subtitle sync",
+        size = 34.dp,
+        onClick = onClose,
+        onInteraction = {},
       )
     }
   }
@@ -2303,25 +2485,26 @@ private fun PlayerControlDialogOverlay(
 
   val firstChoiceFocus = remember(dialog) { FocusRequester() }
   val playbackSpeeds = listOf(.75f, 1f, 1.25f, 1.5f)
+  // The same word and icon as the button that opened it, so the pill reads as that button unfolding.
   val title =
     when (dialog) {
       PlayerControlDialog.SUBTITLES -> "Subtitles"
       PlayerControlDialog.SUBTITLE_SYNC -> "Subtitle sync"
-      PlayerControlDialog.AUDIO -> "Audio track"
-      PlayerControlDialog.QUALITY -> "Video quality"
-      PlayerControlDialog.PICTURE -> "Picture size"
-      PlayerControlDialog.SPEED -> "Playback speed"
-      PlayerControlDialog.DECODER -> "TV compatibility"
+      PlayerControlDialog.AUDIO -> "Audio"
+      PlayerControlDialog.QUALITY -> "Quality"
+      PlayerControlDialog.PICTURE -> "Picture"
+      PlayerControlDialog.SPEED -> "Speed"
+      PlayerControlDialog.DECODER -> "Decoder"
     }
-  val description =
+  val icon =
     when (dialog) {
-      PlayerControlDialog.SUBTITLES -> "Choose any detected subtitle track and its appearance"
-      PlayerControlDialog.SUBTITLE_SYNC -> "Match captions to the spoken line"
-      PlayerControlDialog.AUDIO -> "Choose the language or audio mix"
-      PlayerControlDialog.QUALITY -> "Auto adapts; Data Saver uses the lowest available quality"
-      PlayerControlDialog.PICTURE -> "Fit shows the complete picture without cropping"
-      PlayerControlDialog.SPEED -> "Change how quickly the video plays"
-      PlayerControlDialog.DECODER -> "Use compatibility mode only when video decoding fails"
+      PlayerControlDialog.SUBTITLES -> Icons.Filled.ClosedCaption
+      PlayerControlDialog.SUBTITLE_SYNC -> Icons.Filled.ClosedCaption
+      PlayerControlDialog.AUDIO -> Icons.AutoMirrored.Filled.VolumeUp
+      PlayerControlDialog.QUALITY -> Icons.Filled.HighQuality
+      PlayerControlDialog.PICTURE -> Icons.Filled.AspectRatio
+      PlayerControlDialog.SPEED -> Icons.Filled.Speed
+      PlayerControlDialog.DECODER -> Icons.Filled.Memory
     }
 
   LaunchedEffect(dialog) {
@@ -2329,10 +2512,11 @@ private fun PlayerControlDialogOverlay(
     runCatching { firstChoiceFocus.requestFocus() }
   }
 
-  PlayerQuickPanel(title = title, description = description, onClose = onClose) {
+  PlayerQuickPanel(icon = icon, title = title, onClose = onClose) {
         when (dialog) {
           PlayerControlDialog.SUBTITLES -> {
-            DialogOptionList(
+            DialogChoiceSection(
+              title = "Track",
               options = subtitleOptions.map { it.label },
               selected = selectedSubtitle.label,
               onSelected = { label -> subtitleOptions.firstOrNull { it.label == label }?.let(onSubtitleSelected) },
@@ -2398,48 +2582,60 @@ private fun PlayerControlDialogOverlay(
 }
 
 /**
- * A settings panel that sits on the film rather than in front of it.
+ * A settings pill that sits on the film rather than in front of it.
  *
  * These were full-height sheets in the middle of the screen with their choices stacked down the
- * page, so changing the audio track meant losing sight of what you were changing it for. This one
- * is only as tall as it needs to be, sits just above the row of buttons it belongs to, and lays its
- * choices out along a line where a pad can run through them.
+ * page, so changing the audio track meant losing sight of what you were changing it for. Then they
+ * became a bar the full width of the picture, which three short chips never needed and which dimmed
+ * the film behind a scrim to hold all that empty space. This one is as wide as its own buttons and
+ * no wider, leaves the picture alone, and lays its choices out along a line a pad can run through.
+ *
+ * The heading is an icon and one word — the same icon as the button that opened it. The sentence
+ * that used to sit beside it described what the choices below already say.
  */
 @Composable
 private fun PlayerQuickPanel(
+  icon: ImageVector,
   title: String,
-  description: String,
   onClose: () -> Unit,
   content: @Composable ColumnScope.() -> Unit,
 ) {
-  BoxWithConstraints(
-    modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = .18f)),
-    contentAlignment = Alignment.BottomCenter,
-  ) {
-    val panelWidth = minOf(maxWidth - 40.dp, 1_020.dp)
-    Column(
+  BoxWithConstraints(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+    Row(
       modifier =
-        Modifier.width(panelWidth)
-          .heightIn(max = maxHeight * .5f)
+        Modifier.widthIn(max = maxWidth - 32.dp)
           // Clear of the transport row underneath, so both are usable at once.
           .padding(bottom = 104.dp)
-          .clip(RoundedCornerShape(22.dp))
+          .clip(RoundedCornerShape(26.dp))
           .background(NightSurface.copy(alpha = .96f))
-          .border(1.dp, SoftWhite.copy(alpha = .16f), RoundedCornerShape(22.dp))
-          .padding(horizontal = 18.dp, vertical = 14.dp),
-      verticalArrangement = Arrangement.spacedBy(10.dp),
+          .border(1.dp, SoftWhite.copy(alpha = .16f), RoundedCornerShape(26.dp))
+          .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+      // Level with the first line of choices. Centred, they floated at the mid-point of a pill four
+      // rows tall and read as belonging to nothing in particular.
+      verticalAlignment = Alignment.Top,
+      horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-      Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(title, color = SoftWhite, fontWeight = FontWeight.Black, fontSize = 17.sp, maxLines = 1)
-        Spacer(Modifier.width(12.dp))
+      Row(
+        modifier = Modifier.height(CHOICE_CHIP_HEIGHT),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(9.dp),
+      ) {
+        Icon(icon, contentDescription = null, tint = AuroraMint, modifier = Modifier.size(20.dp))
         Text(
-          description,
-          color = AuroraMint,
-          fontSize = 11.sp,
+          title,
+          color = SoftWhite,
+          fontWeight = FontWeight.Bold,
+          fontSize = 12.sp,
           maxLines = 1,
           softWrap = false,
-          modifier = Modifier.weight(1f),
         )
+      }
+      Column(
+        modifier = Modifier.weight(1f, fill = false),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        content = content,
+      )
+      Box(modifier = Modifier.height(CHOICE_CHIP_HEIGHT), contentAlignment = Alignment.Center) {
         ModernTransportControl(
           icon = Icons.Filled.Close,
           label = "Close $title",
@@ -2448,11 +2644,6 @@ private fun PlayerQuickPanel(
           onInteraction = {},
         )
       }
-      Column(
-        modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-        content = content,
-      )
     }
   }
 }
@@ -2464,12 +2655,47 @@ private fun DialogOptionList(
   onSelected: (String) -> Unit,
   firstChoiceModifier: Modifier,
 ) {
-  // Along a line rather than down the page: four speeds stacked vertically filled a screen for no
-  // reason, and a row of them is one press from end to end.
+  DialogChoiceSection(
+    title = null,
+    options = options,
+    selected = selected,
+    onSelected = onSelected,
+    firstChoiceModifier = firstChoiceModifier,
+  )
+}
+
+/**
+ * One group of choices on a single line, with its name at the left.
+ *
+ * Each group used to be a boxed card of its own, stacked down a scrolling column — which put the
+ * subtitles' size, position and style below the fold of a panel that showed no sign there was
+ * anything under it. Four labelled lines fit in the space one of those cards took.
+ */
+@Composable
+private fun DialogChoiceSection(
+  title: String?,
+  options: List<String>,
+  selected: String,
+  onSelected: (String) -> Unit,
+  firstChoiceModifier: Modifier = Modifier,
+) {
   Row(
-    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-    horizontalArrangement = Arrangement.spacedBy(8.dp),
+    modifier = Modifier.horizontalScroll(rememberScrollState()),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(7.dp),
   ) {
+    title?.let {
+      Text(
+        it.uppercase(Locale.ENGLISH),
+        color = AuroraMint,
+        fontWeight = FontWeight.Black,
+        fontSize = 10.sp,
+        maxLines = 1,
+        softWrap = false,
+        // A shared minimum keeps the groups' chips lined up under one another.
+        modifier = Modifier.widthIn(min = 56.dp),
+      )
+    }
     options.forEachIndexed { index, option ->
       SettingsChoiceChip(
         label = option,
@@ -2477,80 +2703,6 @@ private fun DialogOptionList(
         onClick = { onSelected(option) },
         modifier = if (index == 0) firstChoiceModifier else Modifier,
       )
-    }
-  }
-}
-
-@Composable
-private fun DialogOption(
-  label: String,
-  selected: Boolean,
-  onClick: () -> Unit,
-  modifier: Modifier = Modifier,
-) {
-  var focused by remember { mutableStateOf(false) }
-  val background =
-    when {
-      focused -> SoftWhite
-      selected -> AuroraMint.copy(alpha = .94f)
-      else -> DeepSpace.copy(alpha = .72f)
-    }
-  val foreground = if (focused || selected) DeepSpace else SoftWhite
-  Row(
-    modifier =
-      modifier.fillMaxWidth().height(52.dp).clip(RoundedCornerShape(15.dp)).background(background)
-        .border(2.dp, if (focused) AuroraBlue else SoftWhite.copy(alpha = .10f), RoundedCornerShape(15.dp))
-        .onFocusChanged { focused = it.isFocused }
-        .onKeyEvent { event ->
-          if (
-            event.type == KeyEventType.KeyDown && event.nativeKeyEvent.repeatCount == 0 &&
-              (event.key == Key.DirectionCenter || event.key == Key.Enter || event.key == Key.NumPadEnter)
-          ) {
-            onClick()
-            true
-          } else {
-            false
-          }
-        }
-        .focusable()
-        .pointerInput(onClick) { detectTapGestures { onClick() } }
-        .semantics {
-          role = Role.RadioButton
-          this.selected = selected
-          semanticsOnClick {
-            onClick()
-            true
-          }
-        }
-        .padding(horizontal = 16.dp),
-    verticalAlignment = Alignment.CenterVertically,
-  ) {
-    Text(label, color = foreground, fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = Modifier.weight(1f))
-    if (selected) Icon(Icons.Filled.Check, contentDescription = "Selected", tint = DeepSpace, modifier = Modifier.size(20.dp))
-  }
-}
-
-@Composable
-private fun DialogChoiceSection(
-  title: String,
-  options: List<String>,
-  selected: String,
-  onSelected: (String) -> Unit,
-) {
-  Column(
-    modifier =
-      Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
-        .background(DeepSpace.copy(alpha = .62f)).padding(horizontal = 14.dp, vertical = 12.dp),
-    verticalArrangement = Arrangement.spacedBy(9.dp),
-  ) {
-    Text(title.uppercase(Locale.ENGLISH), color = AuroraMint, fontWeight = FontWeight.Black, fontSize = 11.sp)
-    Row(
-      modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-      horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-      options.forEach { option ->
-        SettingsChoiceChip(label = option, selected = option == selected, onClick = { onSelected(option) })
-      }
     }
   }
 }
@@ -2777,7 +2929,7 @@ private fun SettingsChoiceChip(
   val foreground = if (focused || selected) DeepSpace else SoftWhite
   Box(
     modifier =
-      modifier.height(36.dp).clip(RoundedCornerShape(9.dp)).background(background)
+      modifier.height(CHOICE_CHIP_HEIGHT).clip(RoundedCornerShape(9.dp)).background(background)
         .border(2.dp, if (focused) AuroraBlue else Color.Transparent, RoundedCornerShape(9.dp))
         .onFocusChanged { focused = it.isFocused }
         .onKeyEvent { event ->
@@ -2838,7 +2990,15 @@ private fun subtitleSyncMagnitudeLabel(offsetMs: Long): String =
   "${kotlin.math.abs(offsetMs) / 1_000f}s"
 
 internal fun adjustSubtitleSync(offsetMs: Long, deltaMs: Long): Long =
-  (offsetMs + deltaMs).coerceIn(-10_000L, 10_000L)
+  (offsetMs + deltaMs).coerceIn(-MAX_SUBTITLE_SYNC_MS, MAX_SUBTITLE_SYNC_MS)
+
+/** Re-selects only text so the cue already on screen is recalculated against the new clock. */
+internal fun refreshSubtitleRenderer(player: Player) {
+  val selectedParameters = player.trackSelectionParameters
+  player.trackSelectionParameters =
+    selectedParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+  player.trackSelectionParameters = selectedParameters
+}
 
 @androidx.annotation.OptIn(UnstableApi::class)
 internal fun videoQualityOptions(tracks: Tracks, compatibilityMode: Boolean): List<VideoQualityOption> {
@@ -3157,7 +3317,7 @@ internal fun createHlsPlayer(
         AUTO_QUALITY_BANDWIDTH_FRACTION,
       ),
     )
-  val mediaSource = createHlsMediaSource(context, request, subtitleOffset)
+  val mediaSource = createHlsMediaSource(context, request)
   val bufferProfile = playbackBufferProfile(isTelevision)
   val loadControl =
     DefaultLoadControl.Builder()
@@ -3172,7 +3332,7 @@ internal fun createHlsPlayer(
       .setPrioritizeTimeOverSizeThresholdsForStreaming(true)
       .build()
   val renderersFactory =
-    DefaultRenderersFactory(context)
+    OffsetSubtitleRenderersFactory(context, subtitleOffset)
       .setEnableDecoderFallback(true)
       .apply {
         if (compatibilityMode) setMediaCodecSelector(MediaCodecSelector.PREFER_SOFTWARE)
@@ -3213,8 +3373,6 @@ internal fun createHlsPlayer(
 internal fun createHlsMediaSource(
   context: android.content.Context,
   request: HlsStreamRequest,
-  /** Read as each cue is parsed, so it can be moved without this source being rebuilt. */
-  subtitleOffset: AtomicLong = AtomicLong(0L),
 ): MediaSource {
   val bandwidthMeter = DefaultBandwidthMeter.getSingletonInstance(context)
   val safeHeaders =
@@ -3237,7 +3395,6 @@ internal fun createHlsMediaSource(
   val mediaItem = createMediaItem(request)
   val mediaSourceFactory =
     DefaultMediaSourceFactory(dataSourceFactory)
-    .setSubtitleParserFactory(OffsetSubtitleParserFactory(subtitleOffset))
     .setLoadErrorHandlingPolicy(
       reliableHlsLoadErrorPolicy(
         if (request.sourceIndex < request.sourceCount - 1) {

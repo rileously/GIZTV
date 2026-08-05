@@ -15,8 +15,8 @@ internal const val GROUP_RESIZE = "resize"
 /**
  * The player's own settings, offered to whatever is holding the remote.
  *
- * The player screen owns all of this state and knows what applying a choice involves — reloading the
- * media source for a subtitle offset, writing a preference for an audio track. Rather than move any
+ * The player screen owns all of this state and knows what applying a choice involves — moving the
+ * subtitle renderer's clock, writing a preference for an audio track. Rather than move any
  * of that, the screen registers itself here and the phone's picks are handed straight back to the
  * same code the television's own dialog calls.
  */

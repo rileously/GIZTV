@@ -10,6 +10,7 @@ import com.example.auroratv.ui.streamFailureAction
 import com.example.auroratv.ui.player.AutomaticQualityPhase
 import com.example.auroratv.ui.player.HlsStreamRequest
 import com.example.auroratv.ui.player.PlayerBackAction
+import com.example.auroratv.ui.player.PlayerSeekSide
 import com.example.auroratv.ui.player.PlayerSwipeControl
 import com.example.auroratv.ui.player.ProlongedStallAction
 import com.example.auroratv.ui.player.STABLE_QUALITY_LABEL
@@ -23,6 +24,8 @@ import com.example.auroratv.ui.player.isBehindLiveWindowFailure
 import com.example.auroratv.ui.player.lowestDataVideoFormatIndex
 import com.example.auroratv.ui.player.playerBackAction
 import com.example.auroratv.ui.player.playerControllerTimeoutMs
+import com.example.auroratv.ui.player.playerSeekSide
+import com.example.auroratv.ui.player.playerSeekTarget
 import com.example.auroratv.ui.player.playerSwipeControl
 import com.example.auroratv.ui.player.playerSwipeLevel
 import com.example.auroratv.ui.player.playbackBufferProfile
@@ -110,6 +113,23 @@ class PlaybackLogicTest {
     assertEquals(1f, playerSwipeLevel(.9f, totalVerticalDragPx = -500f, heightPx = 1_000), .001f)
     assertEquals(0f, playerSwipeLevel(.1f, totalVerticalDragPx = 500f, heightPx = 1_000), .001f)
     assertEquals(8, mediaVolumeIndex(level = .5f, maximumVolume = 15))
+  }
+
+  @Test
+  fun phonePlayerDoubleTap_seeksFromTheEdgesAndLeavesTheMiddleAlone() {
+    assertEquals(PlayerSeekSide.BACKWARD, playerSeekSide(tapX = 100f, widthPx = 1_000))
+    assertEquals(PlayerSeekSide.FORWARD, playerSeekSide(tapX = 900f, widthPx = 1_000))
+    assertNull(playerSeekSide(tapX = 500f, widthPx = 1_000))
+    assertNull(playerSeekSide(tapX = 100f, widthPx = 0))
+  }
+
+  @Test
+  fun phonePlayerDoubleTap_stopsAtBothEndsOfTheMedia() {
+    assertEquals(70_000L, playerSeekTarget(positionMs = 60_000L, deltaMs = 10_000L, durationMs = 600_000L))
+    assertEquals(0L, playerSeekTarget(positionMs = 4_000L, deltaMs = -10_000L, durationMs = 600_000L))
+    assertEquals(600_000L, playerSeekTarget(positionMs = 595_000L, deltaMs = 10_000L, durationMs = 600_000L))
+    // A live stream reports no duration, so there is no far end to hold the seek back.
+    assertEquals(70_000L, playerSeekTarget(positionMs = 60_000L, deltaMs = 10_000L, durationMs = 0L))
   }
 
   @Test
