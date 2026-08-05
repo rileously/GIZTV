@@ -5,8 +5,10 @@ import androidx.media3.common.Format
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.source.BehindLiveWindowException
 import com.example.auroratv.ui.StreamFailureAction
+import com.example.auroratv.ui.nextIptvPlaybackSource
 import com.example.auroratv.ui.streamFailureAction
 import com.example.auroratv.ui.player.AutomaticQualityPhase
+import com.example.auroratv.ui.player.HlsStreamRequest
 import com.example.auroratv.ui.player.PlayerBackAction
 import com.example.auroratv.ui.player.ProlongedStallAction
 import com.example.auroratv.ui.player.STABLE_QUALITY_LABEL
@@ -138,6 +140,23 @@ class PlaybackLogicTest {
   @Test
   fun hlsLoading_retriesTransientFailuresBeforeAbandoningAStream() {
     assertEquals(6, reliableHlsLoadErrorPolicy().getMinimumLoadableRetryCount(C.DATA_TYPE_MEDIA))
+    assertEquals(2, reliableHlsLoadErrorPolicy(2).getMinimumLoadableRetryCount(C.DATA_TYPE_MEDIA))
+  }
+
+  @Test
+  fun iptvFailure_advancesThroughBackupsAndStopsAfterTheLastSource() {
+    val sources =
+      listOf(
+        HlsStreamRequest("https://primary.example/live.m3u8", emptyMap()),
+        HlsStreamRequest("https://backup.example/live.m3u8", emptyMap()),
+      )
+
+    assertEquals(1, nextIptvPlaybackSource(sources, currentIndex = 0)?.first)
+    assertEquals(
+      "https://backup.example/live.m3u8",
+      nextIptvPlaybackSource(sources, currentIndex = 0)?.second?.url,
+    )
+    assertNull(nextIptvPlaybackSource(sources, currentIndex = 1))
   }
 
   @Test

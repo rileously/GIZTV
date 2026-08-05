@@ -26,6 +26,8 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -34,7 +36,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,7 +54,9 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -73,10 +76,18 @@ import com.example.auroratv.ui.catalog.TmdbArtwork
 import com.example.auroratv.ui.catalog.remoteFocusNavigation
 import kotlinx.coroutines.launch
 
+internal data class IptvBrowseState(
+  val selectedCategory: String = ALL_IPTV_CHANNELS,
+  val selectedGroup: String = ALL_IPTV_GROUPS,
+  val query: String = "",
+)
+
 @Composable
 internal fun IptvScreen(
   onPlay: (IptvChannel) -> Unit,
   onBack: () -> Unit,
+  browseState: IptvBrowseState,
+  onBrowseStateChanged: (IptvBrowseState) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -85,15 +96,17 @@ internal fun IptvScreen(
   val keyboardController = LocalSoftwareKeyboardController.current
   val backFocusRequester = remember { FocusRequester() }
   val reloadFocusRequester = remember { FocusRequester() }
-  val chipFocusRequester = remember { FocusRequester() }
+  val categoryFocusRequester = remember { FocusRequester() }
+  val groupFocusRequester = remember { FocusRequester() }
   val searchFieldFocusRequester = remember { FocusRequester() }
   val searchButtonFocusRequester = remember { FocusRequester() }
   val gridFocusRequester = remember { FocusRequester() }
   val gridState = rememberLazyGridState()
 
   var playlist by remember { mutableStateOf<IptvPlaylist?>(null) }
-  var selectedGroup by rememberSaveable { mutableStateOf(ALL_IPTV_CHANNELS) }
-  var query by rememberSaveable { mutableStateOf("") }
+  val selectedCategory = browseState.selectedCategory
+  val selectedGroup = browseState.selectedGroup
+  val query = browseState.query
   var loading by remember { mutableStateOf(true) }
   var errorMessage by remember { mutableStateOf<String?>(null) }
 
@@ -131,11 +144,22 @@ internal fun IptvScreen(
   }
 
   val channels = playlist?.channels.orEmpty()
-  val groups = remember(channels) { iptvGroups(channels) }
-  val activeGroup = selectedGroup.takeIf(groups::contains) ?: ALL_IPTV_CHANNELS
-  val visible = remember(channels, activeGroup, query) { visibleIptvChannels(channels, activeGroup, query) }
+  val categories = remember(channels) { iptvCategories(channels) }
+  val activeCategory = selectedCategory.takeIf { selected -> categories.any { it.label == selected } }
+    ?: ALL_IPTV_CHANNELS
+  val groups = remember(channels, activeCategory) { iptvGroupsForCategory(channels, activeCategory) }
+  val activeGroup = selectedGroup.takeIf(groups::contains) ?: ALL_IPTV_GROUPS
+  val searching = query.isNotBlank()
+  val visible =
+    remember(channels, activeCategory, activeGroup, query) {
+      if (query.isNotBlank()) {
+        visibleIptvChannels(channels, category = null, group = null, query = query)
+      } else {
+        visibleIptvChannels(channels, activeCategory, activeGroup, query)
+      }
+    }
 
-  LaunchedEffect(activeGroup, query, loading) {
+  LaunchedEffect(activeCategory, activeGroup, query, loading) {
     if (!loading && gridState.layoutInfo.totalItemsCount > 0) gridState.scrollToItem(0)
   }
 
@@ -152,6 +176,9 @@ internal fun IptvScreen(
   ) {
     val narrow = maxWidth < 600.dp
     val compact = maxHeight < 600.dp
+    val showGroupFilters = activeCategory != ALL_IPTV_CHANNELS && groups.size > 2
+    val categoryDownRequester = if (showGroupFilters) groupFocusRequester else searchFieldFocusRequester
+    val searchUpRequester = if (showGroupFilters) groupFocusRequester else categoryFocusRequester
     val bodyFocusRequester = gridFocusRequester.takeIf { visible.isNotEmpty() }
     Column(
       modifier =
@@ -165,7 +192,7 @@ internal fun IptvScreen(
         Spacer(Modifier.width(11.dp))
         Column {
           Text(
-            "IPTV",
+            "LIVE TV",
             color = SoftWhite,
             fontWeight = FontWeight.Black,
             letterSpacing = 2.5.sp,
@@ -173,7 +200,7 @@ internal fun IptvScreen(
           )
           if (!narrow && channels.isNotEmpty()) {
             Text(
-              "${channels.size} channels · ${groups.size - 1} groups",
+              "${channels.size} channels · ${categories.size - 1} clear categories",
               color = AuroraMint.copy(alpha = .8f),
               fontWeight = FontWeight.Bold,
               fontSize = 9.sp,
@@ -188,7 +215,7 @@ internal fun IptvScreen(
             modifier =
               Modifier.focusRequester(reloadFocusRequester).focusProperties {
                 right = backFocusRequester
-                down = chipFocusRequester
+                down = categoryFocusRequester
               },
           )
           CatalogButton(
@@ -197,24 +224,47 @@ internal fun IptvScreen(
             modifier =
               Modifier.focusRequester(backFocusRequester).focusProperties {
                 left = reloadFocusRequester
-                down = chipFocusRequester
+                down = categoryFocusRequester
               },
           )
         }
       }
       Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
 
-      if (groups.isNotEmpty()) {
+      IptvCategoryStrip(
+        categories = categories,
+        selectedCategory = activeCategory,
+        onSelect = { category ->
+          onBrowseStateChanged(
+            browseState.copy(
+              selectedCategory = category.label,
+              selectedGroup = ALL_IPTV_GROUPS,
+              query = "",
+            )
+          )
+        },
+        firstCategoryFocusRequester = categoryFocusRequester,
+        up = backFocusRequester,
+        down = categoryDownRequester,
+        compact = compact,
+      )
+      Spacer(Modifier.height(if (compact) 7.dp else 10.dp))
+
+      if (showGroupFilters) {
         ChipRow(
           labels = groups,
           selectedIndex = groups.indexOf(activeGroup),
           onSelect = { index ->
-            selectedGroup = groups.getOrNull(index) ?: ALL_IPTV_CHANNELS
-            query = ""
+            onBrowseStateChanged(
+              browseState.copy(
+                selectedGroup = groups.getOrNull(index) ?: ALL_IPTV_GROUPS,
+                query = "",
+              )
+            )
           },
-          firstChipFocusRequester = chipFocusRequester,
+          firstChipFocusRequester = groupFocusRequester,
           semanticsRole = Role.Tab,
-          up = backFocusRequester,
+          up = categoryFocusRequester,
           down = searchFieldFocusRequester,
           compactChips = true,
           modifier = Modifier.horizontalScroll(rememberScrollState()),
@@ -229,26 +279,26 @@ internal fun IptvScreen(
       ) {
         CatalogSearchField(
           value = query,
-          placeholder = "Search channels or groups…",
-          onValueChanged = { query = it },
+          placeholder = "Search all channels…",
+          onValueChanged = { onBrowseStateChanged(browseState.copy(query = it)) },
           onSearch = ::runSearch,
           modifier =
             Modifier.weight(1f).focusRequester(searchFieldFocusRequester).focusProperties {
-              up = chipFocusRequester
+              up = searchUpRequester
               right = searchButtonFocusRequester
               down = bodyFocusRequester ?: FocusRequester.Default
-            }.remoteFocusNavigation(up = chipFocusRequester, down = bodyFocusRequester),
+            }.remoteFocusNavigation(up = searchUpRequester, down = bodyFocusRequester),
         )
         CatalogButton(
           label = "Search",
           onClick = ::runSearch,
           modifier =
             Modifier.focusRequester(searchButtonFocusRequester).focusProperties {
-              up = chipFocusRequester
+              up = searchUpRequester
               left = searchFieldFocusRequester
               down = bodyFocusRequester ?: FocusRequester.Default
             }.remoteFocusNavigation(
-              up = chipFocusRequester,
+              up = searchUpRequester,
               left = searchFieldFocusRequester,
               down = bodyFocusRequester,
             ),
@@ -270,8 +320,10 @@ internal fun IptvScreen(
           StatusPanel(
             message =
               if (query.isNotBlank()) "No channels match “${query.trim()}”."
-              else "There are no channels in this group.",
+              else "There are no channels in this category.",
             modifier = Modifier.weight(1f),
+            actionLabel = if (query.isNotBlank()) "Clear search" else "All channels",
+            onAction = { onBrowseStateChanged(IptvBrowseState()) },
           )
         else ->
           LazyVerticalGrid(
@@ -286,7 +338,11 @@ internal fun IptvScreen(
               Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                   Text(
-                    if (query.isNotBlank()) "Results for “${query.trim()}”" else activeGroup,
+                    when {
+                      searching -> "Results for “${query.trim()}”"
+                      activeGroup != ALL_IPTV_GROUPS -> activeGroup
+                      else -> activeCategory
+                    },
                     color = SoftWhite,
                     fontWeight = FontWeight.Black,
                     fontSize = if (narrow) 17.sp else 19.sp,
@@ -318,11 +374,137 @@ internal fun IptvScreen(
 }
 
 @Composable
+private fun IptvCategoryStrip(
+  categories: List<IptvCategory>,
+  selectedCategory: String,
+  onSelect: (IptvCategory) -> Unit,
+  firstCategoryFocusRequester: FocusRequester,
+  up: FocusRequester,
+  down: FocusRequester,
+  compact: Boolean,
+) {
+  Column {
+    Text(
+      "Browse categories",
+      color = MutedBlue,
+      fontWeight = FontWeight.Bold,
+      fontSize = 10.sp,
+      letterSpacing = .7.sp,
+    )
+    Spacer(Modifier.height(5.dp))
+    LazyRow(
+      modifier = Modifier.fillMaxWidth().focusGroup(),
+      horizontalArrangement = Arrangement.spacedBy(9.dp),
+      contentPadding = PaddingValues(horizontal = 2.dp, vertical = 2.dp),
+    ) {
+      itemsIndexed(categories, key = { _, category -> category.label }) { _, category ->
+        IptvCategoryCard(
+          category = category,
+          selected = category.label == selectedCategory,
+          onClick = { onSelect(category) },
+          compact = compact,
+          modifier =
+            Modifier.then(
+                if (category.label == selectedCategory) Modifier.focusRequester(firstCategoryFocusRequester)
+                else Modifier
+              )
+              .focusProperties {
+                this.up = up
+                this.down = down
+              },
+        )
+      }
+    }
+  }
+}
+
+@Composable
+private fun IptvCategoryCard(
+  category: IptvCategory,
+  selected: Boolean,
+  onClick: () -> Unit,
+  compact: Boolean,
+  modifier: Modifier = Modifier,
+) {
+  var focused by remember { mutableStateOf(false) }
+  val accent = iptvCategoryAccent(category.label)
+  val scale by animateFloatAsState(if (focused) 1.04f else 1f, label = "IPTV category focus")
+  val container by
+    animateColorAsState(
+      when {
+        selected -> accent.copy(alpha = .24f)
+        focused -> SoftWhite.copy(alpha = .12f)
+        else -> NightSurface.copy(alpha = .9f)
+      },
+      label = "IPTV category background",
+    )
+  val outline by
+    animateColorAsState(
+      if (focused || selected) accent else SoftWhite.copy(alpha = .08f),
+      label = "IPTV category outline",
+    )
+  Column(
+    modifier =
+      modifier.width(if (compact) 132.dp else 150.dp).height(if (compact) 56.dp else 64.dp)
+        .testTag("iptv-category:${category.label}")
+        .graphicsLayer { scaleX = scale; scaleY = scale }
+        .clip(RoundedCornerShape(14.dp)).background(container)
+        .border(if (focused) 3.dp else 1.dp, outline, RoundedCornerShape(14.dp))
+        .onFocusChanged { focused = it.isFocused }.clickable(onClick = onClick)
+        .semantics {
+          role = Role.Tab
+          this.selected = selected
+          contentDescription = "${category.label}, ${category.channelCount} channels"
+        }
+        .padding(horizontal = 12.dp, vertical = if (compact) 7.dp else 9.dp),
+    verticalArrangement = Arrangement.Center,
+  ) {
+    Text(
+      category.label,
+      color = if (selected) SoftWhite else SoftWhite.copy(alpha = .92f),
+      fontWeight = FontWeight.Black,
+      fontSize = if (compact) 11.sp else 12.sp,
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis,
+    )
+    Spacer(Modifier.height(2.dp))
+    Text(
+      "${category.channelCount} channels",
+      color = accent,
+      fontWeight = FontWeight.Bold,
+      fontSize = 9.sp,
+      maxLines = 1,
+    )
+  }
+}
+
+private fun iptvCategoryAccent(category: String): Color =
+  when (category) {
+    IPTV_CATEGORY_SPORTS -> Color(0xFF59E6A8)
+    IPTV_CATEGORY_NEWS -> Color(0xFF64B5FF)
+    IPTV_CATEGORY_MOVIES -> Color(0xFFC19BFF)
+    IPTV_CATEGORY_ENTERTAINMENT -> Color(0xFFFFA86B)
+    IPTV_CATEGORY_KIDS -> Color(0xFFFF7DB5)
+    IPTV_CATEGORY_MUSIC -> Color(0xFF8ED9FF)
+    IPTV_CATEGORY_KNOWLEDGE -> Color(0xFFFFD166)
+    IPTV_CATEGORY_FAITH -> Color(0xFF75D8C7)
+    IPTV_CATEGORY_REGIONAL -> Color(0xFF9EB7FF)
+    else -> AuroraMint
+  }
+
+@Composable
 private fun IptvChannelCard(
   channel: IptvChannel,
   onClick: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
+  val category = remember(channel) { iptvCategoryFor(channel) }
+  val sourceCount = remember(channel) { channel.playbackSources.size }
+  val channelContext =
+    remember(channel, category) {
+      if (channel.group.equals(category, ignoreCase = true)) channel.group
+      else "$category · ${channel.group}"
+    }
   var focused by remember { mutableStateOf(false) }
   val scale by animateFloatAsState(if (focused) 1.035f else 1f, label = "channel focus scale")
   val outline by
@@ -332,22 +514,23 @@ private fun IptvChannelCard(
     )
   Row(
     modifier =
-      modifier.height(92.dp).graphicsLayer { scaleX = scale; scaleY = scale }
+      modifier.height(98.dp).graphicsLayer { scaleX = scale; scaleY = scale }
         .clip(RoundedCornerShape(14.dp)).background(NightSurface)
         .border(if (focused) 3.dp else 1.dp, outline, RoundedCornerShape(14.dp))
         .onFocusChanged { focused = it.isFocused }.clickable(onClick = onClick)
         .semantics {
           role = Role.Button
-          contentDescription = "Watch ${channel.name}, ${channel.group}, ${channel.formatLabel}"
+          contentDescription =
+            "Watch ${channel.name}, ${channel.group}, ${channel.formatLabel}, $sourceCount source${if (sourceCount == 1) "" else "s"}"
         }
-        .padding(10.dp),
+        .padding(11.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
     TmdbArtwork(
       url = channel.logoUrl,
       contentDescription = "",
       compact = true,
-      modifier = Modifier.size(70.dp).clip(RoundedCornerShape(10.dp)),
+      modifier = Modifier.size(74.dp).clip(RoundedCornerShape(11.dp)),
     )
     Spacer(Modifier.width(12.dp))
     Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
@@ -363,7 +546,7 @@ private fun IptvChannelCard(
       Spacer(Modifier.height(5.dp))
       Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
-          channel.group,
+          channelContext,
           color = MutedBlue,
           fontSize = 10.sp,
           maxLines = 1,
@@ -372,7 +555,7 @@ private fun IptvChannelCard(
         )
         Spacer(Modifier.width(8.dp))
         Text(
-          channel.formatLabel,
+          "LIVE · ${channel.formatLabel}" + if (sourceCount > 1) " · $sourceCount links" else "",
           color = AuroraMint,
           fontWeight = FontWeight.Black,
           fontSize = 9.sp,

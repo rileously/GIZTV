@@ -5,7 +5,11 @@ import androidx.media3.common.MimeTypes
 import com.example.auroratv.ui.player.HlsStreamRequest
 import com.example.auroratv.ui.player.StreamDrmConfiguration
 import com.example.auroratv.ui.player.StreamDrmScheme
+import java.io.File
 import java.io.Reader
+import java.io.StringReader
+import java.net.HttpURLConnection
+import java.net.URL
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.util.Locale
@@ -14,12 +18,58 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 internal const val ALL_IPTV_CHANNELS = "All channels"
+internal const val ALL_IPTV_GROUPS = "All providers"
+internal const val IPTV_CATEGORY_SPORTS = "Sports"
+internal const val IPTV_CATEGORY_NEWS = "News"
+internal const val IPTV_CATEGORY_MOVIES = "Movies"
+internal const val IPTV_CATEGORY_ENTERTAINMENT = "Entertainment"
+internal const val IPTV_CATEGORY_KIDS = "Kids & family"
+internal const val IPTV_CATEGORY_MUSIC = "Music & radio"
+internal const val IPTV_CATEGORY_KNOWLEDGE = "Knowledge"
+internal const val IPTV_CATEGORY_FAITH = "Faith"
+internal const val IPTV_CATEGORY_REGIONAL = "Regional"
+internal const val IPTV_CATEGORY_OTHER = "Other"
 private const val DEFAULT_GROUP = "Other"
 private const val BUNDLED_PLAYLIST = "iptv/play.m3u"
+private const val REMOTE_PLAYLIST = "https://iptv-org.github.io/iptv/index.category.m3u"
+private const val PLAYLIST_CACHE_DIRECTORY = "iptv"
+private const val PLAYLIST_CACHE_FILE = "public-playlist.m3u"
+private const val PLAYLIST_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1_000L
+private const val REMOTE_CONNECT_TIMEOUT_MS = 8_000
+private const val REMOTE_READ_TIMEOUT_MS = 20_000
+private const val MAX_REMOTE_PLAYLIST_CHARS = 8 * 1024 * 1024
+private const val MIN_REMOTE_CHANNELS = 1_000
+private const val MAX_PLAYBACK_SOURCES = 6
+
+private val IPTV_CATEGORY_ORDER =
+  listOf(
+    IPTV_CATEGORY_SPORTS,
+    IPTV_CATEGORY_NEWS,
+    IPTV_CATEGORY_MOVIES,
+    IPTV_CATEGORY_ENTERTAINMENT,
+    IPTV_CATEGORY_KIDS,
+    IPTV_CATEGORY_MUSIC,
+    IPTV_CATEGORY_KNOWLEDGE,
+    IPTV_CATEGORY_FAITH,
+    IPTV_CATEGORY_REGIONAL,
+    IPTV_CATEGORY_OTHER,
+  )
 
 internal data class IptvPlaylist(
   val channels: List<IptvChannel>,
   val epgUrl: String? = null,
+)
+
+internal data class IptvCategory(
+  val label: String,
+  val channelCount: Int,
+)
+
+internal data class IptvStreamSource(
+  val url: String,
+  val headers: Map<String, String>,
+  val mimeType: String?,
+  val drm: StreamDrmConfiguration?,
 )
 
 internal data class IptvChannel(
@@ -32,6 +82,7 @@ internal data class IptvChannel(
   val headers: Map<String, String>,
   val mimeType: String?,
   val drm: StreamDrmConfiguration?,
+  val backupSources: List<IptvStreamSource> = emptyList(),
 ) {
   val formatLabel: String
     get() =
@@ -43,30 +94,153 @@ internal data class IptvChannel(
         else -> "LIVE"
       }
 
-  fun toPlaybackRequest(): HlsStreamRequest =
-    HlsStreamRequest(
-      url = url,
-      headers = headers,
-      sourcePageUrl = url,
-      title = name,
-      subtitle = group,
-      mimeType = mimeType,
-      drm = drm,
-      isLive = true,
-    )
+  val playbackSources: List<IptvStreamSource>
+    get() =
+      (listOf(IptvStreamSource(url, headers, mimeType, drm)) + backupSources)
+        .distinctBy { source -> source.url to source.headers }
+        .take(MAX_PLAYBACK_SOURCES)
+
+  fun toPlaybackRequest(): HlsStreamRequest = toPlaybackRequests().first()
+
+  fun toPlaybackRequests(): List<HlsStreamRequest> {
+    val sources = playbackSources
+    return sources.mapIndexed { index, source ->
+      HlsStreamRequest(
+        url = source.url,
+        headers = source.headers,
+        sourcePageUrl = source.url,
+        title = name,
+        subtitle = group,
+        mimeType = source.mimeType,
+        drm = source.drm,
+        isLive = true,
+        sourceIndex = index,
+        sourceCount = sources.size,
+      )
+    }
+  }
 }
 
 internal object IptvRepository {
   @Volatile private var cached: IptvPlaylist? = null
+  @Volatile private var cachedAtEpochMs: Long = 0L
 
   suspend fun playlist(context: Context, refresh: Boolean = false): IptvPlaylist =
     withContext(Dispatchers.IO) {
-      if (!refresh) cached?.let { return@withContext it }
-      val parsed =
-        context.assets.open(BUNDLED_PLAYLIST).bufferedReader().use(::parseIptvPlaylist)
-      cached = parsed
-      parsed
+      val now = System.currentTimeMillis()
+      if (!refresh && now - cachedAtEpochMs < PLAYLIST_CACHE_MAX_AGE_MS) {
+        cached?.let { return@withContext it }
+      }
+
+      val cacheFile = File(File(context.filesDir, PLAYLIST_CACHE_DIRECTORY), PLAYLIST_CACHE_FILE)
+      val freshDiskPlaylist =
+        cacheFile
+          .takeIf { !refresh && it.isFile && now - it.lastModified() < PLAYLIST_CACHE_MAX_AGE_MS }
+          ?.let(::parsePlaylistFile)
+      val remotePlaylist = freshDiskPlaylist ?: fetchRemotePlaylist()?.also { (_, source) -> cachePlaylist(cacheFile, source) }?.first
+      val staleDiskPlaylist = cacheFile.takeIf(File::isFile)?.let(::parsePlaylistFile)
+      val bundledPlaylist =
+        lazy {
+          context.assets.open(BUNDLED_PLAYLIST).bufferedReader().use(::parseIptvPlaylist)
+        }
+      val parsed = remotePlaylist ?: staleDiskPlaylist ?: bundledPlaylist.value
+      val resilient = parsed.withMatchingBackupSources()
+      cached = resilient
+      cachedAtEpochMs = now
+      resilient
     }
+}
+
+private fun fetchRemotePlaylist(): Pair<IptvPlaylist, String>? {
+  val connection =
+    runCatching { URL(REMOTE_PLAYLIST).openConnection() as HttpURLConnection }.getOrNull()
+      ?: return null
+  return try {
+    connection.instanceFollowRedirects = true
+    connection.connectTimeout = REMOTE_CONNECT_TIMEOUT_MS
+    connection.readTimeout = REMOTE_READ_TIMEOUT_MS
+    connection.setRequestProperty("Accept", "application/vnd.apple.mpegurl, audio/x-mpegurl, text/plain")
+    connection.setRequestProperty("User-Agent", "GIZTV/1.13 IPTV updater")
+    if (connection.responseCode !in 200..299) return null
+    val source =
+      connection.inputStream.bufferedReader(StandardCharsets.UTF_8).use(::readLimitedPlaylist)
+        ?: return null
+    val playlist = parseRemoteIptvPlaylist(source) ?: return null
+    playlist to source
+  } catch (_: Exception) {
+    null
+  } finally {
+    connection.disconnect()
+  }
+}
+
+private fun readLimitedPlaylist(reader: Reader): String? {
+  val result = StringBuilder()
+  val buffer = CharArray(16 * 1024)
+  while (true) {
+    val read = reader.read(buffer)
+    if (read < 0) break
+    if (result.length + read > MAX_REMOTE_PLAYLIST_CHARS) return null
+    result.append(buffer, 0, read)
+  }
+  return result.toString()
+}
+
+internal fun parseRemoteIptvPlaylist(
+  source: String,
+  minimumChannels: Int = MIN_REMOTE_CHANNELS,
+): IptvPlaylist? {
+  val start = source.trimStart().take(256)
+  if (!start.startsWith("#EXTM3U", ignoreCase = true) || start.contains("<html", ignoreCase = true)) {
+    return null
+  }
+  return runCatching { parseIptvPlaylist(StringReader(source)) }
+    .getOrNull()
+    ?.takeIf { it.channels.size >= minimumChannels }
+}
+
+private fun parsePlaylistFile(file: File): IptvPlaylist? =
+  runCatching {
+      file.bufferedReader(StandardCharsets.UTF_8).use(::readLimitedPlaylist)
+        ?.let(::parseRemoteIptvPlaylist)
+    }
+    .getOrNull()
+
+private fun cachePlaylist(file: File, source: String) {
+  runCatching {
+    file.parentFile?.mkdirs()
+    val temporary = File(file.parentFile, "${file.name}.new")
+    temporary.writeText(source, StandardCharsets.UTF_8)
+    if (!temporary.renameTo(file)) {
+      temporary.copyTo(file, overwrite = true)
+      temporary.delete()
+    }
+  }
+}
+
+private fun IptvPlaylist.withMatchingBackupSources(): IptvPlaylist {
+  val matchingChannels = channels.mapNotNull { channel -> channel.backupIdentity()?.let { it to channel } }.groupBy({ it.first }, { it.second })
+  return copy(
+    channels =
+      channels.map { channel ->
+        val alternatives =
+          matchingChannels[channel.backupIdentity()]
+            .orEmpty()
+            .flatMap(IptvChannel::playbackSources)
+        val sources =
+          (channel.playbackSources + alternatives)
+            .distinctBy { source -> source.url to source.headers }
+            .take(MAX_PLAYBACK_SOURCES)
+        channel.copy(backupSources = sources.drop(1))
+      }
+  )
+}
+
+private fun IptvChannel.backupIdentity(): String? {
+  val guideId = tvgId?.trim()?.substringBefore('@')?.lowercase(Locale.ENGLISH)
+  if (!guideId.isNullOrBlank()) return "guide:$guideId"
+  val normalizedName = name.trim().lowercase(Locale.ENGLISH).replace(Regex("\\s+"), " ")
+  return normalizedName.takeIf { it.length >= 5 }?.let { "name:${group.lowercase(Locale.ENGLISH)}:$it" }
 }
 
 internal fun parseIptvPlaylist(reader: Reader): IptvPlaylist {
@@ -80,7 +254,10 @@ internal fun parseIptvPlaylist(reader: Reader): IptvPlaylist {
     when {
       line.isBlank() -> Unit
       line.startsWith("#EXTM3U", ignoreCase = true) -> {
-        epgUrl = parseAttributes(line)["url-tvg"]?.takeIf(String::isNotBlank)
+        val attributes = parseAttributes(line)
+        epgUrl =
+          attributes["url-tvg"]?.takeIf(String::isNotBlank)
+            ?: attributes["x-tvg-url"]?.takeIf(String::isNotBlank)
       }
       line.startsWith("#EXTINF:", ignoreCase = true) -> {
         val comma = metadataCommaIndex(line)
@@ -114,7 +291,6 @@ internal fun parseIptvPlaylist(reader: Reader): IptvPlaylist {
       line.startsWith("#") -> Unit
       line.startsWith("http://", ignoreCase = true) || line.startsWith("https://", ignoreCase = true) -> {
         val metadata = pending
-        pending = null
         if (metadata == null || !isChannelMetadata(metadata)) return@forEachLine
         val (streamUrl, inlineHeaders) = splitUrlAndHeaders(line)
         if (!isPlayableStreamUrl(streamUrl)) return@forEachLine
@@ -128,18 +304,32 @@ internal fun parseIptvPlaylist(reader: Reader): IptvPlaylist {
           ?.let(headers::putAll)
         headers.putAll(inlineHeaders)
         val drm = parseDrm(metadata.properties)
-        channels +=
-          IptvChannel(
-            id = "iptv-${channels.size}-${metadata.tvgId.orEmpty()}",
-            name = metadata.name,
-            group = group,
-            logoUrl = metadata.logoUrl,
-            tvgId = metadata.tvgId,
+        val source =
+          IptvStreamSource(
             url = streamUrl,
             headers = headers.filterValues(String::isNotBlank),
             mimeType = streamMimeType(streamUrl, metadata.properties),
             drm = drm,
           )
+        val channelIndex = metadata.channelIndex
+        if (channelIndex == null) {
+          channels +=
+            IptvChannel(
+              id = "iptv-${channels.size}-${metadata.tvgId.orEmpty()}",
+              name = metadata.name,
+              group = group,
+              logoUrl = metadata.logoUrl,
+              tvgId = metadata.tvgId,
+              url = source.url,
+              headers = source.headers,
+              mimeType = source.mimeType,
+              drm = source.drm,
+            )
+          metadata.channelIndex = channels.lastIndex
+        } else {
+          val channel = channels[channelIndex]
+          channels[channelIndex] = channel.copy(backupSources = channel.backupSources + source)
+        }
       }
     }
   }
@@ -155,21 +345,136 @@ internal fun iptvGroups(channels: List<IptvChannel>): List<String> =
     }
   }
 
+internal fun iptvCategories(channels: List<IptvChannel>): List<IptvCategory> {
+  val counts = channels.groupingBy(::iptvCategoryFor).eachCount()
+  return buildList {
+    add(IptvCategory(ALL_IPTV_CHANNELS, channels.size))
+    IPTV_CATEGORY_ORDER.forEach { category ->
+      counts[category]?.takeIf { it > 0 }?.let { add(IptvCategory(category, it)) }
+    }
+  }
+}
+
+internal fun iptvGroupsForCategory(
+  channels: List<IptvChannel>,
+  category: String?,
+): List<String> {
+  val categoryChannels =
+    category
+      ?.takeUnless { it == ALL_IPTV_CHANNELS }
+      ?.let { selected -> channels.filter { iptvCategoryFor(it).equals(selected, ignoreCase = true) } }
+      ?: channels
+  val groups =
+    categoryChannels
+      .groupBy { it.group.lowercase(Locale.ENGLISH) }
+      .values
+      .sortedWith(
+        compareByDescending<List<IptvChannel>> { it.size }
+          .thenBy { it.first().group.lowercase(Locale.ENGLISH) }
+      )
+      .map { it.first().group }
+  return listOf(ALL_IPTV_GROUPS) + groups
+}
+
+internal fun iptvCategoryFor(channel: IptvChannel): String =
+  iptvCategoryFor(group = channel.group, channelName = channel.name)
+
+internal fun iptvCategoryFor(group: String, channelName: String = ""): String {
+  val normalizedGroup = group.trim().lowercase(Locale.ENGLISH)
+  val fallbackToName =
+    normalizedGroup.isBlank() ||
+      normalizedGroup == "other" ||
+      normalizedGroup == "others" ||
+      normalizedGroup.contains("group-title")
+  val searchable =
+    if (fallbackToName) "$normalizedGroup ${channelName.lowercase(Locale.ENGLISH)}"
+    else normalizedGroup
+  return when {
+    searchable.containsAny("sport", "fifa", "football", "cricket", "tennis") -> IPTV_CATEGORY_SPORTS
+    searchable.containsAny("news", "business", "legislative") -> IPTV_CATEGORY_NEWS
+    searchable.containsAny("kid", "animation", "cartoon", "family") -> IPTV_CATEGORY_KIDS
+    searchable.containsAny("movie", "cinema", "film", "classic") -> IPTV_CATEGORY_MOVIES
+    searchable.containsAny("music", "radio") -> IPTV_CATEGORY_MUSIC
+    searchable.containsAny(
+      "knowledge",
+      "education",
+      "educational",
+      "documentary",
+      "science",
+      "travel",
+      "weather",
+      "culture",
+      "info",
+    ) ->
+      IPTV_CATEGORY_KNOWLEDGE
+    searchable.containsAny("islam", "religion", "religious", "faith") -> IPTV_CATEGORY_FAITH
+    searchable.containsAny(
+      "entertainment",
+      "lifestyle",
+      "comedy",
+      "cooking",
+      "game show",
+      "series",
+      "shop",
+      "relax",
+    ) -> IPTV_CATEGORY_ENTERTAINMENT
+    searchable.containsAny(
+      "regional",
+      "hindi",
+      "urdu",
+      "dhivehi",
+      "indonesia",
+      "maldives",
+      "srilanka",
+      "sri lanka",
+      "turkey",
+      "korea",
+      "india",
+    ) -> IPTV_CATEGORY_REGIONAL
+    else -> IPTV_CATEGORY_OTHER
+  }
+}
+
+private fun String.containsAny(vararg candidates: String): Boolean = candidates.any(::contains)
+
 internal fun visibleIptvChannels(
   channels: List<IptvChannel>,
   group: String?,
   query: String,
+): List<IptvChannel> =
+  visibleIptvChannels(
+    channels = channels,
+    category = null,
+    group = group?.takeUnless { it == ALL_IPTV_CHANNELS },
+    query = query,
+  )
+
+internal fun visibleIptvChannels(
+  channels: List<IptvChannel>,
+  category: String?,
+  group: String?,
+  query: String,
 ): List<IptvChannel> {
-  val selected = group?.takeUnless { it == ALL_IPTV_CHANNELS }
+  val selectedCategory = category?.takeUnless { it == ALL_IPTV_CHANNELS }
+  val selectedGroup = group?.takeUnless { it == ALL_IPTV_GROUPS || it == ALL_IPTV_CHANNELS }
   val needle = query.trim()
-  return channels.filter { channel ->
-    val inGroup = selected == null || channel.group.equals(selected, ignoreCase = true)
-    val matches =
-      needle.isBlank() || channel.name.contains(needle, ignoreCase = true) ||
-        channel.group.contains(needle, ignoreCase = true) ||
-        channel.tvgId?.contains(needle, ignoreCase = true) == true
-    inGroup && matches
-  }
+  return channels
+    .filter { channel ->
+      val channelCategory = iptvCategoryFor(channel)
+      val inCategory =
+        selectedCategory == null || channelCategory.equals(selectedCategory, ignoreCase = true)
+      val inGroup = selectedGroup == null || channel.group.equals(selectedGroup, ignoreCase = true)
+      val matches =
+        needle.isBlank() || channel.name.contains(needle, ignoreCase = true) ||
+          channel.group.contains(needle, ignoreCase = true) ||
+          channelCategory.contains(needle, ignoreCase = true) ||
+          channel.tvgId?.contains(needle, ignoreCase = true) == true
+      inCategory && inGroup && matches
+    }
+    .sortedWith(
+      compareBy<IptvChannel> { it.name.lowercase(Locale.ENGLISH) }
+        .thenBy { it.group.lowercase(Locale.ENGLISH) }
+    )
 }
 
 private data class PendingChannel(
@@ -180,6 +485,7 @@ private data class PendingChannel(
   val options: MutableMap<String, String> = linkedMapOf(),
   val properties: MutableMap<String, String> = linkedMapOf(),
   val headers: MutableMap<String, String> = linkedMapOf(),
+  var channelIndex: Int? = null,
 )
 
 private val attributePattern = Regex("""([A-Za-z0-9_-]+)\s*=\s*"([^"]*)"""")
@@ -211,8 +517,12 @@ private fun isChannelMetadata(channel: PendingChannel): Boolean =
     !(channel.name.startsWith("##") && channel.name.endsWith("##"))
 
 private fun isPlayableStreamUrl(url: String): Boolean {
-  val host = runCatching { java.net.URI(url).host?.lowercase(Locale.ENGLISH) }.getOrNull().orEmpty()
-  return host !in setOf("t.me", "telegram.me", "www.telegram.me")
+  val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return false
+  val host = uri.host?.lowercase(Locale.ENGLISH).orEmpty()
+  // The manifest deliberately blocks cleartext traffic, so showing http:// entries guarantees a
+  // playback failure. Keep only TLS streams and exclude playlist promotion links.
+  return uri.scheme.equals("https", ignoreCase = true) &&
+    host !in setOf("t.me", "telegram.me", "www.telegram.me")
 }
 
 private fun splitUrlAndHeaders(line: String): Pair<String, Map<String, String>> {

@@ -2,8 +2,20 @@ package com.example.auroratv
 
 import androidx.media3.common.MimeTypes
 import com.example.auroratv.ui.iptv.ALL_IPTV_CHANNELS
+import com.example.auroratv.ui.iptv.ALL_IPTV_GROUPS
+import com.example.auroratv.ui.iptv.IPTV_CATEGORY_FAITH
+import com.example.auroratv.ui.iptv.IPTV_CATEGORY_KIDS
+import com.example.auroratv.ui.iptv.IPTV_CATEGORY_KNOWLEDGE
+import com.example.auroratv.ui.iptv.IPTV_CATEGORY_MUSIC
+import com.example.auroratv.ui.iptv.IPTV_CATEGORY_NEWS
+import com.example.auroratv.ui.iptv.IPTV_CATEGORY_REGIONAL
+import com.example.auroratv.ui.iptv.IPTV_CATEGORY_SPORTS
+import com.example.auroratv.ui.iptv.iptvCategories
+import com.example.auroratv.ui.iptv.iptvCategoryFor
 import com.example.auroratv.ui.iptv.iptvGroups
+import com.example.auroratv.ui.iptv.iptvGroupsForCategory
 import com.example.auroratv.ui.iptv.parseIptvPlaylist
+import com.example.auroratv.ui.iptv.parseRemoteIptvPlaylist
 import com.example.auroratv.ui.iptv.visibleIptvChannels
 import com.example.auroratv.ui.player.StreamDrmScheme
 import com.example.auroratv.ui.player.normalizeClearKeyLicense
@@ -21,11 +33,14 @@ class IptvPlaylistTest {
       #EXTVLCOPT:http-user-agent=Playlist Agent
       #EXTVLCOPT:http-referrer=https://portal.example/
       https://stream.example/live/index.m3u8|Origin=https%3A%2F%2Fportal.example&User-Agent=Inline%20Agent
+      https://backup.example/live/index.m3u8
       #EXTINF:-1 tvg-id="sport.one" group-title="Sports",Sport One
       #KODIPROP:inputstream.adaptive.manifest_type=mpd
       #KODIPROP:inputstream.adaptive.license_type=org.w3.clearkey
       #KODIPROP:inputstream.adaptive.license_key=00000000000000000000000000000000:11111111111111111111111111111111
       https://stream.example/sport/manifest.mpd
+      #EXTINF:-1 group-title="News",Cleartext Cannot Play
+      http://stream.example/blocked/index.m3u8
       #EXTINF:-1 group-title="Info",## GENERAL ##
       https://example.com/info.mp4
       #EXTINF:-1 group-title="Info",Telegram
@@ -46,10 +61,22 @@ class IptvPlaylistTest {
     assertEquals("Inline Agent", news.headers["User-Agent"])
     assertEquals("https://portal.example/", news.headers["Referer"])
     assertEquals("https://portal.example", news.headers["Origin"])
+    assertEquals(2, news.playbackSources.size)
+    assertEquals("https://backup.example/live/index.m3u8", news.playbackSources[1].url)
+    assertEquals(listOf(0, 1), news.toPlaybackRequests().map { it.sourceIndex })
+    assertEquals(listOf(2, 2), news.toPlaybackRequests().map { it.sourceCount })
 
     val sport = playlist.channels[1]
     assertEquals(MimeTypes.APPLICATION_MPD, sport.mimeType)
     assertEquals(StreamDrmScheme.CLEARKEY, sport.drm?.scheme)
+  }
+
+  @Test
+  fun remotePlaylistValidation_rejectsSeizureHtmlAndAcceptsRealM3u() {
+    val seizedPage = "<html><title>This domain has been seized</title></html>"
+
+    assertEquals(null, parseRemoteIptvPlaylist(seizedPage, minimumChannels = 1))
+    assertEquals(2, parseRemoteIptvPlaylist(sample, minimumChannels = 1)?.channels?.size)
   }
 
   @Test
@@ -60,6 +87,37 @@ class IptvPlaylistTest {
     assertEquals(listOf("Sport One"), visibleIptvChannels(channels, "Sports", "sport").map { it.name })
     assertTrue(visibleIptvChannels(channels, "News", "sport").isEmpty())
     assertEquals(listOf("News One HD"), visibleIptvChannels(channels, null, "NEWS.ONE").map { it.name })
+  }
+
+  @Test
+  fun categories_consolidateProviderLabelsAndKeepSubgroupsAvailable() {
+    val channels = parseIptvPlaylist(StringReader(sample)).channels
+    val categories = iptvCategories(channels)
+
+    assertEquals(listOf(ALL_IPTV_CHANNELS, IPTV_CATEGORY_SPORTS, IPTV_CATEGORY_NEWS), categories.map { it.label })
+    assertEquals(listOf(2, 1, 1), categories.map { it.channelCount })
+    assertEquals(listOf(ALL_IPTV_GROUPS, "Sports"), iptvGroupsForCategory(channels, IPTV_CATEGORY_SPORTS))
+    assertEquals(
+      listOf("Sport One"),
+      visibleIptvChannels(channels, IPTV_CATEGORY_SPORTS, ALL_IPTV_GROUPS, "").map { it.name },
+    )
+  }
+
+  @Test
+  fun categoryRules_coverTheBundledPlaylistsProviderStyles() {
+    assertEquals(IPTV_CATEGORY_SPORTS, iptvCategoryFor("HilayTV | Sports"))
+    assertEquals(IPTV_CATEGORY_SPORTS, iptvCategoryFor("FIFA World Cup 2026 Channels"))
+    assertEquals(IPTV_CATEGORY_REGIONAL, iptvCategoryFor("Maldives (IPTV) Medianet"))
+    assertEquals(IPTV_CATEGORY_REGIONAL, iptvCategoryFor("Hindi"))
+    assertEquals(IPTV_CATEGORY_KIDS, iptvCategoryFor("Kids;movies"))
+    assertEquals(IPTV_CATEGORY_MUSIC, iptvCategoryFor("HilayTV | Dhivehi Radio"))
+    assertEquals(IPTV_CATEGORY_KNOWLEDGE, iptvCategoryFor("Educational"))
+    assertEquals(IPTV_CATEGORY_KNOWLEDGE, iptvCategoryFor("Documentary"))
+    assertEquals(IPTV_CATEGORY_FAITH, iptvCategoryFor("HilayTV | Islam"))
+    assertEquals(IPTV_CATEGORY_FAITH, iptvCategoryFor("Religious"))
+    assertEquals(IPTV_CATEGORY_NEWS, iptvCategoryFor("Business"))
+    assertEquals(IPTV_CATEGORY_KIDS, iptvCategoryFor("Animation"))
+    assertEquals(IPTV_CATEGORY_NEWS, iptvCategoryFor("Other", "BBC World News"))
   }
 
   @Test

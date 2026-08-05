@@ -178,6 +178,9 @@ internal data class HlsStreamRequest(
   val isLive: Boolean = false,
   /** What the catalog knows about this title; absent for streams found by plain browsing. */
   val context: PlaybackContext? = null,
+  /** Zero-based source currently being attempted when one channel has backup stream addresses. */
+  val sourceIndex: Int = 0,
+  val sourceCount: Int = 1,
 )
 
 internal enum class StreamDrmScheme {
@@ -235,6 +238,7 @@ private const val PHONE_AUTO_MAX_VIDEO_FRAME_RATE = 30
 private const val RELIABLE_HTTP_CONNECT_TIMEOUT_MS = 20_000
 private const val RELIABLE_HTTP_READ_TIMEOUT_MS = 60_000
 private const val RELIABLE_HLS_RETRY_COUNT = 6
+private const val BACKUP_AVAILABLE_RETRY_COUNT = 2
 private const val PROLONGED_STALL_TIMEOUT_MS = 45_000L
 private const val STABLE_PLAYBACK_RESET_MS = 60_000L
 private const val LOCAL_STALL_RECOVERY_ATTEMPTS = 1
@@ -383,7 +387,7 @@ internal fun HlsPlayerScreen(
   onPrepareNext: (PlaybackContext) -> Unit = {},
   /** Said once a title has been handed to the television, so this screen can step aside. */
   onHandedOver: () -> Unit = {},
-  /** Requests a fresh resolved stream. True means the caller accepted and is leaving this screen. */
+  /** Requests another source or a fresh resolution. True means the caller accepted the retry. */
   onPlaybackFailed: () -> Boolean = { false },
   /** A full minute without interruption makes earlier failovers irrelevant again. */
   onPlaybackStable: () -> Unit = {},
@@ -419,7 +423,16 @@ internal fun HlsPlayerScreen(
     }
   val isTelevision = remember(context) { context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK) }
   val activity = remember(context) { context.findActivity() }
-  var status by remember(request.url) { mutableStateOf("Starting smoothly in low quality…") }
+  var status by
+    remember(request.url) {
+      mutableStateOf(
+        if (request.sourceIndex > 0) {
+          "Primary link failed · trying backup ${request.sourceIndex} of ${request.sourceCount - 1}…"
+        } else {
+          "Starting smoothly in low quality…"
+        }
+      )
+    }
   var subtitleStatus by remember(request) {
     mutableStateOf(
       if (request.subtitles.isEmpty()) {
@@ -842,6 +855,10 @@ internal fun HlsPlayerScreen(
               invalidPlaylist -> "The detected URL did not return a valid stream manifest. Try another server."
               decoderFailure ->
                 "This TV could not decode the video, even in compatibility mode. Try another video server."
+              request.isLive && request.sourceCount > 1 ->
+                "All ${request.sourceCount} sources for this channel are currently offline. Try Reload or another channel."
+              request.isLive ->
+                "This channel is currently offline. Try Reload for newer links or choose another channel."
               else -> playerError.localizedMessage ?: "This stream could not be played."
             }
           isVideoPlaying = false
@@ -3009,7 +3026,15 @@ internal fun createHlsMediaSource(
   val mediaSourceFactory =
     DefaultMediaSourceFactory(dataSourceFactory)
     .setSubtitleParserFactory(OffsetSubtitleParserFactory(subtitleOffset))
-    .setLoadErrorHandlingPolicy(reliableHlsLoadErrorPolicy())
+    .setLoadErrorHandlingPolicy(
+      reliableHlsLoadErrorPolicy(
+        if (request.sourceIndex < request.sourceCount - 1) {
+          BACKUP_AVAILABLE_RETRY_COUNT
+        } else {
+          RELIABLE_HLS_RETRY_COUNT
+        }
+      )
+    )
   request.drm?.inlineClearKeyResponse()?.let { keyResponse ->
     val drmSessionManager =
       DefaultDrmSessionManager.Builder()
@@ -3021,8 +3046,9 @@ internal fun createHlsMediaSource(
   return mediaSourceFactory.createMediaSource(mediaItem)
 }
 
-internal fun reliableHlsLoadErrorPolicy(): DefaultLoadErrorHandlingPolicy =
-  DefaultLoadErrorHandlingPolicy(RELIABLE_HLS_RETRY_COUNT)
+internal fun reliableHlsLoadErrorPolicy(
+  retryCount: Int = RELIABLE_HLS_RETRY_COUNT,
+): DefaultLoadErrorHandlingPolicy = DefaultLoadErrorHandlingPolicy(retryCount)
 
 /** Applies only a temporary ceiling; the adaptive selector remains responsible for the rendition. */
 @androidx.annotation.OptIn(UnstableApi::class)

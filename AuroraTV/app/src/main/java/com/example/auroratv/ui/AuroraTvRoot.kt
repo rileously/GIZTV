@@ -8,7 +8,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.DisposableEffect
@@ -35,6 +34,7 @@ import com.example.auroratv.ui.drama.ShortDrama
 import com.example.auroratv.ui.drama.ShortDramaDetailScreen
 import com.example.auroratv.ui.drama.ShortDramaScreen
 import com.example.auroratv.ui.main.AuroraTvApp
+import com.example.auroratv.ui.iptv.IptvBrowseState
 import com.example.auroratv.ui.iptv.IptvScreen
 import com.example.auroratv.ui.sports.SportsScreen
 import com.example.auroratv.ui.player.HlsPlayerScreen
@@ -65,6 +65,14 @@ internal fun streamFailureAction(
   } else {
     StreamFailureAction.SHOW_PLAYER_ERROR
   }
+
+internal fun nextIptvPlaybackSource(
+  sources: List<HlsStreamRequest>,
+  currentIndex: Int,
+): Pair<Int, HlsStreamRequest>? {
+  val nextIndex = currentIndex + 1
+  return sources.getOrNull(nextIndex)?.let { nextIndex to it }
+}
 
 private enum class Destination {
   CATALOG,
@@ -113,6 +121,9 @@ fun AuroraTvRoot(
   var streamRequest by remember {
     mutableStateOf(initialStreamUrl?.let { HlsStreamRequest(url = it, headers = emptyMap()) })
   }
+  var iptvPlaybackSources by remember { mutableStateOf<List<HlsStreamRequest>>(emptyList()) }
+  var iptvPlaybackSourceIndex by remember { mutableIntStateOf(0) }
+  var iptvBrowseState by remember { mutableStateOf(IptvBrowseState()) }
   // The next episode, being resolved behind the player while its countdown runs.
   var prefetchTarget by remember { mutableStateOf<PlaybackContext?>(null) }
   var prefetched by remember { mutableStateOf<Pair<String, HlsStreamRequest>?>(null) }
@@ -337,10 +348,14 @@ fun AuroraTvRoot(
             streamFailoverAttempts = 0
             pendingContext = null
             browserReturnDestination = Destination.IPTV
-            streamRequest = channel.toPlaybackRequest()
+            iptvPlaybackSources = channel.toPlaybackRequests()
+            iptvPlaybackSourceIndex = 0
+            streamRequest = iptvPlaybackSources.first()
             destination = Destination.PLAYER
           },
           onBack = { destination = Destination.CATALOG },
+          browseState = iptvBrowseState,
+          onBrowseStateChanged = { iptvBrowseState = it },
         )
       Destination.WEB_HOME ->
         AuroraTvApp(
@@ -386,7 +401,16 @@ fun AuroraTvRoot(
             // broken title still presents a useful error instead of loading forever.
             onPlaybackFailed = {
               if (browserReturnDestination == Destination.IPTV) {
-                false
+                val nextSource =
+                  nextIptvPlaybackSource(iptvPlaybackSources, iptvPlaybackSourceIndex)
+                if (nextSource != null) {
+                  val (nextSourceIndex, nextRequest) = nextSource
+                  iptvPlaybackSourceIndex = nextSourceIndex
+                  streamRequest = nextRequest
+                  true
+                } else {
+                  false
+                }
               } else {
                 val playbackContext = request.context
                 playbackContext?.pageUrl?.let(streamCache::forget)
