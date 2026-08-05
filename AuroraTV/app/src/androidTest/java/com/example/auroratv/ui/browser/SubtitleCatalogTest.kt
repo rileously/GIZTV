@@ -46,15 +46,28 @@ class SubtitleCatalogTest {
 
   @Test
   fun hoofootLiveMatch_isDetectedAsHlsDespiteHavingNoExtension() {
-    // A live match arrives from /ltv with no extension and an "application/text" content type, so
-    // only the host and path say it is a playlist at all.
+    // Hoofoot has used both /ltv and /gl for extensionless live playlists. Detection has to happen
+    // from the request URL, before WebView receives the response's HLS content type.
     assertTrue(isHlsUrl("https://hoofoot.ru/ltv?id=26893297"))
     assertTrue(isHlsUrl("https://www.hoofoot.ru/ltv?id=26893297"))
+    assertTrue(isHlsUrl("https://hoofoot.ru/gl?id=hd10"))
+    assertTrue(isHlsUrl("https://www.hoofoot.ru/gl?id=sporttv1"))
     // The pages around it are still pages, not streams.
     assertTrue(!isHlsUrl("https://hoofoot.ru/iptv/live-player?id=348291095"))
     assertTrue(!isHlsUrl("https://hoofoot.ru/api/main-server?id=348291095"))
-    // Another site's /ltv is not hoofoot's.
+    // Similar-looking paths and another site's endpoints are not streams.
+    assertTrue(!isHlsUrl("https://hoofoot.ru/global?id=hd10"))
     assertTrue(!isHlsUrl("https://example.com/ltv?id=26893297"))
+    assertTrue(!isHlsUrl("https://example.com/gl?id=hd10"))
+  }
+
+  @Test
+  fun youtubeEmbed_isKeptInTheWebPlayer() {
+    assertTrue(isYoutubeWebPlaybackUrl("https://www.youtube.com/embed/abcdefghijk?autoplay=1"))
+    assertTrue(isYoutubeWebPlaybackUrl("https://www.youtube-nocookie.com/embed/abcdefghijk"))
+    assertTrue(!isYoutubeWebPlaybackUrl("https://www.youtube.com/iframe_api"))
+    assertTrue(!isYoutubeWebPlaybackUrl("https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg"))
+    assertTrue(!isYoutubeWebPlaybackUrl("https://example.com/embed/abcdefghijk"))
   }
 
   @Test

@@ -3,6 +3,7 @@ package com.example.auroratv
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.Player
+import androidx.media3.exoplayer.source.BehindLiveWindowException
 import com.example.auroratv.ui.StreamFailureAction
 import com.example.auroratv.ui.streamFailureAction
 import com.example.auroratv.ui.player.AutomaticQualityPhase
@@ -15,6 +16,7 @@ import com.example.auroratv.ui.player.automaticQualityPhaseAfterBuffering
 import com.example.auroratv.ui.player.automaticQualityPromotion
 import com.example.auroratv.ui.player.dataSaverVideoFormatOrder
 import com.example.auroratv.ui.player.isHlsTrackMappingFailure
+import com.example.auroratv.ui.player.isBehindLiveWindowFailure
 import com.example.auroratv.ui.player.lowestDataVideoFormatIndex
 import com.example.auroratv.ui.player.playerBackAction
 import com.example.auroratv.ui.player.playerControllerTimeoutMs
@@ -181,6 +183,14 @@ class PlaybackLogicTest {
 
     assertTrue(isHlsTrackMappingFailure(mappingFailure))
     assertFalse(isHlsTrackMappingFailure(IllegalStateException("ordinary source failure")))
+  }
+
+  @Test
+  fun expiredLiveWindow_isRecognizedForAnAutomaticJumpToLive() {
+    val expiredWindow = RuntimeException("source failed", BehindLiveWindowException())
+
+    assertTrue(isBehindLiveWindowFailure(expiredWindow))
+    assertFalse(isBehindLiveWindowFailure(IllegalStateException("ordinary source failure")))
   }
 
   @Test

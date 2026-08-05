@@ -123,6 +123,7 @@ import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
+import androidx.media3.exoplayer.source.BehindLiveWindowException
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.trackselection.AdaptiveTrackSelection
@@ -375,19 +376,26 @@ internal fun HlsPlayerScreen(
   val playerPreferences = remember(context) { PlayerPreferencesStore(context) }
   val progressKey = remember(request) { playbackProgressKey(request) }
   val subtitleSyncKey = remember(request) { subtitleSyncKey(request) }
+  val isLiveContent = request.context?.kindLabel.equals("LIVE", ignoreCase = true)
   // Continue watching keeps its own position against the catalog page, and it is the one the
   // viewer was just shown. It stands in when the progress store has nothing under this key —
   // which is every catalog title carried over from a build that keyed them by the page the stream
   // happened to be found on.
   val savedProgressMs =
-    remember(progressKey) {
-      progressStore.load(progressKey).takeIf { it > 0L }
-        ?: request.context
-          ?.let { historyStore.find(it.pageUrl) }
-          ?.takeIf { !it.completed }
-          ?.positionMs
-          ?.coerceAtLeast(0L)
-        ?: 0L
+    remember(progressKey, isLiveContent) {
+      if (isLiveContent) {
+        // A saved offset belongs to yesterday's sliding window, not today's live edge.
+        progressStore.clear(progressKey)
+        0L
+      } else {
+        progressStore.load(progressKey).takeIf { it > 0L }
+          ?: request.context
+            ?.let { historyStore.find(it.pageUrl) }
+            ?.takeIf { !it.completed }
+            ?.positionMs
+            ?.coerceAtLeast(0L)
+          ?: 0L
+      }
     }
   val isTelevision = remember(context) { context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK) }
   val activity = remember(context) { context.findActivity() }
@@ -488,6 +496,12 @@ internal fun HlsPlayerScreen(
   }
 
   fun savePlaybackProgress() {
+    if (isLiveContent) {
+      // Live playlists slide forward. Persisting their relative position makes a later retry seek
+      // behind the window and can leave the player waiting for a manual pause/play cycle.
+      progressStore.clear(progressKey)
+      return
+    }
     progressStore.update(
       key = progressKey,
       positionMs = player.currentPosition,
@@ -757,6 +771,18 @@ internal fun HlsPlayerScreen(
 
         override fun onPlayerError(playerError: PlaybackException) {
           android.util.Log.e("AuroraHls", "Playback failed for ${request.url}", playerError)
+          if (isBehindLiveWindowFailure(playerError)) {
+            // The playlist advanced past the segment we were reading. Jump to its current default
+            // position locally; resolving the same URL again can carry the stale offset forward.
+            resumePositionMs = 0L
+            isVideoPlaying = false
+            error = null
+            status = "Live stream moved ahead - catching up..."
+            player.seekToDefaultPosition()
+            player.prepare()
+            player.play()
+            return
+          }
           if (selectedQuality.isStable && isHlsTrackMappingFailure(playerError)) {
             val nextRank = dataSaverFallbackRank + 1
             if (selectVideoQuality(player, selectedQuality, nextRank)) {
@@ -3017,6 +3043,9 @@ internal fun isHlsTrackMappingFailure(error: Throwable): Boolean =
   generateSequence(error) { it.cause }.any { cause ->
     cause.javaClass.simpleName == "SampleQueueMappingException"
   }
+
+internal fun isBehindLiveWindowFailure(error: Throwable): Boolean =
+  generateSequence(error) { it.cause }.any { cause -> cause is BehindLiveWindowException }
 
 internal fun createMediaItem(request: HlsStreamRequest): MediaItem {
   val subtitles =

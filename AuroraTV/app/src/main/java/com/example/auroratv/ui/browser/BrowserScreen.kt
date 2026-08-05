@@ -226,6 +226,33 @@ private val adCleanupScript =
   })();
   """.trimIndent()
 
+/** Makes hoofoot's YouTube controls usable in WebView as well as allowing the requested autoplay. */
+private val enableYoutubePlaybackScript =
+  """
+  (function () {
+    const frame = Array.from(document.querySelectorAll('iframe[src]')).find(node => {
+      try {
+        const url = new URL(node.src, location.href);
+        return (url.hostname === 'youtube.com' || url.hostname.endsWith('.youtube.com') ||
+          url.hostname === 'youtube-nocookie.com' || url.hostname.endsWith('.youtube-nocookie.com')) &&
+          url.pathname.startsWith('/embed/');
+      } catch (_) { return false; }
+    });
+    if (!frame) return false;
+    const url = new URL(frame.src, location.href);
+    const wanted = { autoplay: '1', enablejsapi: '1', playsinline: '1', origin: location.origin };
+    let changed = false;
+    Object.keys(wanted).forEach(key => {
+      if (url.searchParams.get(key) !== wanted[key]) {
+        url.searchParams.set(key, wanted[key]);
+        changed = true;
+      }
+    });
+    if (changed) frame.src = url.toString();
+    return true;
+  })();
+  """.trimIndent()
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 internal fun BrowserScreen(
@@ -259,8 +286,8 @@ internal fun BrowserScreen(
 
   // Time out only while opening/searching. Once a stream is found, subtitle finalization has its own
   // bounded wait and must not briefly show an error before handing off to the native player.
-  LaunchedEffect(playback, preparationAttempt, stage) {
-    if (playback == null || !stage.canTimeOut) return@LaunchedEffect
+  LaunchedEffect(playback, preparationAttempt, stage, pageRevealed) {
+    if (playback == null || pageRevealed || !stage.canTimeOut) return@LaunchedEffect
     delay(streamResolutionTimeoutMs(resolutionStore.lastSuccessMs(playback.pageUrl)))
     activeWebViewClient?.suspendStreamDispatch()
     // Most of what goes wrong here is a page that loaded badly once. Starting it over costs the
@@ -354,6 +381,16 @@ internal fun BrowserScreen(
                 },
                 onStatus = { status = it },
                 onStage = { stage = it },
+                onWebPlaybackDetected = {
+                  // YouTube is already a complete player rather than a stream Media3 can open.
+                  // Reveal hoofoot's page as soon as its embed appears instead of waiting for an
+                  // HLS request that will never exist.
+                  this@webView.settings.mediaPlaybackRequiresUserGesture = false
+                  this@webView.evaluateJavascript(enableYoutubePlaybackScript, null)
+                  preparationFailed = false
+                  pageRevealed = true
+                  status = "YouTube playback · ads blocked · Popups off"
+                },
                 onStreamDetected = { stream ->
                   // What this title actually costs to resolve, so the next attempt waits for it.
                   playback?.let {
@@ -768,6 +805,7 @@ internal class AdBlockingWebViewClient(
   private val onPageState: (String, String, Int, Boolean) -> Unit,
   private val onStatus: (String) -> Unit,
   private val onStage: (PreparationStage) -> Unit,
+  private val onWebPlaybackDetected: (() -> Unit)? = null,
   private val onStreamDetected: (HlsStreamRequest) -> Unit,
   private val onRendererGone: () -> Unit,
   /**
@@ -777,10 +815,11 @@ internal class AdBlockingWebViewClient(
    * for the video. Everything that exists to be looked at can be skipped, which is most of the
    * bytes on a page like this.
    */
-  private val resolvingOnly: Boolean = false,
+  resolvingOnly: Boolean = false,
 ) : WebViewClient() {
   private val mainHandler = Handler(Looper.getMainLooper())
   private val streamReported = AtomicBoolean(false)
+  private val webPlaybackReported = AtomicBoolean(false)
   private val streamDispatchEnabled = AtomicBoolean(true)
   private val closed = AtomicBoolean(false)
   private val blockedRequestCount = AtomicInteger(0)
@@ -788,6 +827,7 @@ internal class AdBlockingWebViewClient(
   private val subtitleCatalogFetches = AtomicInteger(0)
   private val subtitles = ConcurrentHashMap<String, ExternalSubtitleTrack>()
   private val fetchedSubtitleCatalogs = ConcurrentHashMap<String, Boolean>()
+  @Volatile private var resolvingOnly = resolvingOnly
   private val subtitleExecutor =
     Executors.newSingleThreadExecutor { runnable ->
       Thread(runnable, "AuroraSubtitleCatalog").apply { isDaemon = true }
@@ -828,6 +868,7 @@ internal class AdBlockingWebViewClient(
     pageGeneration.incrementAndGet()
     streamDispatchEnabled.set(true)
     streamReported.set(false)
+    webPlaybackReported.set(false)
     blockedRequestCount.set(0)
     subtitles.clear()
     fetchedSubtitleCatalogs.clear()
@@ -876,6 +917,18 @@ internal class AdBlockingWebViewClient(
       val blocked = blockedRequestCount.incrementAndGet()
       if (blocked == 1 || blocked % 5 == 0) mainHandler.post { onStatus("$blocked ads blocked · Popups off") }
       return emptyResponse()
+    }
+    val webPlaybackCallback = onWebPlaybackDetected
+    if (
+      webPlaybackCallback != null &&
+        isYoutubeWebPlaybackUrl(url) &&
+        webPlaybackReported.compareAndSet(false, true)
+    ) {
+      // This page is about to become visible, so its artwork and controls are no longer decorative.
+      resolvingOnly = false
+      mainHandler.post {
+        if (!closed.get()) webPlaybackCallback()
+      }
     }
     // Pictures, typefaces and stylesheets on a page nobody is looking at. The script that asks for
     // the video still runs; it simply runs without waiting for a poster to arrive first.
@@ -1147,11 +1200,22 @@ internal fun isHlsUrl(url: String): Boolean {
     return true
   }
 
-  // hoofoot hands a live match out from /ltv with no extension at all and calls it "application/
-  // text", so nothing about the URL or the response says HLS — only the host and path do. What
-  // comes back is an ordinary media playlist, and the player is told the mime type outright, so
-  // Media3 never has to guess either.
-  return (host == "hoofoot.ru" || host.endsWith(".hoofoot.ru")) && path.startsWith("/ltv")
+  // hoofoot hands live matches out from extensionless /ltv and /gl endpoints. WebView interception
+  // exposes the request URL before the response content type is available, so the host and exact
+  // path identify these ordinary media playlists. The player is told the mime type outright.
+  return (host == "hoofoot.ru" || host.endsWith(".hoofoot.ru")) &&
+    (path == "/ltv" || path == "/gl")
+}
+
+/** A complete YouTube player that must remain in WebView rather than being handed to Media3. */
+internal fun isYoutubeWebPlaybackUrl(url: String): Boolean {
+  val parsed = runCatching { url.toUri() }.getOrNull() ?: return false
+  val host = parsed.host?.lowercase().orEmpty()
+  val path = parsed.path.orEmpty().lowercase()
+  val youtubeHost =
+    host == "youtube.com" || host.endsWith(".youtube.com") ||
+      host == "youtube-nocookie.com" || host.endsWith(".youtube-nocookie.com")
+  return youtubeHost && path.startsWith("/embed/") && path.length > "/embed/".length
 }
 
 private fun isExternalSubtitleUrl(url: String): Boolean = subtitleMimeType(url) != null
