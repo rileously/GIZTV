@@ -5,7 +5,10 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.PackageManager
 import android.graphics.Color as AndroidColor
+import android.media.AudioManager
+import android.provider.Settings
 import android.view.ViewGroup
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -17,6 +20,7 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -41,7 +45,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Brightness6
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Check
@@ -62,6 +68,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -242,7 +249,42 @@ private const val BACKUP_AVAILABLE_RETRY_COUNT = 2
 private const val PROLONGED_STALL_TIMEOUT_MS = 45_000L
 private const val STABLE_PLAYBACK_RESET_MS = 60_000L
 private const val LOCAL_STALL_RECOVERY_ATTEMPTS = 1
+private const val PLAYER_SWIPE_SENSITIVITY = 1.25f
+private const val PLAYER_GESTURE_FEEDBACK_MS = 650L
+private const val MINIMUM_WINDOW_BRIGHTNESS = .01f
 internal const val STABLE_QUALITY_LABEL = "Data Saver"
+
+internal enum class PlayerSwipeControl {
+  BRIGHTNESS,
+  VOLUME,
+}
+
+private data class PlayerSwipeFeedback(
+  val control: PlayerSwipeControl,
+  val level: Float,
+)
+
+/** The half where a vertical player swipe began owns the whole gesture. */
+internal fun playerSwipeControl(startX: Float, widthPx: Int): PlayerSwipeControl =
+  if (startX < widthPx.coerceAtLeast(1) / 2f) {
+    PlayerSwipeControl.BRIGHTNESS
+  } else {
+    PlayerSwipeControl.VOLUME
+  }
+
+/** Up increases and down decreases, with one screen-height covering the useful range. */
+internal fun playerSwipeLevel(
+  startLevel: Float,
+  totalVerticalDragPx: Float,
+  heightPx: Int,
+): Float {
+  if (heightPx <= 0) return startLevel.coerceIn(0f, 1f)
+  return (startLevel - (totalVerticalDragPx / heightPx) * PLAYER_SWIPE_SENSITIVITY)
+    .coerceIn(0f, 1f)
+}
+
+internal fun mediaVolumeIndex(level: Float, maximumVolume: Int): Int =
+  (level.coerceIn(0f, 1f) * maximumVolume.coerceAtLeast(0)).roundToInt()
 
 internal enum class AutomaticQualityPhase {
   LOW_STARTUP,
@@ -423,6 +465,9 @@ internal fun HlsPlayerScreen(
     }
   val isTelevision = remember(context) { context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK) }
   val activity = remember(context) { context.findActivity() }
+  val audioManager = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+  var brightnessLevel by
+    remember(activity) { mutableFloatStateOf(currentPlayerBrightness(context, activity)) }
   var status by
     remember(request.url) {
       mutableStateOf(
@@ -495,6 +540,8 @@ internal fun HlsPlayerScreen(
   var subtitleOptions by remember(player) { mutableStateOf(listOf(SubtitleTrackOption("Auto English"), SubtitleTrackOption("Off", disabled = true))) }
   var controlsVisible by remember { mutableStateOf(true) }
   var controlsInteractionVersion by remember { mutableIntStateOf(0) }
+  var swipeFeedback by remember(request) { mutableStateOf<PlayerSwipeFeedback?>(null) }
+  var swipeInProgress by remember(request) { mutableStateOf(false) }
   var playbackFinished by remember(request) { mutableStateOf(false) }
   var automaticQualityPhase by remember(player) { mutableStateOf(AutomaticQualityPhase.LOW_STARTUP) }
   var automaticQualityRecoveryLock by remember(player) { mutableStateOf(false) }
@@ -560,6 +607,27 @@ internal fun HlsPlayerScreen(
       gizTvOrientation(isTelevision = isTelevision, playerActive = true, verticalVideo = shortForm)
     onDispose {
       activity?.requestedOrientation = gizTvOrientation(isTelevision = isTelevision, playerActive = false)
+    }
+  }
+
+  // A hardware volume press while this player is visible should target media too. Brightness is a
+  // window-only override: leaving the player restores exactly what the activity was using before.
+  DisposableEffect(activity, isTelevision) {
+    val originalVolumeStream = activity?.volumeControlStream
+    val originalBrightness = activity?.window?.attributes?.screenBrightness
+    if (!isTelevision) activity?.volumeControlStream = AudioManager.STREAM_MUSIC
+    onDispose {
+      if (!isTelevision) {
+        originalVolumeStream?.let { activity.volumeControlStream = it }
+        originalBrightness?.let { activity.setPlayerBrightness(it) }
+      }
+    }
+  }
+
+  LaunchedEffect(swipeFeedback, swipeInProgress) {
+    if (swipeFeedback != null && !swipeInProgress) {
+      delay(PLAYER_GESTURE_FEEDBACK_MS)
+      swipeFeedback = null
     }
   }
 
@@ -1099,6 +1167,53 @@ internal fun HlsPlayerScreen(
           }
         }
       }
+      .pointerInput(isTelevision, settingsOpen, inPictureInPicture, player) {
+        if (isTelevision || settingsOpen || inPictureInPicture) return@pointerInput
+
+        var activeControl: PlayerSwipeControl? = null
+        var startLevel = 0f
+        var totalDragPx = 0f
+        detectVerticalDragGestures(
+          onDragStart = { start ->
+            val control = playerSwipeControl(start.x, size.width)
+            activeControl = control
+            startLevel =
+              when (control) {
+                PlayerSwipeControl.BRIGHTNESS -> brightnessLevel
+                PlayerSwipeControl.VOLUME ->
+                  if (audioManager.isVolumeFixed) player.volume else currentMediaVolume(audioManager)
+              }
+            totalDragPx = 0f
+            swipeInProgress = true
+            swipeFeedback = activeControl?.let { PlayerSwipeFeedback(it, startLevel) }
+            controlsInteractionVersion++
+          },
+          onVerticalDrag = { change, dragAmount ->
+            val control = activeControl ?: return@detectVerticalDragGestures
+            change.consume()
+            totalDragPx += dragAmount
+            val level = playerSwipeLevel(startLevel, totalDragPx, size.height)
+            when (control) {
+              PlayerSwipeControl.BRIGHTNESS -> {
+                brightnessLevel = level
+                activity?.setPlayerBrightness(level.coerceAtLeast(MINIMUM_WINDOW_BRIGHTNESS))
+              }
+              PlayerSwipeControl.VOLUME -> {
+                setMediaVolume(audioManager, player, level)
+              }
+            }
+            swipeFeedback = PlayerSwipeFeedback(control, level)
+          },
+          onDragEnd = {
+            activeControl = null
+            swipeInProgress = false
+          },
+          onDragCancel = {
+            activeControl = null
+            swipeInProgress = false
+          },
+        )
+      }
   ) {
     AndroidView(
       factory = {
@@ -1153,6 +1268,20 @@ internal fun HlsPlayerScreen(
         onSpeed = { openSettings(PlayerControlDialog.SPEED) },
         onDecoder = { openSettings(PlayerControlDialog.DECODER) },
       )
+    }
+
+    if (!isTelevision && !inPictureInPicture) {
+      swipeFeedback?.let { feedback ->
+        PlayerSwipeFeedbackOverlay(
+          feedback = feedback,
+          modifier =
+            Modifier.align(
+                if (feedback.control == PlayerSwipeControl.BRIGHTNESS) Alignment.CenterStart
+                else Alignment.CenterEnd
+              )
+              .padding(horizontal = 28.dp),
+        )
+      }
     }
 
     // Nothing to offer when the next episode is already starting; the card would only flash.
@@ -1252,6 +1381,89 @@ internal fun HlsPlayerScreen(
           }
         },
         onClose = ::closeSettings,
+      )
+    }
+  }
+}
+
+private fun currentPlayerBrightness(context: Context, activity: Activity?): Float {
+  val windowLevel = activity?.window?.attributes?.screenBrightness ?: -1f
+  if (windowLevel >= 0f) return windowLevel.coerceIn(0f, 1f)
+  val systemLevel =
+    Settings.System.getInt(
+      context.contentResolver,
+      Settings.System.SCREEN_BRIGHTNESS,
+      128,
+    )
+  return (systemLevel / 255f).coerceIn(MINIMUM_WINDOW_BRIGHTNESS, 1f)
+}
+
+private fun Activity.setPlayerBrightness(level: Float) {
+  window.attributes =
+    window.attributes.apply {
+      screenBrightness =
+        if (level < 0f) WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        else level.coerceIn(MINIMUM_WINDOW_BRIGHTNESS, 1f)
+    }
+}
+
+private fun currentMediaVolume(audioManager: AudioManager): Float {
+  val maximum = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+  if (maximum <= 0) return 0f
+  return (audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / maximum)
+    .coerceIn(0f, 1f)
+}
+
+private fun setMediaVolume(audioManager: AudioManager, player: Player, level: Float) {
+  val safeLevel = level.coerceIn(0f, 1f)
+  if (audioManager.isVolumeFixed) {
+    player.volume = safeLevel
+    return
+  }
+  val maximum = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+  val target = mediaVolumeIndex(safeLevel, maximum)
+  if (target == audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)) return
+  runCatching { audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0) }
+    .onFailure { player.volume = safeLevel }
+}
+
+@Composable
+private fun PlayerSwipeFeedbackOverlay(
+  feedback: PlayerSwipeFeedback,
+  modifier: Modifier = Modifier,
+) {
+  val level = feedback.level.coerceIn(0f, 1f)
+  val percentage = (level * 100f).roundToInt()
+  val label = if (feedback.control == PlayerSwipeControl.BRIGHTNESS) "Brightness" else "Volume"
+  val icon =
+    when {
+      feedback.control == PlayerSwipeControl.BRIGHTNESS -> Icons.Filled.Brightness6
+      level == 0f -> Icons.AutoMirrored.Filled.VolumeOff
+      else -> Icons.AutoMirrored.Filled.VolumeUp
+    }
+  Column(
+    modifier =
+      modifier.width(164.dp).clip(RoundedCornerShape(18.dp))
+        .background(Color.Black.copy(alpha = .82f))
+        .border(1.dp, SoftWhite.copy(alpha = .2f), RoundedCornerShape(18.dp))
+        .semantics { contentDescription = "$label $percentage percent" }
+        .padding(horizontal = 18.dp, vertical = 16.dp),
+  ) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      Icon(icon, contentDescription = null, tint = AuroraMint, modifier = Modifier.size(23.dp))
+      Spacer(Modifier.width(9.dp))
+      Text(label, color = SoftWhite, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+      Spacer(Modifier.weight(1f))
+      Text("$percentage%", color = AuroraMint, fontWeight = FontWeight.Black, fontSize = 13.sp)
+    }
+    Spacer(Modifier.height(12.dp))
+    Box(
+      modifier =
+        Modifier.fillMaxWidth().height(5.dp).clip(RoundedCornerShape(3.dp))
+          .background(SoftWhite.copy(alpha = .18f))
+    ) {
+      Box(
+        Modifier.fillMaxWidth(level).fillMaxHeight().background(AuroraMint)
       )
     }
   }

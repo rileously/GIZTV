@@ -10,6 +10,7 @@ import com.example.auroratv.ui.streamFailureAction
 import com.example.auroratv.ui.player.AutomaticQualityPhase
 import com.example.auroratv.ui.player.HlsStreamRequest
 import com.example.auroratv.ui.player.PlayerBackAction
+import com.example.auroratv.ui.player.PlayerSwipeControl
 import com.example.auroratv.ui.player.ProlongedStallAction
 import com.example.auroratv.ui.player.STABLE_QUALITY_LABEL
 import com.example.auroratv.ui.player.VideoQualityOption
@@ -22,6 +23,8 @@ import com.example.auroratv.ui.player.isBehindLiveWindowFailure
 import com.example.auroratv.ui.player.lowestDataVideoFormatIndex
 import com.example.auroratv.ui.player.playerBackAction
 import com.example.auroratv.ui.player.playerControllerTimeoutMs
+import com.example.auroratv.ui.player.playerSwipeControl
+import com.example.auroratv.ui.player.playerSwipeLevel
 import com.example.auroratv.ui.player.playbackBufferProfile
 import com.example.auroratv.ui.player.prolongedStallAction
 import com.example.auroratv.ui.player.reliableHlsLoadErrorPolicy
@@ -29,6 +32,7 @@ import com.example.auroratv.ui.player.resumablePlaybackPosition
 import com.example.auroratv.ui.player.subtitleSyncDescription
 import com.example.auroratv.ui.player.subtitleSyncLabel
 import com.example.auroratv.ui.player.touchSeekPositionMs
+import com.example.auroratv.ui.player.mediaVolumeIndex
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -90,6 +94,22 @@ class PlaybackLogicTest {
   @Test
   fun controlsLinger_longerOnATelevisionThanUnderAThumb() {
     assert(playerControllerTimeoutMs(isTelevision = true) > playerControllerTimeoutMs(isTelevision = false))
+  }
+
+  @Test
+  fun phonePlayerSwipe_usesLeftForBrightnessAndRightForVolume() {
+    assertEquals(PlayerSwipeControl.BRIGHTNESS, playerSwipeControl(startX = 200f, widthPx = 1_000))
+    assertEquals(PlayerSwipeControl.VOLUME, playerSwipeControl(startX = 800f, widthPx = 1_000))
+    assertEquals(PlayerSwipeControl.VOLUME, playerSwipeControl(startX = 500f, widthPx = 1_000))
+  }
+
+  @Test
+  fun phonePlayerSwipe_upRaisesTheLevelAndClampsBothEnds() {
+    assertEquals(.75f, playerSwipeLevel(.5f, totalVerticalDragPx = -200f, heightPx = 1_000), .001f)
+    assertEquals(.25f, playerSwipeLevel(.5f, totalVerticalDragPx = 200f, heightPx = 1_000), .001f)
+    assertEquals(1f, playerSwipeLevel(.9f, totalVerticalDragPx = -500f, heightPx = 1_000), .001f)
+    assertEquals(0f, playerSwipeLevel(.1f, totalVerticalDragPx = 500f, heightPx = 1_000), .001f)
+    assertEquals(8, mediaVolumeIndex(level = .5f, maximumVolume = 15))
   }
 
   @Test

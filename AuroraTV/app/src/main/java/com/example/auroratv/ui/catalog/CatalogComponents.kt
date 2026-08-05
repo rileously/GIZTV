@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -75,6 +76,7 @@ import androidx.compose.ui.unit.Dp
 import kotlinx.coroutines.delay
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.tv.material3.Text
 import com.example.auroratv.R
 import com.example.auroratv.data.WatchHistoryEntry
@@ -592,6 +594,7 @@ internal fun Modifier.remoteFocusNavigation(
 internal fun ContinueWatchingSection(
   entries: List<WatchHistoryEntry>,
   onResume: (WatchHistoryEntry) -> Unit,
+  onClearHistory: (() -> Unit)? = null,
   firstCardFocusRequester: FocusRequester,
   up: FocusRequester,
   down: FocusRequester,
@@ -601,7 +604,7 @@ internal fun ContinueWatchingSection(
 ) {
   Column {
     Text(
-      "Continue watching",
+      if (entries.isEmpty()) "Watch history" else "Continue watching",
       color = SoftWhite,
       fontWeight = FontWeight.Black,
       fontSize = 16.sp,
@@ -631,8 +634,115 @@ internal fun ContinueWatchingSection(
             },
         )
       }
+      onClearHistory?.let { clearHistory ->
+        item(key = "clear_watch_history") {
+          ClearWatchHistoryCard(
+            onClick = clearHistory,
+            modifier =
+              (if (entries.isEmpty()) Modifier.focusRequester(firstCardFocusRequester) else Modifier)
+                .focusProperties {
+                  this.up = up
+                  this.down = if (hasGrid) down else FocusRequester.Default
+                },
+          )
+        }
+      }
     }
   }
+}
+
+/** The destructive action lives at the end of the rail, where it is reachable but not accidental. */
+@Composable
+private fun ClearWatchHistoryCard(onClick: () -> Unit, modifier: Modifier = Modifier) {
+  var focused by remember { mutableStateOf(false) }
+  val scale by animateFloatAsState(if (focused) 1.05f else 1f, label = "clear history scale")
+  val background by
+    animateColorAsState(
+      if (focused) Color(0xFFFF8A80) else NightSurface,
+      label = "clear history background",
+    )
+  val outline by
+    animateColorAsState(
+      if (focused) SoftWhite else Color(0xFFFF8A80).copy(alpha = .55f),
+      label = "clear history outline",
+    )
+  Box(
+    modifier =
+      modifier.width(184.dp).height(97.dp).graphicsLayer { scaleX = scale; scaleY = scale }
+        .clip(RoundedCornerShape(14.dp)).background(background)
+        .border(if (focused) 3.dp else 1.dp, outline, RoundedCornerShape(14.dp))
+        .onFocusChanged { focused = it.isFocused }.clickable(onClick = onClick)
+        .semantics {
+          role = Role.Button
+          contentDescription = "Clear watch history"
+        }
+        .padding(horizontal = 18.dp),
+    contentAlignment = Alignment.Center,
+  ) {
+    Text(
+      "Clear watch history",
+      color = if (focused) DeepSpace else Color(0xFFFFB4AB),
+      fontWeight = FontWeight.Black,
+      fontSize = 12.sp,
+      textAlign = TextAlign.Center,
+    )
+  }
+}
+
+/** Confirms the irreversible history reset and keeps Cancel focused first for TV remotes. */
+@Composable
+internal fun ClearWatchHistoryDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) {
+  val cancelFocusRequester = remember { FocusRequester() }
+  val clearFocusRequester = remember { FocusRequester() }
+
+  Dialog(onDismissRequest = onDismiss) {
+    Column(
+      modifier =
+        Modifier.fillMaxWidth(.9f).widthIn(max = 520.dp).clip(RoundedCornerShape(22.dp))
+          .background(NightSurface).border(1.dp, SoftWhite.copy(alpha = .16f), RoundedCornerShape(22.dp))
+          .padding(24.dp),
+    ) {
+      Text(
+        "Clear watch history?",
+        color = SoftWhite,
+        fontWeight = FontWeight.Black,
+        fontSize = 22.sp,
+      )
+      Spacer(Modifier.height(10.dp))
+      Text(
+        "This removes watched markers, recommendations, and every saved resume position. This can't be undone.",
+        color = MutedBlue,
+        fontSize = 14.sp,
+        lineHeight = 20.sp,
+      )
+      Spacer(Modifier.height(22.dp))
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        CatalogButton(
+          label = "Cancel",
+          onClick = onDismiss,
+          modifier =
+            Modifier.focusRequester(cancelFocusRequester).focusProperties {
+              right = clearFocusRequester
+            },
+        )
+        Spacer(Modifier.width(12.dp))
+        CatalogButton(
+          label = "Clear history",
+          onClick = onConfirm,
+          modifier =
+            Modifier.focusRequester(clearFocusRequester).focusProperties {
+              left = cancelFocusRequester
+            },
+        )
+      }
+    }
+  }
+
+  LaunchedEffect(Unit) { cancelFocusRequester.requestFocus() }
 }
 
 @Composable

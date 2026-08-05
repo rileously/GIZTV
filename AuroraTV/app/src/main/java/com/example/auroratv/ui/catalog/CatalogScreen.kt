@@ -86,12 +86,14 @@ import com.example.auroratv.data.PlaybackContext
 import com.example.auroratv.data.UiPreferencesStore
 import com.example.auroratv.data.WatchHistoryEntry
 import com.example.auroratv.data.WatchHistoryStore
+import com.example.auroratv.home.refreshHomeSurfaces
 import com.example.auroratv.link.RemoteUiBridge
 import com.example.auroratv.theme.AuroraMint
 import com.example.auroratv.theme.DeepSpace
 import com.example.auroratv.theme.MutedBlue
 import com.example.auroratv.theme.NightSurface
 import com.example.auroratv.theme.SoftWhite
+import com.example.auroratv.ui.player.PlaybackProgressStore
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import javax.net.ssl.SSLException
@@ -129,6 +131,7 @@ internal fun CatalogScreen(
   val movieRepository = remember { TmdbMovieRepository(BuildConfig.TMDB_API_KEY) }
   val tvRepository = remember { TmdbTvRepository(BuildConfig.TMDB_API_KEY) }
   val historyStore = remember(context) { WatchHistoryStore(context) }
+  val playbackProgressStore = remember(context) { PlaybackProgressStore(context) }
   val myListStore = remember(context) { MyListStore(context) }
   val uiPreferences = remember(context) { UiPreferencesStore(context) }
   val scope = rememberCoroutineScope()
@@ -160,6 +163,7 @@ internal fun CatalogScreen(
   var movies by remember { mutableStateOf<List<TmdbMovie>>(emptyList()) }
   var shows by remember { mutableStateOf<List<TmdbShow>>(emptyList()) }
   var savedItems by remember { mutableStateOf<List<LibraryItem>>(emptyList()) }
+  var watchHistory by remember { mutableStateOf<List<WatchHistoryEntry>>(emptyList()) }
   var continueWatching by remember { mutableStateOf<List<WatchHistoryEntry>>(emptyList()) }
   var recommendedMovies by remember { mutableStateOf<List<TmdbMovie>>(emptyList()) }
   var recommendedShows by remember { mutableStateOf<List<TmdbShow>>(emptyList()) }
@@ -167,6 +171,7 @@ internal fun CatalogScreen(
   val recommendedFocusRequester = remember { FocusRequester() }
   var loading by remember { mutableStateOf(true) }
   var errorMessage by remember { mutableStateOf<String?>(null) }
+  var confirmingHistoryClear by rememberSaveable { mutableStateOf(false) }
 
   fun dismissKeyboard() {
     focusManager.clearFocus()
@@ -285,6 +290,7 @@ internal fun CatalogScreen(
 
   // Re-read on every entry so progress and saved titles reflect what just happened in the player.
   LaunchedEffect(Unit) {
+    watchHistory = historyStore.all()
     continueWatching = historyStore.continueWatching()
     load(tab, null)
     firstTabFocusRequester.requestFocus()
@@ -296,10 +302,10 @@ internal fun CatalogScreen(
    * It loads on its own rather than as part of [runLoad], so a slow or empty answer never holds up
    * the listings everyone gets. Someone with no history yet simply sees the fixed rails.
    */
-  LaunchedEffect(tab, searchActive) {
+  LaunchedEffect(tab, searchActive, watchHistory) {
     if (searchActive || tab == CatalogTab.MY_LIST) return@LaunchedEffect
     val forShows = tab == CatalogTab.SHOWS
-    val watched = historyStore.all()
+    val watched = watchHistory
     val seeds = recommendationSeeds(watched, forShows = forShows)
     recommendationSeeds = seeds
     if (seeds.isEmpty()) {
@@ -340,7 +346,9 @@ internal fun CatalogScreen(
   }
 
   val browsing = tab != CatalogTab.MY_LIST
-  val showContinueRow = continueWatching.isNotEmpty() && !searchActive
+  // Even completed-only history needs a reachable way to be cleared; in that case the row contains
+  // just the clear action and is titled "Watch history".
+  val showContinueRow = watchHistory.isNotEmpty() && !searchActive
   // Rails carry the browsable listings; a search and My List are a plain grid of one answer.
   val showRails = browsing && !searchActive
   val sections: List<Pair<CatalogCategory, Int>> =
@@ -514,6 +522,7 @@ internal fun CatalogScreen(
                 ContinueWatchingSection(
                   entries = continueWatching,
                   onResume = { entry -> onPlay(entry.toPlaybackContext()) },
+                  onClearHistory = { confirmingHistoryClear = true },
                   firstCardFocusRequester = continueRowFocusRequester,
                   up = searchButtonFocusRequester,
                   down = if (showRecommendedRail) recommendedFocusRequester else firstRailFocusRequester,
@@ -667,6 +676,7 @@ internal fun CatalogScreen(
                 ContinueWatchingSection(
                   entries = continueWatching,
                   onResume = { entry -> onPlay(entry.toPlaybackContext()) },
+                  onClearHistory = { confirmingHistoryClear = true },
                   firstCardFocusRequester = continueRowFocusRequester,
                   up = if (browsing) searchButtonFocusRequester else firstTabFocusRequester,
                   down = gridFocusRequester,
@@ -727,6 +737,27 @@ internal fun CatalogScreen(
             }
           }
       }
+    }
+
+    if (confirmingHistoryClear) {
+      ClearWatchHistoryDialog(
+        onDismiss = { confirmingHistoryClear = false },
+        onConfirm = {
+          historyStore.clear()
+          playbackProgressStore.clearAll()
+          watchHistory = emptyList()
+          continueWatching = emptyList()
+          recommendationSeeds = emptyList()
+          recommendedMovies = emptyList()
+          recommendedShows = emptyList()
+          confirmingHistoryClear = false
+          refreshHomeSurfaces(context)
+          scope.launch {
+            withFrameNanos {}
+            runCatching { searchButtonFocusRequester.requestFocus() }
+          }
+        },
+      )
     }
   }
 }

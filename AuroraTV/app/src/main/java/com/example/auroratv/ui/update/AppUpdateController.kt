@@ -141,10 +141,12 @@ internal fun AppUpdateController(manifestUrl: String = BuildConfig.UPDATE_MANIFE
   LaunchedEffect(manifestUrl) {
     // Whatever the shade was saying about an update, this screen is about to say it better.
     cancelUpdateNotification(context)
+    AppUpdateService.removeInstalledDownloads(context, BuildConfig.VERSION_CODE.toLong())
     if (manifestUrl.isBlank()) return@LaunchedEffect
     // A failed background check is intentionally quiet; the current version remains fully usable.
     AppUpdateService.checkForUpdate(manifestUrl, BuildConfig.VERSION_CODE.toLong()).getOrNull()?.let {
-      state = UpdateUiState.Available(it)
+      val savedApk = AppUpdateService.findVerifiedDownload(context, it)
+      state = savedApk?.let { file -> UpdateUiState.Ready(it, file) } ?: UpdateUiState.Available(it)
     }
   }
 
@@ -266,7 +268,7 @@ internal fun AppUpdateOverlay(
         is UpdateUiState.Ready -> {
           Spacer(Modifier.height(18.dp))
           Text(
-            "The download and app signature have been verified. Android will ask you to confirm installation.",
+            "The download and app signature have been verified. If you dismiss Android's installer, return here and select Install now again — no download is needed.",
             color = MutedBlue,
             fontSize = 15.sp,
             lineHeight = 22.sp,

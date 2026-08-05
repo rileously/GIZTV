@@ -227,6 +227,21 @@ class HlsPlaybackTest {
   }
 
   @Test
+  fun playbackProgress_clearAllForgetsEveryResumePosition() {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    val firstKey = "clear-all-first-${System.nanoTime()}"
+    val secondKey = "clear-all-second-${System.nanoTime()}"
+    val store = PlaybackProgressStore(context)
+    store.update(firstKey, 87_000L, 600_000L, Player.STATE_READY)
+    store.update(secondKey, 125_000L, 600_000L, Player.STATE_READY)
+
+    store.clearAll()
+
+    assertEquals(0L, store.load(firstKey))
+    assertEquals(0L, store.load(secondKey))
+  }
+
+  @Test
   fun appTheme_canCreateCastButtonWithoutCrashingPlayerScreen() {
     val instrumentation = InstrumentationRegistry.getInstrumentation()
 
