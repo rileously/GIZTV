@@ -35,6 +35,7 @@ import com.example.auroratv.ui.drama.ShortDrama
 import com.example.auroratv.ui.drama.ShortDramaDetailScreen
 import com.example.auroratv.ui.drama.ShortDramaScreen
 import com.example.auroratv.ui.main.AuroraTvApp
+import com.example.auroratv.ui.iptv.IptvScreen
 import com.example.auroratv.ui.sports.SportsScreen
 import com.example.auroratv.ui.player.HlsPlayerScreen
 import androidx.media3.common.Player
@@ -71,6 +72,7 @@ private enum class Destination {
   SHORT_DRAMAS,
   DRAMA_DETAIL,
   SPORTS,
+  IPTV,
   REMOTE,
   WEB_HOME,
   BROWSER,
@@ -143,6 +145,7 @@ fun AuroraTvRoot(
       destination == Destination.SHORT_DRAMAS ||
         destination == Destination.DRAMA_DETAIL ||
         destination == Destination.SPORTS ||
+        destination == Destination.IPTV ||
         destination == Destination.REMOTE
   ) {
     destination =
@@ -214,6 +217,7 @@ fun AuroraTvRoot(
       onOpenWeb = { destination = Destination.WEB_HOME },
       onOpenShortDramas = { destination = Destination.SHORT_DRAMAS },
       onOpenSports = { destination = Destination.SPORTS },
+      onOpenIptv = { destination = Destination.IPTV },
       // Nothing to find if it is already known, and nothing worth starting over a title that is
       // already being looked for.
       onConsidering = { considered ->
@@ -327,6 +331,17 @@ fun AuroraTvRoot(
           },
           onBack = { destination = Destination.CATALOG },
         )
+      Destination.IPTV ->
+        IptvScreen(
+          onPlay = { channel ->
+            streamFailoverAttempts = 0
+            pendingContext = null
+            browserReturnDestination = Destination.IPTV
+            streamRequest = channel.toPlaybackRequest()
+            destination = Destination.PLAYER
+          },
+          onBack = { destination = Destination.CATALOG },
+        )
       Destination.WEB_HOME ->
         AuroraTvApp(
           onOpenBrowser = { url ->
@@ -357,7 +372,11 @@ fun AuroraTvRoot(
             // resolved it. Streams found by hand still step back to the site they were found on.
             onExit = {
               destination =
-                if (request.context != null) browserReturnDestination else Destination.BROWSER
+                when {
+                  browserReturnDestination == Destination.IPTV -> Destination.IPTV
+                  request.context != null -> browserReturnDestination
+                  else -> Destination.BROWSER
+                }
             },
             onPlayNext = { next -> openForPlayback(next, browserReturnDestination) },
             onPrepareNext = { next -> prefetchTarget = next },
@@ -366,23 +385,27 @@ fun AuroraTvRoot(
             // address and resolve the title page again, but bound the automatic loop so a genuinely
             // broken title still presents a useful error instead of loading forever.
             onPlaybackFailed = {
-              val playbackContext = request.context
-              playbackContext?.pageUrl?.let(streamCache::forget)
-              when (
-                streamFailureAction(
-                  hasPlaybackContext = playbackContext != null,
-                  completedFailovers = streamFailoverAttempts,
-                )
-              ) {
-                StreamFailureAction.RESOLVE_FRESH_STREAM -> {
-                  streamFailoverAttempts++
-                  pendingContext = playbackContext
-                  browserUrl = requireNotNull(playbackContext).pageUrl
-                  streamRequest = null
-                  destination = Destination.BROWSER
-                  true
+              if (browserReturnDestination == Destination.IPTV) {
+                false
+              } else {
+                val playbackContext = request.context
+                playbackContext?.pageUrl?.let(streamCache::forget)
+                when (
+                  streamFailureAction(
+                    hasPlaybackContext = playbackContext != null,
+                    completedFailovers = streamFailoverAttempts,
+                  )
+                ) {
+                  StreamFailureAction.RESOLVE_FRESH_STREAM -> {
+                    streamFailoverAttempts++
+                    pendingContext = playbackContext
+                    browserUrl = requireNotNull(playbackContext).pageUrl
+                    streamRequest = null
+                    destination = Destination.BROWSER
+                    true
+                  }
+                  StreamFailureAction.SHOW_PLAYER_ERROR -> false
                 }
-                StreamFailureAction.SHOW_PLAYER_ERROR -> false
               }
             },
             onPlaybackStable = { streamFailoverAttempts = 0 },

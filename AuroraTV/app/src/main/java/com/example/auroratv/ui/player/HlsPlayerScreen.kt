@@ -122,6 +122,9 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
+import androidx.media3.exoplayer.drm.FrameworkMediaDrm
+import androidx.media3.exoplayer.drm.LocalMediaDrmCallback
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.source.BehindLiveWindowException
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -168,8 +171,25 @@ internal data class HlsStreamRequest(
   val subtitles: List<ExternalSubtitleTrack> = emptyList(),
   val sourcePageUrl: String? = null,
   val title: String? = null,
+  val subtitle: String? = null,
+  /** Explicit for extensionless adaptive streams; null lets Media3 inspect progressive content. */
+  val mimeType: String? = MimeTypes.APPLICATION_M3U8,
+  val drm: StreamDrmConfiguration? = null,
+  val isLive: Boolean = false,
   /** What the catalog knows about this title; absent for streams found by plain browsing. */
   val context: PlaybackContext? = null,
+)
+
+internal enum class StreamDrmScheme {
+  CLEARKEY,
+  WIDEVINE,
+}
+
+internal data class StreamDrmConfiguration(
+  val scheme: StreamDrmScheme,
+  /** A license URL, a ClearKey kid:key pair, or a ClearKey JSON response. */
+  val license: String,
+  val requestHeaders: Map<String, String> = emptyMap(),
 )
 
 internal data class ExternalSubtitleTrack(
@@ -376,7 +396,7 @@ internal fun HlsPlayerScreen(
   val playerPreferences = remember(context) { PlayerPreferencesStore(context) }
   val progressKey = remember(request) { playbackProgressKey(request) }
   val subtitleSyncKey = remember(request) { subtitleSyncKey(request) }
-  val isLiveContent = request.context?.kindLabel.equals("LIVE", ignoreCase = true)
+  val isLiveContent = request.isLive || request.context?.kindLabel.equals("LIVE", ignoreCase = true)
   // Continue watching keeps its own position against the catalog page, and it is the one the
   // viewer was just shown. It stands in when the progress store has nothing under this key —
   // which is every catalog title carried over from a build that keyed them by the page the stream
@@ -819,7 +839,7 @@ internal fun HlsPlayerScreen(
           val invalidPlaylist = generateSequence<Throwable>(playerError) { it.cause }.any { it is ParserException }
           error =
             when {
-              invalidPlaylist -> "The detected URL did not return a valid HLS playlist. Try another server."
+              invalidPlaylist -> "The detected URL did not return a valid stream manifest. Try another server."
               decoderFailure ->
                 "This TV could not decode the video, even in compatibility mode. Try another video server."
               else -> playerError.localizedMessage ?: "This stream could not be played."
@@ -1924,6 +1944,7 @@ private fun playbackTitle(request: HlsStreamRequest): String {
 /** Season and episode for a show, or the release year for a film. */
 private fun playbackSubtitle(request: HlsStreamRequest): String? =
   request.context?.subtitle?.trim()?.takeIf { it.isNotBlank() }
+    ?: request.subtitle?.trim()?.takeIf { it.isNotBlank() }
 
 internal fun seekTargetPosition(currentPositionMs: Long, deltaMs: Long, durationMs: Long): Long {
   val upperBound = durationMs.takeIf { it != C.TIME_UNSET && it > 0L } ?: Long.MAX_VALUE
@@ -2985,10 +3006,19 @@ internal fun createHlsMediaSource(
       .setDefaultRequestProperties(requestProperties)
   val dataSourceFactory = DefaultDataSource.Factory(context, httpFactory)
   val mediaItem = createMediaItem(request)
-  return DefaultMediaSourceFactory(dataSourceFactory)
+  val mediaSourceFactory =
+    DefaultMediaSourceFactory(dataSourceFactory)
     .setSubtitleParserFactory(OffsetSubtitleParserFactory(subtitleOffset))
     .setLoadErrorHandlingPolicy(reliableHlsLoadErrorPolicy())
-    .createMediaSource(mediaItem)
+  request.drm?.inlineClearKeyResponse()?.let { keyResponse ->
+    val drmSessionManager =
+      DefaultDrmSessionManager.Builder()
+        .setUuidAndExoMediaDrmProvider(C.CLEARKEY_UUID, FrameworkMediaDrm.DEFAULT_PROVIDER)
+        .setMultiSession(true)
+        .build(LocalMediaDrmCallback(keyResponse.toByteArray(Charsets.UTF_8)))
+    mediaSourceFactory.setDrmSessionManagerProvider { drmSessionManager }
+  }
+  return mediaSourceFactory.createMediaSource(mediaItem)
 }
 
 internal fun reliableHlsLoadErrorPolicy(): DefaultLoadErrorHandlingPolicy =
@@ -3064,9 +3094,94 @@ internal fun createMediaItem(request: HlsStreamRequest): MediaItem {
 
   return MediaItem.Builder()
     .setUri(request.url)
-    .setMimeType(MimeTypes.APPLICATION_M3U8)
+    .apply {
+      request.mimeType?.let(::setMimeType)
+      request.drm?.toMedia3Configuration()?.let(::setDrmConfiguration)
+    }
     .setSubtitleConfigurations(subtitles)
     .build()
+}
+
+private fun StreamDrmConfiguration.toMedia3Configuration(): MediaItem.DrmConfiguration? {
+  val licenseUri =
+    when {
+      scheme != StreamDrmScheme.CLEARKEY -> license.substringBefore('|').trim()
+      license.startsWith("http://", ignoreCase = true) ||
+        license.startsWith("https://", ignoreCase = true) -> license.substringBefore('|').trim()
+      else -> null
+    }
+  val uuid = if (scheme == StreamDrmScheme.CLEARKEY) C.CLEARKEY_UUID else C.WIDEVINE_UUID
+  return MediaItem.DrmConfiguration.Builder(uuid)
+    .apply { licenseUri?.takeIf(String::isNotBlank)?.let(::setLicenseUri) }
+    .setMultiSession(true)
+    .setLicenseRequestHeaders(requestHeaders)
+    .build()
+}
+
+private fun StreamDrmConfiguration.inlineClearKeyResponse(): String? =
+  if (
+    scheme == StreamDrmScheme.CLEARKEY &&
+      !license.startsWith("http://", ignoreCase = true) &&
+      !license.startsWith("https://", ignoreCase = true)
+  ) {
+    normalizeClearKeyLicense(license)
+  } else {
+    null
+  }
+
+/** Turns Kodi-style ClearKey values into the JWK response Android's ClearKey CDM expects. */
+internal fun normalizeClearKeyLicense(raw: String): String? {
+  val value = raw.trim()
+  if (value.startsWith("{")) {
+    val parsed = runCatching { org.json.JSONObject(value) }.getOrNull() ?: return null
+    if (parsed.has("keys")) return parsed.toString()
+    val pairs =
+      parsed.keys().asSequence().mapNotNull { kid ->
+        parsed.optString(kid).takeIf { isHexKey(kid) && isHexKey(it) }?.let { kid to it }
+      }.toList()
+    return clearKeyJwk(pairs)
+  }
+  val pairs =
+    value.split(',').mapNotNull { pair ->
+      val separator = pair.indexOf(':')
+      if (separator <= 0) return@mapNotNull null
+      val kid = pair.substring(0, separator).trim()
+      val key = pair.substring(separator + 1).trim()
+      (kid to key).takeIf { isHexKey(kid) && isHexKey(key) }
+    }
+  return clearKeyJwk(pairs)
+}
+
+private fun isHexKey(value: String): Boolean =
+  value.length == 32 && value.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
+
+private fun clearKeyJwk(pairs: List<Pair<String, String>>): String? {
+  if (pairs.isEmpty()) return null
+  val keys =
+    pairs.joinToString(",") { (kid, key) ->
+      "{\"kty\":\"oct\",\"k\":\"${hexToBase64Url(key)}\",\"kid\":\"${hexToBase64Url(kid)}\"}"
+    }
+  return "{\"keys\":[$keys],\"type\":\"temporary\"}"
+}
+
+private const val BASE64_URL_ALPHABET =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+private fun hexToBase64Url(hex: String): String {
+  val bytes = ByteArray(hex.length / 2) { index -> hex.substring(index * 2, index * 2 + 2).toInt(16).toByte() }
+  val answer = StringBuilder((bytes.size * 4 + 2) / 3)
+  var buffer = 0
+  var bits = 0
+  bytes.forEach { byte ->
+    buffer = (buffer shl 8) or (byte.toInt() and 0xff)
+    bits += 8
+    while (bits >= 6) {
+      bits -= 6
+      answer.append(BASE64_URL_ALPHABET[(buffer shr bits) and 0x3f])
+    }
+  }
+  if (bits > 0) answer.append(BASE64_URL_ALPHABET[(buffer shl (6 - bits)) and 0x3f])
+  return answer.toString()
 }
 
 private fun describeSubtitleState(tracks: Tracks): String {

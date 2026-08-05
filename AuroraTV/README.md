@@ -2,7 +2,7 @@
 
 Automatic signed app releases and in-app update setup are documented in [APP_UPDATES.md](APP_UPDATES.md).
 
-GIZTV is an Android phone and TV app built with Kotlin and Compose. It browses a TMDB catalog of movies and TV series, and its URL launcher opens user-entered websites in a protected in-app browser with native adaptive HLS playback.
+GIZTV is an Android phone and TV app built with Kotlin and Compose. It browses a TMDB catalog of movies and TV series, includes a grouped and searchable IPTV guide, and opens user-entered websites in a protected in-app browser with native adaptive playback.
 
 ![GIZTV URL launcher on a Pixel-sized phone](giztv-pixel-home-v12.png)
 
@@ -28,6 +28,8 @@ GIZTV is an Android phone and TV app built with Kotlin and Compose. It browses a
 - Embedded browser with Google Safe Browsing left enabled
 - Ad-host filtering, popup/alert blocking, and cosmetic ad cleanup
 - Automatic `.m3u8` detection with cookies, referrer, and user-agent forwarding
+- Built-in M3U IPTV guide with group filters, channel search, artwork, and per-stream request headers
+- Native HLS, DASH, MPEG-TS, ClearKey, and Widevine IPTV playback through Media3
 - Native Media3 HLS playback with adaptive quality and a 15–60 second buffer window
 - Automatic TV decoder recovery with hardware fallback, software-first compatibility retry, and a 720p/5 Mbps ceiling
 - Automatic English subtitle selection with an on-screen CC status and subtitle picker

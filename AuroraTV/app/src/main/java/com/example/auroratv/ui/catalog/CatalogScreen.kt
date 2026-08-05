@@ -36,6 +36,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SettingsRemote
 import androidx.compose.material.icons.filled.SportsBasketball
@@ -117,6 +118,7 @@ internal fun CatalogScreen(
   onOpenWeb: () -> Unit,
   onOpenShortDramas: () -> Unit,
   onOpenSports: () -> Unit,
+  onOpenIptv: () -> Unit,
   /** Absent on a television, which is the thing being pointed at rather than the thing pointing. */
   onOpenRemote: (() -> Unit)? = null,
   /** A title the viewer has paused on, worth finding the stream for before they ask. */
@@ -135,6 +137,7 @@ internal fun CatalogScreen(
   val openWebFocusRequester = remember { FocusRequester() }
   val shortDramasFocusRequester = remember { FocusRequester() }
   val sportsFocusRequester = remember { FocusRequester() }
+  val iptvFocusRequester = remember { FocusRequester() }
   val firstTabFocusRequester = remember { FocusRequester() }
   val searchFieldFocusRequester = remember { FocusRequester() }
   val searchButtonFocusRequester = remember { FocusRequester() }
@@ -425,6 +428,7 @@ internal fun CatalogScreen(
         onOpenWeb = { dismissKeyboard(); onOpenWeb() },
         onOpenShortDramas = { dismissKeyboard(); onOpenShortDramas() },
         onOpenSports = { dismissKeyboard(); onOpenSports() },
+        onOpenIptv = { dismissKeyboard(); onOpenIptv() },
         onOpenRemote = onOpenRemote?.let { open -> { dismissKeyboard(); open() } },
         openWebModifier =
           Modifier.focusRequester(openWebFocusRequester).focusProperties {
@@ -433,14 +437,20 @@ internal fun CatalogScreen(
           },
         shortDramasModifier =
           Modifier.focusRequester(shortDramasFocusRequester).focusProperties {
-            left = sportsFocusRequester
+            left = iptvFocusRequester
             right = openWebFocusRequester
+            down = if (browsing) searchButtonFocusRequester else firstBodyFocusRequester
+          },
+        iptvModifier =
+          Modifier.focusRequester(iptvFocusRequester).focusProperties {
+            left = sportsFocusRequester
+            right = shortDramasFocusRequester
             down = if (browsing) searchButtonFocusRequester else firstBodyFocusRequester
           },
         sportsModifier =
           Modifier.focusRequester(sportsFocusRequester).focusProperties {
             left = firstTabFocusRequester
-            right = shortDramasFocusRequester
+            right = iptvFocusRequester
             down = if (browsing) searchButtonFocusRequester else firstBodyFocusRequester
           },
         tabs = {
@@ -823,10 +833,12 @@ private fun CatalogTopBar(
   onOpenWeb: () -> Unit,
   onOpenShortDramas: () -> Unit,
   onOpenSports: () -> Unit,
+  onOpenIptv: () -> Unit,
   onOpenRemote: (() -> Unit)?,
   openWebModifier: Modifier,
   shortDramasModifier: Modifier,
   sportsModifier: Modifier,
+  iptvModifier: Modifier,
   tabs: @Composable () -> Unit,
   search: (@Composable () -> Unit)?,
 ) {
@@ -845,6 +857,13 @@ private fun CatalogTopBar(
         showLabel = labelled,
         onClick = onOpenSports,
         modifier = sportsModifier,
+      )
+      CatalogActionButton(
+        label = "IPTV",
+        icon = Icons.Filled.LiveTv,
+        showLabel = labelled,
+        onClick = onOpenIptv,
+        modifier = iptvModifier,
       )
       CatalogActionButton(
         label = "Short dramas",
@@ -1039,4 +1058,3 @@ private fun CatalogSearchRow(
     CatalogIconButton("Search", Icons.Filled.Search, onSearch, buttonModifier)
   }
 }
-
