@@ -18,7 +18,7 @@ import androidx.media3.exoplayer.source.SampleStream
 import androidx.media3.exoplayer.text.TextOutput
 import java.util.concurrent.atomic.AtomicLong
 
-internal const val MAX_SUBTITLE_SYNC_MS = 10_000L
+internal const val MAX_SUBTITLE_SYNC_MS = 30_000L
 
 /**
  * Gives every text renderer a clock that can move independently of the picture and sound.

@@ -3,6 +3,8 @@ package com.example.auroratv
 import com.example.auroratv.ui.catalog.catalogCategories
 import com.example.auroratv.ui.catalog.decadeCategory
 import com.example.auroratv.ui.catalog.decadeStarts
+import com.example.auroratv.ui.catalog.genreTopRatedCategories
+import com.example.auroratv.ui.catalog.genreTopRatedCategory
 import com.example.auroratv.ui.catalog.parseTopBilledActor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -59,6 +61,24 @@ class CatalogCategoryTest {
     }
     // The year rail names the year it is actually showing.
     assertTrue(categories.any { it.label == "New in 2026" })
+  }
+
+  @Test
+  fun genreRails_filterByGenreAndSortByRating() {
+    val horror = genreTopRatedCategory("genre-horror", "Top Rated Horror", movieGenreId = 27)
+    assertEquals("27", horror.movieParams["with_genres"])
+    assertEquals("vote_average.desc", horror.movieParams["sort_by"])
+    assertTrue(horror.movieParams.getValue("vote_count.gte").toInt() >= 1000)
+    assertTrue(horror.standaloneLabel)
+  }
+
+  @Test
+  fun catalogIncludesTopRatedGenreRails() {
+    val labels = catalogCategories(currentYear = 2026).map { it.label }
+    assertTrue(labels.contains("Top Rated Horror"))
+    assertTrue(labels.contains("Top Rated Romance"))
+    assertTrue(labels.contains("Top Rated Action"))
+    assertEquals(10, genreTopRatedCategories().size)
   }
 
   @Test

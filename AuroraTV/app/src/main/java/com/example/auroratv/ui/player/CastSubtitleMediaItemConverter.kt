@@ -49,11 +49,18 @@ internal class CastSubtitleMediaItemConverter : MediaItemConverter {
         .build()
 
     val preferredEnglishTrackId =
-      subtitleConfigurations.indexOfFirst { subtitle ->
-        subtitle.language?.lowercase() in setOf("en", "eng") ||
-          subtitle.label?.contains("english", ignoreCase = true) == true ||
-          subtitle.selectionFlags and C.SELECTION_FLAG_DEFAULT != 0
-      }.takeIf { it >= 0 }?.let { CAST_SUBTITLE_TRACK_ID_BASE + it }
+      preferredEnglishSubtitleIndex(
+          count = subtitleConfigurations.size,
+          isEnglish = { index ->
+            val subtitle = subtitleConfigurations[index]
+            isEnglishSubtitleLabel(subtitle.label, subtitle.language) ||
+              subtitle.selectionFlags and C.SELECTION_FLAG_DEFAULT != 0
+          },
+          isHearingImpaired = { index ->
+            isHearingImpairedSubtitleLabel(subtitleConfigurations[index].label)
+          },
+        )
+        ?.let { CAST_SUBTITLE_TRACK_ID_BASE + it }
 
     return MediaQueueItem.Builder(castMediaInfo)
       .setAutoplay(converted.autoplay)

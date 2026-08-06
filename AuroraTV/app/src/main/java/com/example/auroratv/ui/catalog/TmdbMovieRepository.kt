@@ -103,7 +103,56 @@ internal fun catalogCategories(currentYear: Int = currentCalendarYear()): List<C
     )
     // The decade in progress first, then back through the completed ones.
     decadeStarts(currentYear).forEach { add(decadeCategory(it, currentYear)) }
+    // Top of each genre, after the broad rails so the home screen opens on discovery first.
+    genreTopRatedCategories().forEach { add(it) }
   }
+
+/**
+ * TMDB movie genre ids paired with the closest TV genre where the catalogs diverge.
+ *
+ * TV has no Horror / Romance / Thriller slots of its own, so those rails use Mystery or Drama
+ * for shows rather than asking for an id that discover/tv will ignore.
+ */
+internal fun genreTopRatedCategories(): List<CatalogCategory> =
+  listOf(
+    genreTopRatedCategory("genre-action", "Top Rated Action", movieGenreId = 28, showGenreId = 10759),
+    genreTopRatedCategory("genre-comedy", "Top Rated Comedy", movieGenreId = 35),
+    genreTopRatedCategory("genre-horror", "Top Rated Horror", movieGenreId = 27, showGenreId = 9648),
+    genreTopRatedCategory("genre-romance", "Top Rated Romance", movieGenreId = 10749, showGenreId = 18),
+    genreTopRatedCategory("genre-thriller", "Top Rated Thriller", movieGenreId = 53, showGenreId = 9648),
+    genreTopRatedCategory("genre-scifi", "Top Rated Sci-Fi", movieGenreId = 878, showGenreId = 10765),
+    genreTopRatedCategory("genre-animation", "Top Rated Animation", movieGenreId = 16),
+    genreTopRatedCategory("genre-drama", "Top Rated Drama", movieGenreId = 18),
+    genreTopRatedCategory("genre-fantasy", "Top Rated Fantasy", movieGenreId = 14, showGenreId = 10765),
+    genreTopRatedCategory("genre-crime", "Top Rated Crime", movieGenreId = 80),
+  )
+
+/** Highest-rated titles in one genre, vote floor kept so obscure tens do not crowd the rail. */
+internal fun genreTopRatedCategory(
+  id: String,
+  label: String,
+  movieGenreId: Int,
+  showGenreId: Int = movieGenreId,
+): CatalogCategory =
+  CatalogCategory(
+    id = id,
+    label = label,
+    standaloneLabel = true,
+    moviePath = "discover/movie",
+    showPath = "discover/tv",
+    movieParams =
+      mapOf(
+        "with_genres" to movieGenreId.toString(),
+        "sort_by" to "vote_average.desc",
+        "vote_count.gte" to MOVIE_VOTE_FLOOR,
+      ),
+    showParams =
+      mapOf(
+        "with_genres" to showGenreId.toString(),
+        "sort_by" to "vote_average.desc",
+        "vote_count.gte" to SHOW_VOTE_FLOOR,
+      ),
+  )
 
 /** The decade now and the three before it, newest first. */
 internal fun decadeStarts(currentYear: Int, count: Int = 4): List<Int> {

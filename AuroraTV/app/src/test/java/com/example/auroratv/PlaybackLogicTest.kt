@@ -78,11 +78,11 @@ class PlaybackLogicTest {
   }
 
   @Test
-  fun subtitleSync_stepsFinelyAndStopsAtTenSeconds() {
+  fun subtitleSync_stepsFinelyAndStopsAtThirtySeconds() {
     assertEquals(-500L, adjustSubtitleSync(0L, -500L))
     assertEquals(100L, adjustSubtitleSync(0L, 100L))
-    assertEquals(10_000L, adjustSubtitleSync(9_900L, 500L))
-    assertEquals(-10_000L, adjustSubtitleSync(-9_900L, -500L))
+    assertEquals(30_000L, adjustSubtitleSync(29_900L, 500L))
+    assertEquals(-30_000L, adjustSubtitleSync(-29_900L, -500L))
   }
 
   @Test
