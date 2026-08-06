@@ -15,9 +15,22 @@ internal data class StreamProvider(
   val episodeUrl: (showId: Int, seasonNumber: Int, episodeNumber: Int) -> String,
 )
 
-/** Tried in order; the first that produces a playable stream wins. */
+/**
+ * Tried in order; the first that produces a playable stream wins.
+ *
+ * vidrock leads because it hands out an HLS playlist with a full set of subtitle tracks, which
+ * gives the player real quality options to adapt between. vidfast currently serves a single
+ * progressive file: one quality, no subtitles of its own, nothing to adapt.
+ */
 internal val STREAM_PROVIDERS: List<StreamProvider> =
   listOf(
+    StreamProvider(
+      id = "vidrock",
+      label = "VidRock",
+      host = "vidrock.ru",
+      movieUrl = { "https://vidrock.ru/movie/$it" },
+      episodeUrl = { show, season, episode -> "https://vidrock.ru/tv/$show/$season/$episode" },
+    ),
     StreamProvider(
       id = "vidfast",
       label = "VidFast",
@@ -26,13 +39,6 @@ internal val STREAM_PROVIDERS: List<StreamProvider> =
       episodeUrl = { show, season, episode ->
         "https://vidfast.vc/tv/$show/$season/$episode?autoPlay=true&sub=en&chromecast=false"
       },
-    ),
-    StreamProvider(
-      id = "vidrock",
-      label = "VidRock",
-      host = "vidrock.ru",
-      movieUrl = { "https://vidrock.ru/movie/$it" },
-      episodeUrl = { show, season, episode -> "https://vidrock.ru/tv/$show/$season/$episode" },
     ),
     StreamProvider(
       id = "vidlink",

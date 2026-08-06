@@ -169,7 +169,10 @@ fun AuroraTvRoot(
   fun openForPlayback(context: PlaybackContext, returnTo: Destination) {
     streamFailoverAttempts = 0
     pendingContext = context
-    browserUrl = context.pageUrl
+    // The context carries the address this title is remembered by, which is not necessarily the
+    // provider we ask first. Attempt zero is the head of the list, so reordering the providers
+    // actually reorders who gets asked.
+    browserUrl = nextProviderPageUrl(context.pageUrl, 0) ?: context.pageUrl
     browserReturnDestination = returnTo
     // Already found while the last episode was finishing, so the loading page is skipped entirely.
     val ready = prefetched?.takeIf { (pageUrl, _) -> pageUrl == context.pageUrl }?.second

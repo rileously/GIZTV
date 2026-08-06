@@ -16,6 +16,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.auroratv.data.PlaybackContext
+import com.example.auroratv.ui.catalog.nextProviderPageUrl
 import com.example.auroratv.ui.player.HlsStreamRequest
 
 /**
@@ -76,7 +77,9 @@ internal fun StreamPrefetcher(
           )
         webViewClient = resolver
         client = resolver
-        loadUrl(target.pageUrl)
+        // The same provider the foreground resolver would have asked first, so a title found
+        // ahead of time is found from the same place as one opened by hand.
+        loadUrl(nextProviderPageUrl(target.pageUrl, 0) ?: target.pageUrl)
       }
     },
     // Behind the player, which is opaque and covers it completely.

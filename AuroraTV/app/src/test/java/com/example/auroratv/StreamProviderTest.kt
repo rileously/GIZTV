@@ -82,11 +82,14 @@ class StreamProviderTest {
       .takeWhile { it != null }
       .toList()
 
-    // Every provider after the first gets a turn...
+    // Every provider after the primary gets a turn...
     assertEquals(STREAM_PROVIDERS.size - 1, visited.size)
-    // ...each a different site, and never the one that just failed.
+    // ...each a different site...
     assertEquals(visited.size, visited.distinct().size)
-    assertTrue(visited.none { it == canonical })
+    // ...and never the primary, which is the one that just failed. Note this is not the same as
+    // "never the canonical address": vidfast is a perfectly good fallback now that it no longer
+    // leads, and the address a title is remembered by is still its.
+    assertTrue(visited.none { it == providerPageUrl(CatalogTarget(786892), 0) })
     // ...and once they are exhausted there is nothing further to try automatically.
     assertNull(nextProviderPageUrl(canonical, STREAM_PROVIDERS.size))
   }
@@ -99,6 +102,17 @@ class StreamProviderTest {
       assertNotNull("attempt $attempt", next)
       assertEquals(CatalogTarget(94997, 2, 5), catalogTargetOf(next!!))
     }
+  }
+
+  @Test
+  fun attemptZero_isTheHeadOfTheListRatherThanTheAddressTheTitleIsRememberedBy() {
+    // The whole point of the ordering: a title opened by hand must start at the primary provider,
+    // not at whichever provider happens to own the remembered address.
+    val canonical = vidfastMovieUrl(786892)
+    assertEquals(STREAM_PROVIDERS.first().movieUrl(786892), nextProviderPageUrl(canonical, 0))
+    assertEquals("vidrock", STREAM_PROVIDERS.first().id)
+    // ...and the remembered address still belongs to vidfast, so nobody loses their place.
+    assertEquals("vidfast", CANONICAL_PROVIDER.id)
   }
 
   @Test
