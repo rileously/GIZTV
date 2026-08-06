@@ -21,7 +21,12 @@ import com.example.auroratv.ui.player.adjustSubtitleSync
 import com.example.auroratv.ui.player.automaticQualityPhaseAfterBuffering
 import com.example.auroratv.ui.player.automaticQualityPhaseAfterStall
 import com.example.auroratv.ui.player.automaticQualityPromotion
+import com.example.auroratv.ui.player.MINI_PLAYER_DISMISS_FLING_VELOCITY_PX_PER_SEC
+import com.example.auroratv.ui.player.MINI_PLAYER_RUBBER_BAND_FACTOR
 import com.example.auroratv.ui.player.canMinimizeToInAppPlayer
+import com.example.auroratv.ui.player.miniPlayerDismissProgress
+import com.example.auroratv.ui.player.miniPlayerDragVisualOffset
+import com.example.auroratv.ui.player.shouldDismissMiniPlayer
 import com.example.auroratv.ui.player.initialAutomaticQualityPhase
 import com.example.auroratv.ui.player.isBandwidthStall
 import com.example.auroratv.ui.player.dataSaverVideoFormatOrder
@@ -32,8 +37,13 @@ import com.example.auroratv.ui.player.playerBackAction
 import com.example.auroratv.ui.player.playerControllerTimeoutMs
 import com.example.auroratv.ui.player.playerSeekSide
 import com.example.auroratv.ui.player.playerSeekTarget
+import com.example.auroratv.ui.player.SubtitlePositionOption
+import com.example.auroratv.ui.player.isSubtitleDragTouch
+import com.example.auroratv.ui.player.nearestSubtitlePosition
 import com.example.auroratv.ui.player.playerSwipeControl
 import com.example.auroratv.ui.player.playerSwipeLevel
+import com.example.auroratv.ui.player.subtitleCueBaselineY
+import com.example.auroratv.ui.player.subtitlePaddingAfterDrag
 import com.example.auroratv.ui.player.playbackBufferProfile
 import com.example.auroratv.ui.player.prolongedStallAction
 import com.example.auroratv.ui.player.shouldComposeInAppPlayerSession
@@ -150,6 +160,49 @@ class PlaybackLogicTest {
   }
 
   @Test
+  fun inAppMiniPlayer_dragDismissesPastThresholdOrWithADownwardFling() {
+    val threshold = 200f
+    assertTrue(
+      shouldDismissMiniPlayer(
+        dragOffsetPx = threshold,
+        velocityYPxPerSec = 0f,
+        dismissThresholdPx = threshold,
+      )
+    )
+    assertTrue(
+      shouldDismissMiniPlayer(
+        dragOffsetPx = threshold / 2f,
+        velocityYPxPerSec = MINI_PLAYER_DISMISS_FLING_VELOCITY_PX_PER_SEC,
+        dismissThresholdPx = threshold,
+      )
+    )
+    assertFalse(
+      shouldDismissMiniPlayer(
+        dragOffsetPx = threshold / 2f,
+        velocityYPxPerSec = 0f,
+        dismissThresholdPx = threshold,
+      )
+    )
+    assertFalse(
+      shouldDismissMiniPlayer(
+        dragOffsetPx = -40f,
+        velocityYPxPerSec = -2000f,
+        dismissThresholdPx = threshold,
+      )
+    )
+  }
+
+  @Test
+  fun inAppMiniPlayer_rubberBandsUpwardDragAndTracksDismissProgress() {
+    assertEquals(0f, miniPlayerDragVisualOffset(0f))
+    assertEquals(120f, miniPlayerDragVisualOffset(120f))
+    assertEquals(-40f * MINI_PLAYER_RUBBER_BAND_FACTOR, miniPlayerDragVisualOffset(-40f))
+    assertEquals(0f, miniPlayerDismissProgress(-20f, 100f))
+    assertEquals(0.5f, miniPlayerDismissProgress(50f, 100f))
+    assertEquals(1.5f, miniPlayerDismissProgress(150f, 100f))
+  }
+
+  @Test
   fun inAppMiniPlayer_isOfferedOnlyForAHealthyLocalStream() {
     assertTrue(
       canMinimizeToInAppPlayer(
@@ -227,6 +280,34 @@ class PlaybackLogicTest {
     assertEquals(1f, playerSwipeLevel(.9f, totalVerticalDragPx = -500f, heightPx = 1_000), .001f)
     assertEquals(0f, playerSwipeLevel(.1f, totalVerticalDragPx = 500f, heightPx = 1_000), .001f)
     assertEquals(8, mediaVolumeIndex(level = .5f, maximumVolume = 15))
+  }
+
+  @Test
+  fun phoneSubtitleDrag_onlyStartsNearTheCueBandWhenSubtitlesAreOn() {
+    val height = 1_000
+    val bottom = SubtitlePositionOption.BOTTOM.bottomPadding
+    val baseline = subtitleCueBaselineY(height, bottom)
+    assertTrue(isSubtitleDragTouch(baseline, height, bottom, subtitlesEnabled = true))
+    assertTrue(isSubtitleDragTouch(baseline - 40f, height, bottom, subtitlesEnabled = true))
+    assertFalse(isSubtitleDragTouch(baseline, height, bottom, subtitlesEnabled = false))
+    assertFalse(isSubtitleDragTouch(height / 2f, height, bottom, subtitlesEnabled = true))
+  }
+
+  @Test
+  fun phoneSubtitleDrag_upRaisesPaddingAndSnapsToNearestOption() {
+    assertEquals(
+      .08f + .11f,
+      subtitlePaddingAfterDrag(startPadding = .08f, totalVerticalDragPx = -200f, heightPx = 1_000),
+      .001f,
+    )
+    assertEquals(
+      SubtitlePositionOption.BOTTOM.bottomPadding,
+      subtitlePaddingAfterDrag(startPadding = .08f, totalVerticalDragPx = 400f, heightPx = 1_000),
+      .001f,
+    )
+    assertEquals(SubtitlePositionOption.BOTTOM, nearestSubtitlePosition(.10f))
+    assertEquals(SubtitlePositionOption.RAISED, nearestSubtitlePosition(.17f))
+    assertEquals(SubtitlePositionOption.HIGH, nearestSubtitlePosition(.28f))
   }
 
   @Test

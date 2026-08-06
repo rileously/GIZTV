@@ -19,11 +19,23 @@ import kotlinx.coroutines.withContext
  * The bytes behind it survive the process too: this goes through `HttpURLConnection`, so the
  * response cache installed at startup keeps the poster on disk and a cold start does not refetch
  * every image on the screen.
+ *
+ * [produceState] keeps its prior [State] across [url] changes — it only restarts the producer —
+ * so this must replace a stale bitmap when the address moves, not early-return because [value]
+ * is still the previous image. Otherwise a recycled slot (pause tip, swapped poster) can show
+ * the last face beside the new name.
  */
 @Composable
 internal fun rememberTmdbImage(url: String?): ImageBitmap? {
   val bitmap by produceState<ImageBitmap?>(initialValue = url?.let(TmdbImageCache::get), key1 = url) {
-    if (url == null || value != null) return@produceState
+    val cached = url?.let(TmdbImageCache::get)
+    if (cached != null) {
+      value = cached
+      return@produceState
+    }
+    // Drop the previous URL's pixels immediately so a slow fetch cannot leave them under new text.
+    value = null
+    if (url == null) return@produceState
     value =
       withContext(Dispatchers.IO) {
         runCatching {

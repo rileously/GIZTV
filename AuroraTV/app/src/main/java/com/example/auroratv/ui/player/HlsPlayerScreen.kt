@@ -158,6 +158,7 @@ import androidx.media3.ui.SubtitleView
 import androidx.mediarouter.app.MediaRouteButton
 import androidx.core.net.toUri
 import androidx.tv.material3.Text
+import com.example.auroratv.BuildConfig
 import com.example.auroratv.data.PlaybackContext
 import com.example.auroratv.data.WatchHistoryStore
 import com.example.auroratv.link.GROUP_AUDIO
@@ -180,11 +181,13 @@ import com.example.auroratv.theme.MutedBlue
 import com.example.auroratv.theme.NightSurface
 import com.example.auroratv.theme.SoftWhite
 import com.example.auroratv.ui.catalog.PlaybackServerOption
+import com.example.auroratv.ui.catalog.TmdbPlaybackDetailsRepository
 import com.example.auroratv.ui.catalog.playbackServerOptions
 import com.example.auroratv.ui.catalog.selectedPlaybackServerIndex
 import com.example.auroratv.ui.catalog.serverLabelFor
 import com.example.auroratv.gizTvOrientation
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 
@@ -303,6 +306,15 @@ private const val LOCAL_STALL_RECOVERY_ATTEMPTS = 1
 private const val PLAYER_SWIPE_SENSITIVITY = 1.25f
 private const val PLAYER_GESTURE_FEEDBACK_MS = 650L
 private const val MINIMUM_WINDOW_BRIGHTNESS = .01f
+/**
+ * Grab band around the subtitle baseline, as a fraction of the player height.
+ *
+ * Wide enough for a thumb on the cue text, narrow enough that edge brightness/volume swipes still
+ * win when the finger starts clear of the captions.
+ */
+private const val SUBTITLE_DRAG_HIT_FRACTION = .14f
+/** One full-height drag covers this much of the Bottom→High padding range. */
+private const val SUBTITLE_DRAG_SENSITIVITY = .55f
 /** One row of a quick panel: the chips, and whatever has to line up beside them. */
 private val CHOICE_CHIP_HEIGHT = 36.dp
 private const val PLAYER_DOUBLE_TAP_SEEK_MS = 10_000L
@@ -339,6 +351,46 @@ internal fun playerSwipeLevel(
   return (startLevel - (totalVerticalDragPx / heightPx) * PLAYER_SWIPE_SENSITIVITY)
     .coerceIn(0f, 1f)
 }
+
+/** Y of the subtitle baseline from the top of the player, matching [SubtitleView] bottom padding. */
+internal fun subtitleCueBaselineY(heightPx: Int, bottomPaddingFraction: Float): Float {
+  if (heightPx <= 0) return 0f
+  return heightPx * (1f - bottomPaddingFraction.coerceIn(0f, 1f))
+}
+
+/**
+ * Phone-only: a vertical drag that begins on the cue band repositions captions instead of
+ * brightness/volume. Seek scrub stays on the timeline control and is unaffected.
+ */
+internal fun isSubtitleDragTouch(
+  touchY: Float,
+  heightPx: Int,
+  bottomPaddingFraction: Float,
+  subtitlesEnabled: Boolean,
+  hitFraction: Float = SUBTITLE_DRAG_HIT_FRACTION,
+): Boolean {
+  if (!subtitlesEnabled || heightPx <= 0) return false
+  val baseline = subtitleCueBaselineY(heightPx, bottomPaddingFraction)
+  val halfBand = heightPx * hitFraction.coerceAtLeast(0f) / 2f
+  // Text sits mostly above the padding edge, so bias the hit band upward.
+  return touchY in (baseline - halfBand * 1.4f)..(baseline + halfBand * .6f)
+}
+
+/** Up raises captions (larger bottom padding); down lowers them. Clamped to the option range. */
+internal fun subtitlePaddingAfterDrag(
+  startPadding: Float,
+  totalVerticalDragPx: Float,
+  heightPx: Int,
+): Float {
+  val minPadding = SubtitlePositionOption.BOTTOM.bottomPadding
+  val maxPadding = SubtitlePositionOption.HIGH.bottomPadding
+  if (heightPx <= 0) return startPadding.coerceIn(minPadding, maxPadding)
+  return (startPadding - (totalVerticalDragPx / heightPx) * SUBTITLE_DRAG_SENSITIVITY)
+    .coerceIn(minPadding, maxPadding)
+}
+
+internal fun nearestSubtitlePosition(bottomPadding: Float): SubtitlePositionOption =
+  SubtitlePositionOption.entries.minBy { abs(it.bottomPadding - bottomPadding) }
 
 internal fun mediaVolumeIndex(level: Float, maximumVolume: Int): Int =
   (level.coerceIn(0f, 1f) * maximumVolume.coerceAtLeast(0)).roundToInt()
@@ -730,6 +782,8 @@ internal fun HlsPlayerScreen(
   var controlsInteractionVersion by remember { mutableIntStateOf(0) }
   var swipeFeedback by remember(request) { mutableStateOf<PlayerSwipeFeedback?>(null) }
   var swipeInProgress by remember(request) { mutableStateOf(false) }
+  /** Continuous bottom-padding while a phone subtitle drag is active; null otherwise. */
+  var subtitleDragPadding by remember(request) { mutableStateOf<Float?>(null) }
   var seekBurst by remember(request) { mutableStateOf<PlayerSeekBurst?>(null) }
   var playbackFinished by remember(request) { mutableStateOf(false) }
   // What the bandwidth meter already knows decides where Auto opens. It is a process-wide singleton
@@ -751,6 +805,13 @@ internal fun HlsPlayerScreen(
   var hasStartedPlayback by remember(player) { mutableStateOf(false) }
   var wantsPlayback by remember(player) { mutableStateOf(true) }
   var stallRecoveryAttempts by remember(player) { mutableIntStateOf(0) }
+  val pauseCastRepository = remember { TmdbPlaybackDetailsRepository(BuildConfig.TMDB_API_KEY) }
+  var pauseTipCatalog by remember(request) { mutableStateOf(PauseTipCatalog()) }
+  var pauseTip by remember(request) { mutableStateOf<PauseTip?>(null) }
+  val pauseTriviaTitleKey =
+    remember(request) {
+      request.context?.pageUrl?.takeIf(String::isNotBlank) ?: request.url
+    }
   // A two-minute short drama is watched as a run, so it rolls on with no countdown to sit through.
   // A full-length episode gets the pause, which is the viewer's chance to stop after one.
   val shortForm = request.context?.shortForm == true
@@ -1409,6 +1470,36 @@ internal fun HlsPlayerScreen(
     }
   }
 
+  // Pause tips (cast / director / facts / reviews) — background load so first pause rarely waits on TMDB.
+  LaunchedEffect(request.context?.pageUrl, request.url, isLiveContent, shortForm) {
+    pauseTipCatalog = PauseTipCatalog()
+    pauseTip = null
+    val playback = request.context
+    if (playback == null || isLiveContent || shortForm) return@LaunchedEffect
+    val details = pauseCastRepository.pauseTipDetails(playback)
+    pauseTipCatalog =
+      PauseTipCatalog(
+        cast = details?.cast.orEmpty(),
+        director = details?.director,
+        // Structured facts as separate tips; never TMDB taglines. Soft-skips when nothing factual remains.
+        triviaFacts =
+          pauseTriviaFacts(
+            year = details?.year,
+            rating = details?.rating,
+            runtimeMinutes = details?.runtimeMinutes,
+            genres = details?.genres.orEmpty(),
+            overview = details?.overview,
+          ),
+        reviews = details?.reviews.orEmpty(),
+      )
+  }
+
+  // Each transition into a paused, started title picks the next least-recently-shown tip.
+  LaunchedEffect(isVideoPlaying, pauseTipCatalog, hasStartedPlayback) {
+    if (isVideoPlaying || !hasStartedPlayback || !pauseTipCatalog.hasContent) return@LaunchedEffect
+    pauseTip = PauseTipRotationStore.nextTip(pauseTriviaTitleKey, pauseTipCatalog)
+  }
+
   // What is playing reaches the notification shade and the lock screen, so it can be paused and
   // seeked from there. Casting is left alone: the Cast notification already controls that.
   MediaControlsEffect(
@@ -1550,14 +1641,42 @@ internal fun HlsPlayerScreen(
           },
         )
       }
-      .pointerInput(isTelevision, settingsOpen, inPictureInPicture, player) {
+      .pointerInput(
+        isTelevision,
+        settingsOpen,
+        inPictureInPicture,
+        player,
+        subtitlePosition,
+        selectedSubtitle.disabled,
+      ) {
         if (isTelevision || settingsOpen || inPictureInPicture) return@pointerInput
 
         var activeControl: PlayerSwipeControl? = null
+        var draggingSubtitles = false
         var startLevel = 0f
+        var startSubtitlePadding = subtitlePosition.bottomPadding
         var totalDragPx = 0f
         detectVerticalDragGestures(
           onDragStart = { start ->
+            totalDragPx = 0f
+            controlsInteractionVersion++
+            val grabSubtitles =
+              isSubtitleDragTouch(
+                touchY = start.y,
+                heightPx = size.height,
+                bottomPaddingFraction = subtitlePosition.bottomPadding,
+                subtitlesEnabled = !selectedSubtitle.disabled,
+              )
+            if (grabSubtitles) {
+              draggingSubtitles = true
+              activeControl = null
+              startSubtitlePadding = subtitlePosition.bottomPadding
+              subtitleDragPadding = startSubtitlePadding
+              swipeInProgress = true
+              swipeFeedback = null
+              return@detectVerticalDragGestures
+            }
+            draggingSubtitles = false
             val control = playerSwipeControl(start.x, size.width)
             activeControl = control
             startLevel =
@@ -1566,12 +1685,17 @@ internal fun HlsPlayerScreen(
                 PlayerSwipeControl.VOLUME ->
                   if (audioManager.isVolumeFixed) player.volume else currentMediaVolume(audioManager)
               }
-            totalDragPx = 0f
             swipeInProgress = true
-            swipeFeedback = activeControl?.let { PlayerSwipeFeedback(it, startLevel) }
-            controlsInteractionVersion++
+            swipeFeedback = PlayerSwipeFeedback(control, startLevel)
           },
           onVerticalDrag = { change, dragAmount ->
+            if (draggingSubtitles) {
+              change.consume()
+              totalDragPx += dragAmount
+              subtitleDragPadding =
+                subtitlePaddingAfterDrag(startSubtitlePadding, totalDragPx, size.height)
+              return@detectVerticalDragGestures
+            }
             val control = activeControl ?: return@detectVerticalDragGestures
             change.consume()
             totalDragPx += dragAmount
@@ -1588,11 +1712,23 @@ internal fun HlsPlayerScreen(
             swipeFeedback = PlayerSwipeFeedback(control, level)
           },
           onDragEnd = {
+            if (draggingSubtitles) {
+              val snapped = nearestSubtitlePosition(subtitleDragPadding ?: startSubtitlePadding)
+              if (snapped != subtitlePosition) {
+                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+              }
+              subtitlePosition = snapped
+              playerPreferences.setSubtitlePosition(snapped)
+              subtitleDragPadding = null
+            }
+            draggingSubtitles = false
             activeControl = null
             swipeInProgress = false
           },
           onDragCancel = {
+            draggingSubtitles = false
             activeControl = null
+            subtitleDragPadding = null
             swipeInProgress = false
           },
         )
@@ -1615,10 +1751,40 @@ internal fun HlsPlayerScreen(
         view.player = player
         view.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
         view.resizeMode = videoResize.resizeMode
-        applySubtitleAppearance(view, subtitleSize, subtitlePosition, subtitleStyle)
+        applySubtitleAppearance(
+          view,
+          subtitleSize,
+          subtitlePosition,
+          subtitleStyle,
+          bottomPaddingOverride = subtitleDragPadding,
+        )
       },
       modifier = Modifier.fillMaxSize(),
     )
+
+    val showPauseTip =
+      pauseTip != null &&
+        !isVideoPlaying &&
+        hasStartedPlayback &&
+        !settingsOpen &&
+        !isCasting &&
+        error == null &&
+        !inPictureInPicture &&
+        !playbackFinished &&
+        !swipeInProgress &&
+        !isLiveContent &&
+        !shortForm
+
+    pauseTip?.let { tip ->
+      PauseTipOverlay(
+        tip = tip,
+        visible = showPauseTip,
+        modifier =
+          Modifier
+            .align(Alignment.CenterStart)
+            .padding(start = if (isTelevision) 36.dp else 20.dp, bottom = if (isTelevision) 48.dp else 72.dp),
+      )
+    }
 
     AnimatedVisibility(
       visible = controlsVisible && !settingsOpen && !inPictureInPicture,
@@ -1680,6 +1846,14 @@ internal fun HlsPlayerScreen(
                 else Alignment.CenterEnd
               )
               .padding(horizontal = 24.dp),
+        )
+      }
+
+      subtitleDragPadding?.let { padding ->
+        SubtitleDragFeedbackOverlay(
+          bottomPaddingFraction = padding,
+          positionLabel = nearestSubtitlePosition(padding).label,
+          modifier = Modifier.fillMaxSize(),
         )
       }
 
@@ -1843,6 +2017,37 @@ private fun setMediaVolume(audioManager: AudioManager, player: Player, level: Fl
   if (target == audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)) return
   runCatching { audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0) }
     .onFailure { player.volume = safeLevel }
+}
+
+@Composable
+private fun SubtitleDragFeedbackOverlay(
+  bottomPaddingFraction: Float,
+  positionLabel: String,
+  modifier: Modifier = Modifier,
+) {
+  BoxWithConstraints(modifier) {
+    val pad = maxHeight * bottomPaddingFraction.coerceIn(0f, 1f)
+    Box(
+      Modifier
+        .align(Alignment.BottomCenter)
+        .padding(bottom = pad)
+        .fillMaxWidth(.46f)
+        .height(2.dp)
+        .clip(RoundedCornerShape(1.dp))
+        .background(SoftWhite.copy(alpha = .28f)),
+    )
+    Text(
+      text = positionLabel,
+      color = SoftWhite.copy(alpha = .72f),
+      fontSize = 12.sp,
+      fontWeight = FontWeight.SemiBold,
+      modifier =
+        Modifier
+          .align(Alignment.BottomCenter)
+          .padding(bottom = pad + 10.dp)
+          .semantics { contentDescription = "Subtitle position $positionLabel" },
+    )
+  }
 }
 
 @Composable
@@ -3919,6 +4124,7 @@ internal fun applySubtitleAppearance(
   size: SubtitleSizeOption,
   position: SubtitlePositionOption,
   style: SubtitleStyleOption,
+  bottomPaddingOverride: Float? = null,
 ) {
   val captionStyle =
     when (style) {
@@ -3941,11 +4147,14 @@ internal fun applySubtitleAppearance(
           null,
         )
     }
+  val bottomPadding =
+    bottomPaddingOverride
+      ?: position.bottomPadding
   playerView.subtitleView?.apply {
     setViewType(SubtitleView.VIEW_TYPE_CANVAS)
     setApplyEmbeddedFontSizes(false)
     setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * size.scale)
-    setBottomPaddingFraction(position.bottomPadding)
+    setBottomPaddingFraction(bottomPadding)
     setStyle(captionStyle)
   }
 }

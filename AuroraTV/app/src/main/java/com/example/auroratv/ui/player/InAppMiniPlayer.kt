@@ -1,9 +1,16 @@
 package com.example.auroratv.ui.player
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,19 +30,24 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick as semanticsOnClick
@@ -55,6 +67,16 @@ import com.example.auroratv.theme.DeepSpace
 import com.example.auroratv.theme.MutedBlue
 import com.example.auroratv.theme.NightSurface
 import com.example.auroratv.theme.SoftWhite
+import kotlinx.coroutines.launch
+
+/** Downward drag distance (dp) that counts as a dismiss without needing a fling. */
+internal val MINI_PLAYER_DISMISS_THRESHOLD_DP = 72.dp
+
+/** Downward fling speed (px/s) that dismisses even below the distance threshold. */
+internal const val MINI_PLAYER_DISMISS_FLING_VELOCITY_PX_PER_SEC = 1400f
+
+/** How much upward (negative) drag is resisted while rubber-banding. */
+internal const val MINI_PLAYER_RUBBER_BAND_FACTOR = 0.35f
 
 /**
  * Whether the in-app player composable should stay alive above browse destinations.
@@ -82,10 +104,38 @@ internal fun canMinimizeToInAppPlayer(
 ): Boolean = !isTelevision && !minimized && !isCasting && !hasError && !playbackFinished
 
 /**
+ * Maps accumulated finger travel to on-screen offset: free downward motion, rubber-banded upward.
+ */
+internal fun miniPlayerDragVisualOffset(rawOffsetPx: Float): Float =
+  if (rawOffsetPx < 0f) rawOffsetPx * MINI_PLAYER_RUBBER_BAND_FACTOR else rawOffsetPx
+
+/**
+ * Dismiss when the user has dragged far enough down, or flung downward quickly.
+ *
+ * [dragOffsetPx] should be the raw (pre-rubber-band) vertical travel; positive is down.
+ */
+internal fun shouldDismissMiniPlayer(
+  dragOffsetPx: Float,
+  velocityYPxPerSec: Float,
+  dismissThresholdPx: Float,
+  flingVelocityPxPerSec: Float = MINI_PLAYER_DISMISS_FLING_VELOCITY_PX_PER_SEC,
+): Boolean =
+  dragOffsetPx >= dismissThresholdPx || velocityYPxPerSec >= flingVelocityPxPerSec
+
+/** Alpha / scale progress from 0 (rest) to 1+ while dragging toward dismiss. */
+internal fun miniPlayerDismissProgress(
+  visualOffsetPx: Float,
+  dismissThresholdPx: Float,
+): Float =
+  if (dismissThresholdPx <= 0f) 0f
+  else (visualOffsetPx / dismissThresholdPx).coerceAtLeast(0f)
+
+/**
  * Floating YouTube-style player: picture keeps running while the rest of the app is browsable.
  *
  * Drawn in a corner so taps outside fall through to the catalog beneath. The surface expands back
- * to the full player; the close control ends the session.
+ * to the full player; the close control ends the session. On phone, a downward drag dismisses the
+ * same way as Close.
  */
 @Composable
 internal fun InAppMiniPlayer(
@@ -103,10 +153,87 @@ internal fun InAppMiniPlayer(
   val videoHeight = if (isTelevision) 202.dp else 124.dp
   var cardFocused by remember { mutableStateOf(false) }
 
+  val density = LocalDensity.current
+  val dismissThresholdPx =
+    remember(density) { with(density) { MINI_PLAYER_DISMISS_THRESHOLD_DP.toPx() } }
+  val dismissExitPx = remember(density) { with(density) { 320.dp.toPx() } }
+  val scope = rememberCoroutineScope()
+  val onDismissUpdated by rememberUpdatedState(onDismiss)
+
+  var rawDragOffsetPx by remember { mutableFloatStateOf(0f) }
+  var visualOffsetPx by remember { mutableFloatStateOf(0f) }
+  var dismissInFlight by remember { mutableStateOf(false) }
+  val dismissInFlightUpdated by rememberUpdatedState(dismissInFlight)
+
+  val draggableState =
+    rememberDraggableState { delta ->
+      if (dismissInFlightUpdated) return@rememberDraggableState
+      rawDragOffsetPx += delta
+      visualOffsetPx = miniPlayerDragVisualOffset(rawDragOffsetPx)
+    }
+
+  val dismissProgress = miniPlayerDismissProgress(visualOffsetPx, dismissThresholdPx)
+  val dragAlpha = (1f - dismissProgress * 0.55f).coerceIn(0.2f, 1f)
+  val dragScale = (1f - dismissProgress.coerceAtMost(1.25f) * 0.1f).coerceIn(0.85f, 1f)
+
   Column(
     modifier =
       modifier
         .width(cardWidth)
+        .graphicsLayer {
+          translationY = visualOffsetPx
+          alpha = dragAlpha
+          scaleX = dragScale
+          scaleY = dragScale
+        }
+        .then(
+          if (!isTelevision) {
+            Modifier.draggable(
+              state = draggableState,
+              orientation = Orientation.Vertical,
+              enabled = !dismissInFlight,
+              onDragStopped = { velocity ->
+                if (dismissInFlightUpdated) return@draggable
+                val shouldDismiss =
+                  shouldDismissMiniPlayer(
+                    dragOffsetPx = rawDragOffsetPx,
+                    velocityYPxPerSec = velocity,
+                    dismissThresholdPx = dismissThresholdPx,
+                  )
+                scope.launch {
+                  if (shouldDismiss) {
+                    dismissInFlight = true
+                    val anim = Animatable(visualOffsetPx)
+                    anim.animateTo(
+                      targetValue = dismissExitPx,
+                      animationSpec = tween(durationMillis = 180),
+                    ) {
+                      visualOffsetPx = value
+                      rawDragOffsetPx = value
+                    }
+                    onDismissUpdated()
+                  } else {
+                    val anim = Animatable(visualOffsetPx)
+                    anim.animateTo(
+                      targetValue = 0f,
+                      animationSpec =
+                        spring(
+                          dampingRatio = Spring.DampingRatioMediumBouncy,
+                          stiffness = Spring.StiffnessMediumLow,
+                        ),
+                    ) {
+                      visualOffsetPx = value
+                    }
+                    rawDragOffsetPx = 0f
+                    visualOffsetPx = 0f
+                  }
+                }
+              },
+            )
+          } else {
+            Modifier
+          },
+        )
         .clip(RoundedCornerShape(14.dp))
         .background(NightSurface.copy(alpha = .96f))
         .border(
@@ -130,7 +257,7 @@ internal fun InAppMiniPlayer(
           }
         }
         .focusable()
-        .clickable(onClick = onExpand)
+        .clickable(enabled = !dismissInFlight, onClick = onExpand)
         .semantics {
           role = Role.Button
           contentDescription = "Expand player, $title"
