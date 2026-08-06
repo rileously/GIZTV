@@ -279,6 +279,19 @@ private const val RELIABLE_START_BUFFER_MS = 5_000
 private const val RELIABLE_REBUFFER_MS = 12_000
 private const val PHONE_START_BUFFER_MS = 2_500
 private const val PHONE_REBUFFER_MS = 5_000
+/**
+ * Progressive MP4/MKV files (typical of SR2/SR3) have no ladder, so a deep HLS cushion just means
+ * more megabytes to fill before start and after every stall. Keep a useful safety net without
+ * asking for 30–75 seconds of a single high-bitrate file.
+ */
+private const val PROGRESSIVE_MIN_BUFFER_MS = 15_000
+private const val PROGRESSIVE_MAX_BUFFER_MS = 45_000
+private const val PROGRESSIVE_TV_START_BUFFER_MS = 2_500
+private const val PROGRESSIVE_PHONE_START_BUFFER_MS = 1_500
+private const val PROGRESSIVE_TV_REBUFFER_MS = 6_000
+private const val PROGRESSIVE_PHONE_REBUFFER_MS = 3_000
+/** Default cap when a progressive CDN filename encodes an oversized resolution (e.g. 2160p.mp4). */
+internal const val PROGRESSIVE_DEFAULT_MAX_HEIGHT = 1080
 private const val PHONE_AUTO_MAX_VIDEO_WIDTH = 1280
 private const val PHONE_AUTO_MAX_VIDEO_HEIGHT = 720
 private const val PHONE_AUTO_MAX_VIDEO_BITRATE = 3_000_000
@@ -443,13 +456,100 @@ internal data class PlaybackBufferProfile(
   val rebufferMs: Int,
 )
 
-internal fun playbackBufferProfile(isTelevision: Boolean): PlaybackBufferProfile =
-  PlaybackBufferProfile(
-    minBufferMs = RELIABLE_MIN_BUFFER_MS,
-    maxBufferMs = RELIABLE_MAX_BUFFER_MS,
-    startBufferMs = if (isTelevision) RELIABLE_START_BUFFER_MS else PHONE_START_BUFFER_MS,
-    rebufferMs = if (isTelevision) RELIABLE_REBUFFER_MS else PHONE_REBUFFER_MS,
-  )
+internal fun playbackBufferProfile(
+  isTelevision: Boolean,
+  progressive: Boolean = false,
+): PlaybackBufferProfile =
+  if (progressive) {
+    PlaybackBufferProfile(
+      minBufferMs = PROGRESSIVE_MIN_BUFFER_MS,
+      maxBufferMs = PROGRESSIVE_MAX_BUFFER_MS,
+      startBufferMs =
+        if (isTelevision) PROGRESSIVE_TV_START_BUFFER_MS else PROGRESSIVE_PHONE_START_BUFFER_MS,
+      rebufferMs = if (isTelevision) PROGRESSIVE_TV_REBUFFER_MS else PROGRESSIVE_PHONE_REBUFFER_MS,
+    )
+  } else {
+    PlaybackBufferProfile(
+      minBufferMs = RELIABLE_MIN_BUFFER_MS,
+      maxBufferMs = RELIABLE_MAX_BUFFER_MS,
+      startBufferMs = if (isTelevision) RELIABLE_START_BUFFER_MS else PHONE_START_BUFFER_MS,
+      rebufferMs = if (isTelevision) RELIABLE_REBUFFER_MS else PHONE_REBUFFER_MS,
+    )
+  }
+
+/**
+ * Whether this request is a complete file rather than an adaptive playlist.
+ *
+ * Progressive sources leave [HlsStreamRequest.mimeType] null so Media3 can sniff the body; HLS is
+ * announced as `APPLICATION_M3U8`. Cached replays historically omitted mimeType and inherited the
+ * HLS default even for `.mp4` addresses — the filename wins in that case so those titles still get
+ * the progressive buffer profile and a sniffed media source. Auto quality ceilings cannot step a
+ * progressive file down (one track), so the player must treat them differently.
+ */
+internal fun isProgressiveStreamRequest(request: HlsStreamRequest): Boolean {
+  if (urlLooksLikeProgressiveMedia(request.url)) return true
+  val mime = request.mimeType
+  if (
+    mime.equals(MimeTypes.APPLICATION_M3U8, ignoreCase = true) ||
+      mime?.contains("mpegurl", ignoreCase = true) == true
+  ) {
+    return false
+  }
+  return mime?.startsWith("video/") == true
+}
+
+private fun urlLooksLikeProgressiveMedia(url: String): Boolean {
+  val path = url.substringBefore('#').substringBefore('?').lowercase()
+  return path.endsWith(".mp4") ||
+    path.endsWith(".m4v") ||
+    path.endsWith(".mkv") ||
+    path.endsWith(".webm")
+}
+
+private val PROGRESSIVE_QUALITY_FILE =
+  Regex("""/(\d{3,4}p|4k)\.(mp4|m4v|mkv|webm)$""", RegexOption.IGNORE_CASE)
+
+/**
+ * Prefers a mid-tier progressive file when the CDN encodes resolution in the filename.
+ *
+ * vidfast (and similar) often emit `…/2160p.mp4` with no alternate tracks. The in-app Auto ladder
+ * cannot help; the browser embed usually starts nearer 1080p. Rewriting only when the path is
+ * explicitly taller than [maxHeight] keeps ordinary 720p/1080p addresses untouched.
+ */
+internal fun preferProgressivePlaybackUrl(
+  url: String,
+  maxHeight: Int = PROGRESSIVE_DEFAULT_MAX_HEIGHT,
+): String {
+  if (maxHeight <= 0 || !urlLooksLikeProgressiveMedia(url)) return url
+  val path = url.substringBefore('#').substringBefore('?')
+  val suffix = url.removePrefix(path)
+  val match = PROGRESSIVE_QUALITY_FILE.find(path) ?: return url
+  val currentHeight = progressiveHeightLabelToPx(match.groupValues[1]) ?: return url
+  if (currentHeight <= maxHeight) return url
+  val targetLabel = progressiveHeightToLabel(maxHeight) ?: return url
+  val extension = match.groupValues[2]
+  val rewrittenPath =
+    path.substring(0, match.range.first) + "/$targetLabel.$extension"
+  return rewrittenPath + suffix
+}
+
+internal fun progressiveHeightLabelToPx(label: String): Int? {
+  val normalized = label.trim().lowercase()
+  if (normalized == "4k") return 2160
+  if (!normalized.endsWith('p')) return null
+  return normalized.dropLast(1).toIntOrNull()?.takeIf { it in 144..4320 }
+}
+
+internal fun progressiveHeightToLabel(heightPx: Int): String? =
+  when {
+    heightPx >= 2160 -> "2160p"
+    heightPx >= 1440 -> "1440p"
+    heightPx >= 1080 -> "1080p"
+    heightPx >= 720 -> "720p"
+    heightPx >= 480 -> "480p"
+    heightPx >= 360 -> "360p"
+    else -> null
+  }
 
 internal data class AutomaticQualityPromotion(
   val nextPhase: AutomaticQualityPhase,
@@ -4212,12 +4312,29 @@ internal fun createHlsPlayer(
         AUTO_QUALITY_BANDWIDTH_FRACTION,
       ),
     )
-  val mediaSource = createHlsMediaSource(context, request)
-  val bufferProfile = playbackBufferProfile(isTelevision)
+  val progressive = isProgressiveStreamRequest(request)
+  val progressiveMaxHeight =
+    if (compatibilityMode) COMPATIBILITY_MAX_VIDEO_HEIGHT else PROGRESSIVE_DEFAULT_MAX_HEIGHT
+  val cappedUrl = preferProgressivePlaybackUrl(request.url, progressiveMaxHeight)
+  // Clear a stale HLS mime on progressive filenames so Media3 sniffs the file instead of parsing
+  // an MP4 as a playlist (common when a cached stream omitted mimeType and hit the default).
+  val playbackRequest =
+    request.copy(
+      url = cappedUrl,
+      mimeType = if (progressive) null else request.mimeType,
+    )
+  if (playbackRequest.url != request.url) {
+    android.util.Log.i(
+      "AuroraHls",
+      "Capped progressive quality for smoother playback: ${request.url} → ${playbackRequest.url}",
+    )
+  }
+  val mediaSource = createHlsMediaSource(context, playbackRequest)
+  val bufferProfile = playbackBufferProfile(isTelevision, progressive = progressive)
   val loadControl =
     DefaultLoadControl.Builder()
-      // Slow links need time rather than bytes: keep up to 75 seconds ahead, wait for a useful five
-      // seconds before the first frame, and rebuild a larger cushion after any interruption.
+      // Slow links need time rather than bytes. Progressive files use a shorter cushion (see
+      // playbackBufferProfile); HLS keeps the deeper 30–75s window.
       .setBufferDurationsMsForStreaming(
         bufferProfile.minBufferMs,
         bufferProfile.maxBufferMs,
@@ -4251,7 +4368,9 @@ internal fun createHlsPlayer(
         selectionBuilder
           .setMaxVideoSize(COMPATIBILITY_MAX_VIDEO_WIDTH, COMPATIBILITY_MAX_VIDEO_HEIGHT)
           .setMaxVideoBitrate(COMPATIBILITY_MAX_VIDEO_BITRATE)
-      } else {
+      } else if (!progressive) {
+        // Ceilings only matter when the source publishes multiple renditions. A single progressive
+        // file has nowhere to step down to; capping tracks would not change the bytes on the wire.
         // The opening ceiling is the one the measured link has already earned, so a fast connection
         // renders the first segment at the quality it would have reached a minute later anyway.
         applyAutomaticQualityCeiling(

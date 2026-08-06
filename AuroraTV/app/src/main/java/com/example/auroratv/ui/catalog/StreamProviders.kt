@@ -28,7 +28,9 @@ internal data class StreamProvider(
  * vidfast trails because it is slow and inflexible, not because it is unreliable. Its own page
  * spends around fifteen seconds working before it emits any address — roughly twice vidlink's
  * whole resolution — and what it then emits is a single progressive file, sometimes 2160p, with no
- * ladder for the player to adapt down. Nothing here can hurry it up; it can only be asked later.
+ * ladder for the player to adapt down. Nothing here can hurry the page up; the player caps oversized
+ * progressive filenames (see preferProgressivePlaybackUrl) and uses a shorter buffer profile so
+ * those titles do not stall the way an HLS cushion would on one huge file.
  */
 internal val STREAM_PROVIDERS: List<StreamProvider> =
   listOf(

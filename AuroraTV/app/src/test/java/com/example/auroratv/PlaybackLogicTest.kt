@@ -2,6 +2,7 @@ package com.example.auroratv
 
 import androidx.media3.common.C
 import androidx.media3.common.Format
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.source.BehindLiveWindowException
 import com.example.auroratv.ui.StreamFailureAction
@@ -44,7 +45,11 @@ import com.example.auroratv.ui.player.playerSwipeControl
 import com.example.auroratv.ui.player.playerSwipeLevel
 import com.example.auroratv.ui.player.subtitleCueBaselineY
 import com.example.auroratv.ui.player.subtitlePaddingAfterDrag
+import com.example.auroratv.ui.player.PROGRESSIVE_DEFAULT_MAX_HEIGHT
+import com.example.auroratv.ui.player.isProgressiveStreamRequest
 import com.example.auroratv.ui.player.playbackBufferProfile
+import com.example.auroratv.ui.player.preferProgressivePlaybackUrl
+import com.example.auroratv.ui.player.progressiveHeightLabelToPx
 import com.example.auroratv.ui.player.prolongedStallAction
 import com.example.auroratv.ui.player.shouldComposeInAppPlayerSession
 import com.example.auroratv.ui.player.stallTimeoutMs
@@ -583,6 +588,111 @@ class PlaybackLogicTest {
     assertEquals(5_000, phone.rebufferMs)
     assertEquals(5_000, television.startBufferMs)
     assertEquals(12_000, television.rebufferMs)
+  }
+
+  @Test
+  fun progressive_usesAShorterBufferCushionThanHls() {
+    val progressivePhone = playbackBufferProfile(isTelevision = false, progressive = true)
+    val progressiveTv = playbackBufferProfile(isTelevision = true, progressive = true)
+    val hlsPhone = playbackBufferProfile(isTelevision = false, progressive = false)
+
+    assertEquals(15_000, progressivePhone.minBufferMs)
+    assertEquals(45_000, progressivePhone.maxBufferMs)
+    assertEquals(1_500, progressivePhone.startBufferMs)
+    assertEquals(3_000, progressivePhone.rebufferMs)
+    assertEquals(2_500, progressiveTv.startBufferMs)
+    assertEquals(6_000, progressiveTv.rebufferMs)
+    // HLS keeps the deeper cushion; progressive must not inherit it.
+    assertTrue(progressivePhone.minBufferMs < hlsPhone.minBufferMs)
+    assertTrue(progressivePhone.maxBufferMs < hlsPhone.maxBufferMs)
+  }
+
+  @Test
+  fun progressiveRequests_areRecognisedFromMimeTypeAndFilename() {
+    assertTrue(
+      isProgressiveStreamRequest(
+        HlsStreamRequest(
+          url = "https://moon.ironwallnet.net/mp4/TOKEN/1080p.mp4",
+          headers = emptyMap(),
+          mimeType = null,
+        ),
+      ),
+    )
+    // Cached replays used to omit mimeType and inherit APPLICATION_M3U8; the .mp4 path still wins.
+    assertTrue(
+      isProgressiveStreamRequest(
+        HlsStreamRequest(
+          url = "https://moon.ironwallnet.net/mp4/TOKEN/1080p.mp4",
+          headers = emptyMap(),
+          mimeType = MimeTypes.APPLICATION_M3U8,
+        ),
+      ),
+    )
+    assertTrue(
+      isProgressiveStreamRequest(
+        HlsStreamRequest(
+          url = "https://cdn.example/video.bin",
+          headers = emptyMap(),
+          mimeType = "video/mp4",
+        ),
+      ),
+    )
+    assertFalse(
+      isProgressiveStreamRequest(
+        HlsStreamRequest(
+          url = "https://cdn.example/index.m3u8",
+          headers = emptyMap(),
+          mimeType = MimeTypes.APPLICATION_M3U8,
+        ),
+      ),
+    )
+  }
+
+  @Test
+  fun progressiveUrls_capOversizedFilenameQualityWithoutTouchingNormalOnes() {
+    assertEquals(2160, progressiveHeightLabelToPx("2160p"))
+    assertEquals(2160, progressiveHeightLabelToPx("4K"))
+    assertEquals(PROGRESSIVE_DEFAULT_MAX_HEIGHT, 1080)
+
+    assertEquals(
+      "https://moon.ironwallnet.net/mp4/TOKEN/1080p.mp4",
+      preferProgressivePlaybackUrl(
+        "https://moon.ironwallnet.net/mp4/TOKEN/2160p.mp4",
+      ),
+    )
+    assertEquals(
+      "https://cdn.example/film/1080p.mp4?token=abc",
+      preferProgressivePlaybackUrl("https://cdn.example/film/4k.mp4?token=abc"),
+    )
+    assertEquals(
+      "https://cdn.example/film/1080p.mkv",
+      preferProgressivePlaybackUrl("https://cdn.example/film/1440p.mkv"),
+    )
+    // Already at or below the cap: leave alone, including query strings.
+    assertEquals(
+      "https://moon.ironwallnet.net/mp4/TOKEN/1080p.mp4?e=1",
+      preferProgressivePlaybackUrl(
+        "https://moon.ironwallnet.net/mp4/TOKEN/1080p.mp4?e=1",
+      ),
+    )
+    assertEquals(
+      "https://cdn.example/film/720p.mp4",
+      preferProgressivePlaybackUrl("https://cdn.example/film/720p.mp4"),
+    )
+    // Compatibility mode may ask for 720p when the path is clearly taller.
+    assertEquals(
+      "https://cdn.example/film/720p.mp4",
+      preferProgressivePlaybackUrl("https://cdn.example/film/2160p.mp4", maxHeight = 720),
+    )
+    // Playlists and unlabeled files are not rewritten.
+    assertEquals(
+      "https://cdn.example/index.m3u8",
+      preferProgressivePlaybackUrl("https://cdn.example/index.m3u8"),
+    )
+    assertEquals(
+      "https://cdn.example/mp4/TOKEN/movie.mp4",
+      preferProgressivePlaybackUrl("https://cdn.example/mp4/TOKEN/movie.mp4"),
+    )
   }
 
   private class SampleQueueMappingException : RuntimeException()

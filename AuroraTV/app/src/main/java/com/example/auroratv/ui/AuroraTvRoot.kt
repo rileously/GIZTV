@@ -30,6 +30,7 @@ import com.example.auroratv.link.LinkKey
 import com.example.auroratv.link.RemoteUiBridge
 import com.example.auroratv.ui.browser.BrowserScreen
 import com.example.auroratv.ui.browser.StreamPrefetcher
+import com.example.auroratv.ui.browser.streamMimeType
 import com.example.auroratv.ui.catalog.CatalogScreen
 import com.example.auroratv.ui.catalog.STREAM_PROVIDER_COUNT
 import com.example.auroratv.ui.catalog.catalogTargetOf
@@ -270,6 +271,8 @@ fun AuroraTvRoot(
           subtitles =
             cached.subtitles.map { ExternalSubtitleTrack(it.url, it.label, it.language, it.mimeType) },
           sourcePageUrl = cached.sourcePageUrl,
+          // Progressive CDN files must not inherit the HLS default mime; null lets Media3 sniff.
+          mimeType = streamMimeType(cached.url),
           context = context,
         )
       destination = Destination.PLAYER
