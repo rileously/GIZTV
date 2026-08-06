@@ -17,7 +17,10 @@ import com.example.auroratv.ui.player.STABLE_QUALITY_LABEL
 import com.example.auroratv.ui.player.VideoQualityOption
 import com.example.auroratv.ui.player.adjustSubtitleSync
 import com.example.auroratv.ui.player.automaticQualityPhaseAfterBuffering
+import com.example.auroratv.ui.player.automaticQualityPhaseAfterStall
 import com.example.auroratv.ui.player.automaticQualityPromotion
+import com.example.auroratv.ui.player.initialAutomaticQualityPhase
+import com.example.auroratv.ui.player.isBandwidthStall
 import com.example.auroratv.ui.player.dataSaverVideoFormatOrder
 import com.example.auroratv.ui.player.isHlsTrackMappingFailure
 import com.example.auroratv.ui.player.isBehindLiveWindowFailure
@@ -136,20 +139,75 @@ class PlaybackLogicTest {
   fun automaticQuality_requiresStablePlaybackAndARealSafetyBuffer() {
     val lowPromotion = automaticQualityPromotion(AutomaticQualityPhase.LOW_STARTUP)!!
     assertEquals(AutomaticQualityPhase.BALANCED, lowPromotion.nextPhase)
-    assertEquals(15_000L, lowPromotion.stablePlaybackMs)
-    assertEquals(20_000L, lowPromotion.requiredBufferMs)
+    assertEquals(8_000L, lowPromotion.stablePlaybackMs)
+    assertEquals(10_000L, lowPromotion.requiredBufferMs)
 
     val balancedPromotion = automaticQualityPromotion(AutomaticQualityPhase.BALANCED)!!
     assertEquals(AutomaticQualityPhase.UNRESTRICTED, balancedPromotion.nextPhase)
-    assertEquals(30_000L, balancedPromotion.stablePlaybackMs)
-    assertEquals(40_000L, balancedPromotion.requiredBufferMs)
+    assertEquals(12_000L, balancedPromotion.stablePlaybackMs)
+    assertEquals(20_000L, balancedPromotion.requiredBufferMs)
     assertNull(automaticQualityPromotion(AutomaticQualityPhase.UNRESTRICTED))
+  }
+
+  @Test
+  fun automaticQuality_opensAtWhateverTheMeasuredLinkHasAlreadyEarned() {
+    // A fast link has nothing left to discover, so the film starts where the ladder would end.
+    assertEquals(AutomaticQualityPhase.UNRESTRICTED, initialAutomaticQualityPhase(40_000_000L))
+    assertEquals(AutomaticQualityPhase.UNRESTRICTED, initialAutomaticQualityPhase(8_000_000L))
+    assertEquals(AutomaticQualityPhase.BALANCED, initialAutomaticQualityPhase(5_000_000L))
+    assertEquals(AutomaticQualityPhase.LOW_STARTUP, initialAutomaticQualityPhase(1_200_000L))
+    // No measurement yet reads as zero, which is the one case that has to earn its way up.
+    assertEquals(AutomaticQualityPhase.LOW_STARTUP, initialAutomaticQualityPhase(0L))
+  }
+
+  @Test
+  fun buffering_countsAsASlowdownOnlyWhenNothingElseExplainsIt() {
+    fun stall(seekInProgress: Boolean = false, qualityChangeSettling: Boolean = false) =
+      isBandwidthStall(
+        hasStartedPlayback = true,
+        automaticQuality = true,
+        compatibilityMode = false,
+        seekInProgress = seekInProgress,
+        qualityChangeSettling = qualityChangeSettling,
+      )
+
+    assertTrue(stall())
+    // A jump empties the buffer wherever it lands; refilling it says nothing about the connection.
+    assertFalse(stall(seekInProgress = true))
+    // Neither does fetching the first segment of a rendition the ramp itself just unlocked.
+    assertFalse(stall(qualityChangeSettling = true))
+    // Buffering before the first frame is the startup buffer filling, not a stall.
+    assertFalse(
+      isBandwidthStall(
+        hasStartedPlayback = false,
+        automaticQuality = true,
+        compatibilityMode = false,
+        seekInProgress = false,
+        qualityChangeSettling = false,
+      )
+    )
+  }
+
+  @Test
+  fun rebuffering_stepsDownOnceRatherThanFallingToTheFloor() {
+    assertEquals(
+      AutomaticQualityPhase.BALANCED,
+      automaticQualityPhaseAfterStall(AutomaticQualityPhase.UNRESTRICTED),
+    )
+    assertEquals(
+      AutomaticQualityPhase.LOW_STARTUP,
+      automaticQualityPhaseAfterStall(AutomaticQualityPhase.BALANCED),
+    )
+    assertEquals(
+      AutomaticQualityPhase.LOW_STARTUP,
+      automaticQualityPhaseAfterStall(AutomaticQualityPhase.LOW_STARTUP),
+    )
   }
 
   @Test
   fun rebuffering_dropsAutomaticQualityButRespectsManualAndCompatibilityChoices() {
     assertEquals(
-      AutomaticQualityPhase.LOW_STARTUP,
+      AutomaticQualityPhase.BALANCED,
       automaticQualityPhaseAfterBuffering(
         hasStartedPlayback = true,
         automaticQuality = true,
@@ -173,6 +231,28 @@ class PlaybackLogicTest {
         automaticQuality = true,
         compatibilityMode = true,
         currentPhase = AutomaticQualityPhase.BALANCED,
+      ),
+    )
+    // A double tap used to cost the viewer the quality for the rest of the scene.
+    assertEquals(
+      AutomaticQualityPhase.UNRESTRICTED,
+      automaticQualityPhaseAfterBuffering(
+        hasStartedPlayback = true,
+        automaticQuality = true,
+        compatibilityMode = false,
+        currentPhase = AutomaticQualityPhase.UNRESTRICTED,
+        seekInProgress = true,
+      ),
+    )
+    // And the ramp used to read its own rendition switch as a reason to undo it.
+    assertEquals(
+      AutomaticQualityPhase.BALANCED,
+      automaticQualityPhaseAfterBuffering(
+        hasStartedPlayback = true,
+        automaticQuality = true,
+        compatibilityMode = false,
+        currentPhase = AutomaticQualityPhase.BALANCED,
+        qualityChangeSettling = true,
       ),
     )
   }

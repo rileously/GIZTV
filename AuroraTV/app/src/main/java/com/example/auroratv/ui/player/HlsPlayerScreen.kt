@@ -122,6 +122,7 @@ import androidx.media3.common.ParserException
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
@@ -225,16 +226,38 @@ private const val COMPATIBILITY_MAX_VIDEO_BITRATE = 5_000_000
 private const val STARTUP_MAX_VIDEO_WIDTH = 640
 private const val STARTUP_MAX_VIDEO_HEIGHT = 360
 private const val STABLE_MAX_VIDEO_BITRATE = 800_000
-private const val QUALITY_RAMP_FIRST_STEP_MS = 15_000L
-private const val QUALITY_RAMP_FINAL_STEP_MS = 30_000L
-private const val QUALITY_RAMP_RECHECK_MS = 5_000L
-private const val QUALITY_RAMP_BALANCED_BUFFER_MS = 20_000L
-private const val QUALITY_RAMP_UNRESTRICTED_BUFFER_MS = 40_000L
-private const val AUTO_QUALITY_RECOVERY_HOLD_MS = 120_000L
-private const val AUTO_QUALITY_INCREASE_BUFFER_MS = 30_000
-private const val AUTO_QUALITY_DECREASE_BUFFER_MS = 45_000
-private const val AUTO_QUALITY_RETAIN_BUFFER_MS = 40_000
-private const val AUTO_QUALITY_BANDWIDTH_FRACTION = .55f
+private const val QUALITY_RAMP_FIRST_STEP_MS = 8_000L
+private const val QUALITY_RAMP_FINAL_STEP_MS = 12_000L
+private const val QUALITY_RAMP_RECHECK_MS = 2_000L
+private const val QUALITY_RAMP_BALANCED_BUFFER_MS = 10_000L
+private const val QUALITY_RAMP_UNRESTRICTED_BUFFER_MS = 20_000L
+private const val AUTO_QUALITY_RECOVERY_HOLD_MS = 30_000L
+private const val AUTO_QUALITY_RECOVERY_BUFFER_MS = 20_000L
+/**
+ * How long after we move the ceiling ourselves the player is allowed to buffer without it counting
+ * as a slowdown. Switching rendition means fetching a segment the player does not hold yet.
+ */
+private const val QUALITY_CHANGE_SETTLE_MS = 6_000L
+/** The same allowance for a seek, which empties the buffer wherever it lands. */
+private const val SEEK_SETTLE_MS = 6_000L
+/**
+ * Media3's own adaptive defaults. The previous values asked for a 30-second cushion before any
+ * step up and 1.8x the rendition's bitrate to justify it, which a fast link satisfies far too
+ * late — the film was most of the way through its first scene before it left 360p.
+ */
+private const val AUTO_QUALITY_INCREASE_BUFFER_MS = 10_000
+private const val AUTO_QUALITY_DECREASE_BUFFER_MS = 25_000
+private const val AUTO_QUALITY_RETAIN_BUFFER_MS = 25_000
+private const val AUTO_QUALITY_BANDWIDTH_FRACTION = .7f
+/**
+ * Measured link speeds at which the startup ladder stops paying for itself.
+ *
+ * The ladder exists so a weak connection reaches a first frame quickly and builds a cushion before
+ * it commits to anything expensive. A link already known to carry several times the highest
+ * rendition gains nothing from it and loses the opening minute of every film to 360p.
+ */
+private const val FAST_LINK_BITRATE_BPS = 8_000_000L
+private const val MODERATE_LINK_BITRATE_BPS = 3_000_000L
 private const val RELIABLE_MIN_BUFFER_MS = 30_000
 private const val RELIABLE_MAX_BUFFER_MS = 75_000
 private const val RELIABLE_START_BUFFER_MS = 5_000
@@ -245,6 +268,10 @@ private const val PHONE_AUTO_MAX_VIDEO_WIDTH = 1280
 private const val PHONE_AUTO_MAX_VIDEO_HEIGHT = 720
 private const val PHONE_AUTO_MAX_VIDEO_BITRATE = 3_000_000
 private const val PHONE_AUTO_MAX_VIDEO_FRAME_RATE = 30
+/** What a phone Auto is allowed to reach once the link has been measured and is genuinely fast. */
+private const val PHONE_FAST_MAX_VIDEO_WIDTH = 1920
+private const val PHONE_FAST_MAX_VIDEO_HEIGHT = 1080
+private const val PHONE_FAST_MAX_VIDEO_BITRATE = 12_000_000
 private const val RELIABLE_HTTP_CONNECT_TIMEOUT_MS = 20_000
 private const val RELIABLE_HTTP_READ_TIMEOUT_MS = 60_000
 private const val RELIABLE_HLS_RETRY_COUNT = 6
@@ -374,14 +401,75 @@ internal fun automaticQualityPromotion(phase: AutomaticQualityPhase): AutomaticQ
     AutomaticQualityPhase.UNRESTRICTED -> null
   }
 
+/**
+ * Where Auto should begin, given what is already known about the link.
+ *
+ * The ladder is a way of finding out how much a connection can carry without risking a stall to do
+ * it. When the bandwidth meter has already answered that question there is nothing left to find
+ * out, so the film opens at the quality it is going to settle at anyway.
+ */
+internal fun initialAutomaticQualityPhase(linkBitrateBps: Long): AutomaticQualityPhase =
+  when {
+    linkBitrateBps >= FAST_LINK_BITRATE_BPS -> AutomaticQualityPhase.UNRESTRICTED
+    linkBitrateBps >= MODERATE_LINK_BITRATE_BPS -> AutomaticQualityPhase.BALANCED
+    else -> AutomaticQualityPhase.LOW_STARTUP
+  }
+
+/**
+ * Whether a buffering event is evidence that the link cannot keep up.
+ *
+ * The player also reports buffering after a seek, and while it fetches the first segment of a
+ * rendition the ramp has just unlocked. Counting either as a slowdown is what made a fast
+ * connection oscillate: the ramp raised the ceiling, the switch buffered for a moment, and that
+ * moment sent the ceiling straight back to the floor — where the ramp started over. A double tap
+ * cost the viewer the same thing, since a seek buffers exactly like a stall does.
+ */
+internal fun isBandwidthStall(
+  hasStartedPlayback: Boolean,
+  automaticQuality: Boolean,
+  compatibilityMode: Boolean,
+  seekInProgress: Boolean,
+  qualityChangeSettling: Boolean,
+): Boolean =
+  hasStartedPlayback &&
+    automaticQuality &&
+    !compatibilityMode &&
+    !seekInProgress &&
+    !qualityChangeSettling
+
+/**
+ * One rung down, not back to the bottom.
+ *
+ * A link that cannot hold 1080p is usually still comfortable at 720p, and dropping it to 360p over
+ * a single stall throws away far more than the evidence supports.
+ */
+internal fun automaticQualityPhaseAfterStall(
+  currentPhase: AutomaticQualityPhase
+): AutomaticQualityPhase =
+  when (currentPhase) {
+    AutomaticQualityPhase.UNRESTRICTED -> AutomaticQualityPhase.BALANCED
+    AutomaticQualityPhase.BALANCED -> AutomaticQualityPhase.LOW_STARTUP
+    AutomaticQualityPhase.LOW_STARTUP -> AutomaticQualityPhase.LOW_STARTUP
+  }
+
 internal fun automaticQualityPhaseAfterBuffering(
   hasStartedPlayback: Boolean,
   automaticQuality: Boolean,
   compatibilityMode: Boolean,
   currentPhase: AutomaticQualityPhase,
+  seekInProgress: Boolean = false,
+  qualityChangeSettling: Boolean = false,
 ): AutomaticQualityPhase =
-  if (hasStartedPlayback && automaticQuality && !compatibilityMode) {
-    AutomaticQualityPhase.LOW_STARTUP
+  if (
+    isBandwidthStall(
+      hasStartedPlayback = hasStartedPlayback,
+      automaticQuality = automaticQuality,
+      compatibilityMode = compatibilityMode,
+      seekInProgress = seekInProgress,
+      qualityChangeSettling = qualityChangeSettling,
+    )
+  ) {
+    automaticQualityPhaseAfterStall(currentPhase)
   } else {
     currentPhase
   }
@@ -588,8 +676,21 @@ internal fun HlsPlayerScreen(
   var swipeInProgress by remember(request) { mutableStateOf(false) }
   var seekBurst by remember(request) { mutableStateOf<PlayerSeekBurst?>(null) }
   var playbackFinished by remember(request) { mutableStateOf(false) }
-  var automaticQualityPhase by remember(player) { mutableStateOf(AutomaticQualityPhase.LOW_STARTUP) }
+  // What the bandwidth meter already knows decides where Auto opens. It is a process-wide singleton
+  // fed by every segment this app has fetched, so only the very first stream after a cold start
+  // begins on an estimate rather than a measurement.
+  val linkBitrate = remember(player) { measuredLinkBitrate(context) }
+  val fastLink = linkBitrate >= FAST_LINK_BITRATE_BPS
+  var automaticQualityPhase by
+    remember(player) { mutableStateOf(initialAutomaticQualityPhase(linkBitrate)) }
   var automaticQualityRecoveryLock by remember(player) { mutableStateOf(false) }
+  // A seek buffers exactly like a stall does, and so does the first segment of a rendition the ramp
+  // has just unlocked. Neither says anything about the connection, so both are held apart from it
+  // for a moment afterwards. Both windows expire on their own: a seek that lands inside the buffer
+  // never produces the ready event a flag would have been waiting for, and a refill still running
+  // once the window is up has stopped being the seek's fault and started being the link's.
+  var seekSettleUntilMs by remember(player) { mutableLongStateOf(0L) }
+  var qualitySettleUntilMs by remember(player) { mutableLongStateOf(0L) }
   var dataSaverFallbackRank by remember(player) { mutableIntStateOf(0) }
   var hasStartedPlayback by remember(player) { mutableStateOf(false) }
   var wantsPlayback by remember(player) { mutableStateOf(true) }
@@ -603,6 +704,23 @@ internal fun HlsPlayerScreen(
   val surfaceFocusRequester = remember { FocusRequester() }
   val nextEntry = request.context?.nextEntry
   val nextPromptVisible = playbackFinished && nextEntry != null
+
+  /**
+   * Moves the Auto ceiling and starts the settle window.
+   *
+   * Every rendition change has to fetch a segment the player does not hold yet, so the buffering it
+   * causes is expected rather than a symptom. Going through here is what keeps the ramp from
+   * reading its own work as a slowdown.
+   */
+  fun applyQualityPhase(phase: AutomaticQualityPhase, allowFixedQualityHeadroom: Boolean = false) {
+    qualitySettleUntilMs = android.os.SystemClock.elapsedRealtime() + QUALITY_CHANGE_SETTLE_MS
+    applyAutomaticQualityPhase(
+      player = player,
+      phase = phase,
+      isTelevision = isTelevision || allowFixedQualityHeadroom,
+      fastLink = fastLink,
+    )
+  }
 
   /**
    * Moves the captions, and nothing else.
@@ -877,11 +995,17 @@ internal fun HlsPlayerScreen(
           isBuffering = playbackState == Player.STATE_BUFFERING
           when (playbackState) {
             Player.STATE_BUFFERING -> {
+              val now = android.os.SystemClock.elapsedRealtime()
+              val seeking = now < seekSettleUntilMs
+              val switchingQuality = now < qualitySettleUntilMs
               if (
-                hasStartedPlayback &&
-                  selectedQuality.isAuto &&
-                  !selectedQuality.isStable &&
-                  !compatibilityMode
+                isBandwidthStall(
+                  hasStartedPlayback = hasStartedPlayback,
+                  automaticQuality = selectedQuality.isAuto && !selectedQuality.isStable,
+                  compatibilityMode = compatibilityMode,
+                  seekInProgress = seeking,
+                  qualityChangeSettling = switchingQuality,
+                )
               ) {
                 automaticQualityRecoveryLock = true
               }
@@ -891,14 +1015,22 @@ internal fun HlsPlayerScreen(
                   automaticQuality = selectedQuality.isAuto,
                   compatibilityMode = compatibilityMode,
                   currentPhase = automaticQualityPhase,
+                  seekInProgress = seeking,
+                  qualityChangeSettling = switchingQuality,
                 )
               if (nextPhase != automaticQualityPhase) {
                 automaticQualityPhase = nextPhase
-                applyAutomaticQualityPhase(player, nextPhase, isTelevision)
-                status = "Connection slowed - rebuilding a safety buffer in low quality"
+                applyQualityPhase(nextPhase)
+                status = "Connection slowed - stepping the quality down once"
               }
             }
-            Player.STATE_READY -> subtitleStatus = describeSubtitleState(player.currentTracks)
+            Player.STATE_READY -> {
+              // Whatever the player was refilling for has arrived, so the settle windows have done
+              // their job; the next buffering event is judged on its own.
+              seekSettleUntilMs = 0L
+              qualitySettleUntilMs = 0L
+              subtitleStatus = describeSubtitleState(player.currentTracks)
+            }
             Player.STATE_ENDED -> {
               progressStore.clear(progressKey)
               request.context?.let {
@@ -907,6 +1039,19 @@ internal fun HlsPlayerScreen(
               playbackFinished = true
             }
             else -> Unit
+          }
+        }
+
+        // A jump empties the buffer wherever it lands, so the refill that follows is the seek's own
+        // doing. Without this, one double tap read as a slowdown and cost the viewer the quality
+        // for the rest of the scene.
+        override fun onPositionDiscontinuity(
+          oldPosition: Player.PositionInfo,
+          newPosition: Player.PositionInfo,
+          reason: Int,
+        ) {
+          if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+            seekSettleUntilMs = android.os.SystemClock.elapsedRealtime() + SEEK_SETTLE_MS
           }
         }
 
@@ -1049,14 +1194,10 @@ internal fun HlsPlayerScreen(
     automaticQualityRecoveryLock = false
     dataSaverFallbackRank = 0
     automaticQualityPhase =
-      if (selectedQuality.isAuto) AutomaticQualityPhase.LOW_STARTUP
+      if (selectedQuality.isAuto) initialAutomaticQualityPhase(measuredLinkBitrate(context))
       else AutomaticQualityPhase.UNRESTRICTED
     // A manual fixed rendition is explicit permission to exceed the phone Auto ceiling.
-    applyAutomaticQualityPhase(
-      player,
-      automaticQualityPhase,
-      isTelevision = isTelevision || !selectedQuality.isAuto,
-    )
+    applyQualityPhase(automaticQualityPhase, allowFixedQualityHeadroom = !selectedQuality.isAuto)
     if (selectedQuality.isStable) {
       status = "Data Saver - using the lowest available quality"
     }
@@ -1082,9 +1223,9 @@ internal fun HlsPlayerScreen(
       return@LaunchedEffect
     }
     if (automaticQualityRecoveryLock) {
-      status = "Auto quality - holding low after a connection slowdown"
+      status = "Auto quality - steadying after a connection slowdown"
       delay(AUTO_QUALITY_RECOVERY_HOLD_MS)
-      while (player.totalBufferedDuration < QUALITY_RAMP_UNRESTRICTED_BUFFER_MS) {
+      while (player.totalBufferedDuration < AUTO_QUALITY_RECOVERY_BUFFER_MS) {
         status = "Auto quality - waiting for a safe recovery buffer"
         delay(QUALITY_RAMP_RECHECK_MS)
       }
@@ -1092,17 +1233,17 @@ internal fun HlsPlayerScreen(
       return@LaunchedEffect
     }
     val promotion = automaticQualityPromotion(automaticQualityPhase) ?: run {
-      status = "Auto quality - adapting with extra bandwidth headroom"
+      status = "Auto quality - adapting at full quality"
       return@LaunchedEffect
     }
 
     status = "Auto quality - building a safety buffer"
     delay(promotion.stablePlaybackMs)
     while (player.totalBufferedDuration < promotion.requiredBufferMs) {
-      status = "Auto quality - holding low quality until the buffer is safe"
+      status = "Auto quality - holding until the buffer is safe"
       delay(QUALITY_RAMP_RECHECK_MS)
     }
-    applyAutomaticQualityPhase(player, promotion.nextPhase, isTelevision)
+    applyQualityPhase(promotion.nextPhase)
     automaticQualityPhase = promotion.nextPhase
   }
 
@@ -3357,12 +3498,14 @@ internal fun createHlsPlayer(
           .setMaxVideoSize(COMPATIBILITY_MAX_VIDEO_WIDTH, COMPATIBILITY_MAX_VIDEO_HEIGHT)
           .setMaxVideoBitrate(COMPATIBILITY_MAX_VIDEO_BITRATE)
       } else {
-        selectionBuilder
-          .setMaxVideoSize(STARTUP_MAX_VIDEO_WIDTH, STARTUP_MAX_VIDEO_HEIGHT)
-          .setMaxVideoBitrate(STABLE_MAX_VIDEO_BITRATE)
-        if (!isTelevision) {
-          selectionBuilder.setMaxVideoFrameRate(PHONE_AUTO_MAX_VIDEO_FRAME_RATE)
-        }
+        // The opening ceiling is the one the measured link has already earned, so a fast connection
+        // renders the first segment at the quality it would have reached a minute later anyway.
+        applyAutomaticQualityCeiling(
+          selectionBuilder,
+          initialAutomaticQualityPhase(bandwidthMeter.bitrateEstimate),
+          isTelevision = isTelevision,
+          fastLink = bandwidthMeter.bitrateEstimate >= FAST_LINK_BITRATE_BPS,
+        )
       }
       trackSelectionParameters = selectionBuilder.build()
       if (startPositionMs > 0L) setMediaSource(mediaSource, startPositionMs) else setMediaSource(mediaSource)
@@ -3419,40 +3562,65 @@ internal fun reliableHlsLoadErrorPolicy(
   retryCount: Int = RELIABLE_HLS_RETRY_COUNT,
 ): DefaultLoadErrorHandlingPolicy = DefaultLoadErrorHandlingPolicy(retryCount)
 
+/** What this app has measured of the link, across every stream it has fetched so far. */
+@androidx.annotation.OptIn(UnstableApi::class)
+internal fun measuredLinkBitrate(context: android.content.Context): Long =
+  DefaultBandwidthMeter.getSingletonInstance(context).bitrateEstimate
+
 /** Applies only a temporary ceiling; the adaptive selector remains responsible for the rendition. */
+@androidx.annotation.OptIn(UnstableApi::class)
+internal fun applyAutomaticQualityCeiling(
+  builder: TrackSelectionParameters.Builder,
+  phase: AutomaticQualityPhase,
+  isTelevision: Boolean,
+  fastLink: Boolean,
+): TrackSelectionParameters.Builder {
+  // A phone on a slow link is kept inside an efficient 720p/30fps envelope, because reaching for
+  // more costs battery and decode headroom it will not be able to hold. A phone on a measured fast
+  // link is not in that position, and capping it there was the reason a 1080p film never played as
+  // one. Fixed quality choices clear both ceilings when the viewer explicitly asks for one.
+  val phoneMaxWidth = if (fastLink) PHONE_FAST_MAX_VIDEO_WIDTH else PHONE_AUTO_MAX_VIDEO_WIDTH
+  val phoneMaxHeight = if (fastLink) PHONE_FAST_MAX_VIDEO_HEIGHT else PHONE_AUTO_MAX_VIDEO_HEIGHT
+  val phoneMaxBitrate = if (fastLink) PHONE_FAST_MAX_VIDEO_BITRATE else PHONE_AUTO_MAX_VIDEO_BITRATE
+  val phoneMaxFrameRate = if (fastLink) Int.MAX_VALUE else PHONE_AUTO_MAX_VIDEO_FRAME_RATE
+  return when (phase) {
+    AutomaticQualityPhase.LOW_STARTUP ->
+      builder
+        .setMaxVideoSize(STARTUP_MAX_VIDEO_WIDTH, STARTUP_MAX_VIDEO_HEIGHT)
+        .setMaxVideoBitrate(STABLE_MAX_VIDEO_BITRATE)
+        .setMaxVideoFrameRate(if (isTelevision) Int.MAX_VALUE else phoneMaxFrameRate)
+    AutomaticQualityPhase.BALANCED ->
+      builder
+        .setMaxVideoSize(COMPATIBILITY_MAX_VIDEO_WIDTH, COMPATIBILITY_MAX_VIDEO_HEIGHT)
+        .setMaxVideoBitrate(if (isTelevision) Int.MAX_VALUE else phoneMaxBitrate)
+        .setMaxVideoFrameRate(if (isTelevision) Int.MAX_VALUE else phoneMaxFrameRate)
+    AutomaticQualityPhase.UNRESTRICTED ->
+      if (isTelevision) {
+        builder.clearVideoSizeConstraints().setMaxVideoBitrate(Int.MAX_VALUE)
+      } else {
+        builder
+          .setMaxVideoSize(phoneMaxWidth, phoneMaxHeight)
+          .setMaxVideoBitrate(phoneMaxBitrate)
+          .setMaxVideoFrameRate(phoneMaxFrameRate)
+      }
+  }
+}
+
 @androidx.annotation.OptIn(UnstableApi::class)
 internal fun applyAutomaticQualityPhase(
   player: Player,
   phase: AutomaticQualityPhase,
   isTelevision: Boolean = true,
+  fastLink: Boolean = false,
 ) {
-  val builder = player.trackSelectionParameters.buildUpon()
-  when (phase) {
-    AutomaticQualityPhase.LOW_STARTUP ->
-      builder
-        .setMaxVideoSize(STARTUP_MAX_VIDEO_WIDTH, STARTUP_MAX_VIDEO_HEIGHT)
-        .setMaxVideoBitrate(STABLE_MAX_VIDEO_BITRATE)
-        .setMaxVideoFrameRate(if (isTelevision) Int.MAX_VALUE else PHONE_AUTO_MAX_VIDEO_FRAME_RATE)
-    AutomaticQualityPhase.BALANCED ->
-      builder
-        .setMaxVideoSize(COMPATIBILITY_MAX_VIDEO_WIDTH, COMPATIBILITY_MAX_VIDEO_HEIGHT)
-        .setMaxVideoBitrate(if (isTelevision) Int.MAX_VALUE else PHONE_AUTO_MAX_VIDEO_BITRATE)
-        .setMaxVideoFrameRate(if (isTelevision) Int.MAX_VALUE else PHONE_AUTO_MAX_VIDEO_FRAME_RATE)
-    AutomaticQualityPhase.UNRESTRICTED -> {
-      if (isTelevision) {
-        builder.clearVideoSizeConstraints().setMaxVideoBitrate(Int.MAX_VALUE)
-      } else {
-        // Fast access to the internet does not guarantee a streaming host can sustain its highest
-        // rendition. Keep phone Auto inside an efficient 720p/30fps envelope; fixed quality choices
-        // still clear this ceiling when the viewer explicitly asks for one.
-        builder
-          .setMaxVideoSize(PHONE_AUTO_MAX_VIDEO_WIDTH, PHONE_AUTO_MAX_VIDEO_HEIGHT)
-          .setMaxVideoBitrate(PHONE_AUTO_MAX_VIDEO_BITRATE)
-          .setMaxVideoFrameRate(PHONE_AUTO_MAX_VIDEO_FRAME_RATE)
-      }
-    }
-  }
-  val updatedParameters = builder.build()
+  val updatedParameters =
+    applyAutomaticQualityCeiling(
+        builder = player.trackSelectionParameters.buildUpon(),
+        phase = phase,
+        isTelevision = isTelevision,
+        fastLink = fastLink,
+      )
+      .build()
   if (updatedParameters != player.trackSelectionParameters) {
     player.trackSelectionParameters = updatedParameters
   }
