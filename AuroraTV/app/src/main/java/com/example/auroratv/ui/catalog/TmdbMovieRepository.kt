@@ -23,15 +23,130 @@ internal data class TmdbMovie(
     get() = posterPath?.let { "https://image.tmdb.org/t/p/w500$it" }
 }
 
-/** The browsable listings offered for each tab. */
-internal enum class CatalogCategory(val label: String, val moviePath: String, val showPath: String) {
-  POPULAR("Popular", "movie/popular", "tv/popular"),
-  TRENDING("Trending", "trending/movie/week", "trending/tv/week"),
-  TOP_RATED("Top rated", "movie/top_rated", "tv/top_rated"),
+/**
+ * A browsable listing.
+ *
+ * Held as data rather than an enum because the interesting ones are not fixed endpoints: a decade
+ * rail has to be worked out from the current year, and a rating rail is a set of discover
+ * parameters rather than a path of its own.
+ */
+internal data class CatalogCategory(
+  val id: String,
+  val label: String,
+  val moviePath: String,
+  val showPath: String,
+  val movieParams: Map<String, String> = emptyMap(),
+  val showParams: Map<String, String> = emptyMap(),
+  /**
+   * Whether the heading still needs "movies" or "TV shows" after it.
+   *
+   * "Trending" does; "Best of the 1990s" does not, and reads badly when it gets it anyway. The tab
+   * the viewer is on already says which of the two they are looking at.
+   */
+  val standaloneLabel: Boolean = false,
+)
+
+/**
+ * Enough votes that an average means something.
+ *
+ * Sorting by rating without a floor returns films nobody has seen, rated ten by the four people
+ * who have. Shows are held to a lower bar simply because far fewer people rate them.
+ */
+private const val MOVIE_VOTE_FLOOR = "1500"
+private const val SHOW_VOTE_FLOOR = "300"
+
+/** Rails that are always offered, in the order they are shown. */
+internal fun catalogCategories(currentYear: Int = currentCalendarYear()): List<CatalogCategory> =
+  buildList {
+    add(CatalogCategory("trending", "Trending", "trending/movie/week", "trending/tv/week"))
+    add(CatalogCategory("popular", "Popular", "movie/popular", "tv/popular"))
+    add(
+      CatalogCategory(
+        id = "acclaimed",
+        label = "Highly rated",
+        moviePath = "discover/movie",
+        showPath = "discover/tv",
+        movieParams =
+          mapOf(
+            "sort_by" to "vote_average.desc",
+            "vote_count.gte" to MOVIE_VOTE_FLOOR,
+            "vote_average.gte" to "7.5",
+          ),
+        showParams =
+          mapOf(
+            "sort_by" to "vote_average.desc",
+            "vote_count.gte" to SHOW_VOTE_FLOOR,
+            "vote_average.gte" to "7.5",
+          ),
+      )
+    )
+    add(
+      CatalogCategory(
+        id = "this-year",
+        label = "New in $currentYear",
+        standaloneLabel = true,
+        moviePath = "discover/movie",
+        showPath = "discover/tv",
+        movieParams =
+          mapOf(
+            "sort_by" to "popularity.desc",
+            "primary_release_year" to currentYear.toString(),
+            "vote_count.gte" to "50",
+          ),
+        showParams =
+          mapOf(
+            "sort_by" to "popularity.desc",
+            "first_air_date_year" to currentYear.toString(),
+            "vote_count.gte" to "20",
+          ),
+      )
+    )
+    // The decade in progress first, then back through the completed ones.
+    decadeStarts(currentYear).forEach { add(decadeCategory(it, currentYear)) }
+  }
+
+/** The decade now and the three before it, newest first. */
+internal fun decadeStarts(currentYear: Int, count: Int = 4): List<Int> {
+  val thisDecade = (currentYear / 10) * 10
+  return (0 until count).map { thisDecade - it * 10 }
 }
 
+/** "Best of the 2010s", and for the decade still running, "Best of the 2020s so far". */
+internal fun decadeCategory(decadeStart: Int, currentYear: Int): CatalogCategory {
+  val inProgress = currentYear < decadeStart + 10
+  val lastYear = if (inProgress) currentYear else decadeStart + 9
+  val label = "Best of the ${decadeStart}s" + if (inProgress) " so far" else ""
+  val from = "$decadeStart-01-01"
+  val to = "$lastYear-12-31"
+  return CatalogCategory(
+    id = "decade-$decadeStart",
+    label = label,
+    standaloneLabel = true,
+    moviePath = "discover/movie",
+    showPath = "discover/tv",
+    movieParams =
+      mapOf(
+        "sort_by" to "vote_average.desc",
+        "vote_count.gte" to MOVIE_VOTE_FLOOR,
+        "primary_release_date.gte" to from,
+        "primary_release_date.lte" to to,
+      ),
+    showParams =
+      mapOf(
+        "sort_by" to "vote_average.desc",
+        "vote_count.gte" to SHOW_VOTE_FLOOR,
+        "first_air_date.gte" to from,
+        "first_air_date.lte" to to,
+      ),
+  )
+}
+
+internal fun currentCalendarYear(): Int =
+  java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+
 internal class TmdbMovieRepository(private val apiKey: String) {
-  suspend fun movies(category: CatalogCategory): List<TmdbMovie> = requestMovies(path = category.moviePath)
+  suspend fun movies(category: CatalogCategory): List<TmdbMovie> =
+    requestMovies(path = category.moviePath, extra = category.movieParams)
 
   suspend fun searchMovies(query: String): List<TmdbMovie> =
     requestMovies(path = "search/movie", query = query.trim())
@@ -40,20 +155,54 @@ internal class TmdbMovieRepository(private val apiKey: String) {
   suspend fun recommendations(movieId: Int): List<TmdbMovie> =
     requestMovies(path = "movie/$movieId/recommendations")
 
-  private suspend fun requestMovies(path: String, query: String? = null): List<TmdbMovie> =
+  /** Whoever is top of the billing on a title, so the catalog can offer their other work. */
+  suspend fun topBilledActor(movieId: Int): TmdbActor? =
+    tmdbRequest(apiKey = apiKey, path = "movie/$movieId/credits", parse = ::parseTopBilledActor)
+
+  suspend fun moviesWithActor(personId: Int): List<TmdbMovie> =
+    requestMovies(
+      path = "discover/movie",
+      extra =
+        mapOf(
+          "with_cast" to personId.toString(),
+          "sort_by" to "popularity.desc",
+          "vote_count.gte" to "100",
+        ),
+    )
+
+  private suspend fun requestMovies(
+    path: String,
+    query: String? = null,
+    extra: Map<String, String> = emptyMap(),
+  ): List<TmdbMovie> =
     tmdbRequest(
       apiKey = apiKey,
       path = path,
       params =
         buildMap {
           put("page", "1")
-          if (query != null) {
-            put("query", query)
-            put("include_adult", "false")
-          }
+          put("include_adult", "false")
+          if (query != null) put("query", query)
+          putAll(extra)
         },
       parse = ::parseTmdbMovies,
     )
+}
+
+/** A billed performer, kept only so the catalog can ask what else they are in. */
+internal data class TmdbActor(val id: Int, val name: String)
+
+internal fun parseTopBilledActor(json: String): TmdbActor? {
+  val cast = JSONObject(json).optJSONArray("cast") ?: return null
+  for (index in 0 until cast.length()) {
+    val item = cast.optJSONObject(index) ?: continue
+    // Acting credits only: a director topping the list would make a rail nobody expects.
+    if (item.optString("known_for_department").let { it.isNotBlank() && it != "Acting" }) continue
+    val id = item.optInt("id", -1)
+    val name = item.optString("name").trim()
+    if (id > 0 && name.isNotBlank()) return TmdbActor(id, name)
+  }
+  return null
 }
 
 /** Fetches a TMDB endpoint off the main thread and parses it with [parse]. */

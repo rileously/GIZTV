@@ -148,7 +148,10 @@ internal fun CatalogScreen(
   val gridFocusRequester = remember { FocusRequester() }
   // One per listing, so a press of down lands on the next rail rather than wherever focus search
   // decides — the same reason every other list on this screen names its own neighbours.
-  val railFocusRequesters = remember { List(CatalogCategory.entries.size) { FocusRequester() } }
+  // Worked out once: a decade rail depends on the current year, and recomposing must not shuffle
+  // the rails under a viewer who is part-way along one.
+  val categories = remember { catalogCategories() }
+  val railFocusRequesters = remember(categories) { List(categories.size) { FocusRequester() } }
   val gridState = rememberLazyGridState()
   val railState = rememberLazyListState()
 
@@ -168,7 +171,12 @@ internal fun CatalogScreen(
   var recommendedMovies by remember { mutableStateOf<List<TmdbMovie>>(emptyList()) }
   var recommendedShows by remember { mutableStateOf<List<TmdbShow>>(emptyList()) }
   var recommendationSeeds by remember { mutableStateOf<List<RecommendationSeed>>(emptyList()) }
+  // Whoever was top-billed in the last thing watched, and the rest of their work.
+  var featuredActor by remember { mutableStateOf<TmdbActor?>(null) }
+  var actorMovies by remember { mutableStateOf<List<TmdbMovie>>(emptyList()) }
+  var actorShows by remember { mutableStateOf<List<TmdbShow>>(emptyList()) }
   val recommendedFocusRequester = remember { FocusRequester() }
+  val actorFocusRequester = remember { FocusRequester() }
   var loading by remember { mutableStateOf(true) }
   var errorMessage by remember { mutableStateOf<String?>(null) }
   var confirmingHistoryClear by rememberSaveable { mutableStateOf(false) }
@@ -187,7 +195,7 @@ internal fun CatalogScreen(
               if (searchQuery.isNullOrBlank()) {
                 // The listings are independent, so they are fetched together rather than in turn.
                 movieSections = coroutineScope {
-                  CatalogCategory.entries
+                  categories
                     .map { category -> async { category to movieRepository.movies(category) } }
                     .awaitAll()
                     .toMap()
@@ -198,7 +206,7 @@ internal fun CatalogScreen(
             CatalogTab.SHOWS ->
               if (searchQuery.isNullOrBlank()) {
                 showSections = coroutineScope {
-                  CatalogCategory.entries
+                  categories
                     .map { category -> async { category to tvRepository.shows(category) } }
                     .awaitAll()
                     .toMap()
@@ -336,7 +344,56 @@ internal fun CatalogScreen(
           }
         }
       }
-      .onFailure { Log.e("GizTvTmdb", "Recommendations failed", it) }
+      .onFailure { error ->
+        if (error is kotlinx.coroutines.CancellationException) throw error
+        Log.e("GizTvTmdb", "Recommendations failed", error)
+      }
+  }
+
+  /**
+   * The rest of a familiar face's work.
+   *
+   * Seeded from the most recent thing watched rather than all of them, because this rail is about
+   * one person: blending the leads of three different films gives a row about nobody. Loaded on its
+   * own for the same reason the recommendations are — two requests deep, and worth none of the
+   * viewer's waiting if the answer is empty.
+   */
+  LaunchedEffect(tab, searchActive, watchHistory) {
+    if (searchActive || tab == CatalogTab.MY_LIST) return@LaunchedEffect
+    val forShows = tab == CatalogTab.SHOWS
+    val seed = recommendationSeeds(watchHistory, forShows = forShows, limit = 1).firstOrNull()
+    if (seed == null) {
+      featuredActor = null
+      if (forShows) actorShows = emptyList() else actorMovies = emptyList()
+      return@LaunchedEffect
+    }
+    val watchedIds =
+      watchHistory
+        .mapNotNull { if (forShows) it.showId else tmdbMovieIdFromPageUrl(it.pageUrl) }
+        .toSet()
+    runCatching {
+        val actor =
+          if (forShows) tvRepository.topBilledActor(seed.id) else movieRepository.topBilledActor(seed.id)
+        if (actor == null) {
+          featuredActor = null
+          return@runCatching
+        }
+        if (forShows) {
+          val found = tvRepository.showsWithActor(actor.id).filter { it.id !in watchedIds }
+          actorShows = found
+          featuredActor = actor.takeIf { found.isNotEmpty() }
+        } else {
+          val found = movieRepository.moviesWithActor(actor.id).filter { it.id !in watchedIds }
+          actorMovies = found
+          featuredActor = actor.takeIf { found.isNotEmpty() }
+        }
+      }
+      .onFailure { error ->
+        // Leaving the screen cancels this mid-flight, which is ordinary and not worth reporting.
+        if (error is kotlinx.coroutines.CancellationException) throw error
+        Log.e("GizTvTmdb", "Cast rail failed", error)
+        featuredActor = null
+      }
   }
 
   // Switching tab should start at the top, not wherever the last list was scrolled to.
@@ -354,7 +411,7 @@ internal fun CatalogScreen(
   val sections: List<Pair<CatalogCategory, Int>> =
     if (!showRails) emptyList()
     else
-      CatalogCategory.entries.map { category ->
+      categories.map { category ->
         val size =
           if (tab == CatalogTab.MOVIES) movieSections[category].orEmpty().size
           else showSections[category].orEmpty().size
@@ -374,10 +431,15 @@ internal fun CatalogScreen(
     }
   val recommended = if (tab == CatalogTab.MOVIES) recommendedMovies.size else recommendedShows.size
   val showRecommendedRail = showRails && recommended > 0
+  val actorItems = if (tab == CatalogTab.MOVIES) actorMovies.size else actorShows.size
+  val showActorRail = showRails && featuredActor != null && actorItems > 0
   // Rails past the fold are not composed, and neither a FocusRequester nor focus search can reach a
   // node that does not exist yet. So the move is driven: scroll the neighbour into view first, then
   // hand it the focus. Hoisted because the personalized rail moves into the fixed ones too.
-  val leadingRailItems = (if (showContinueRow) 1 else 0) + (if (showRecommendedRail) 1 else 0)
+  val leadingRailItems =
+    (if (showContinueRow) 1 else 0) +
+      (if (showRecommendedRail) 1 else 0) +
+      (if (showActorRail) 1 else 0)
   // One move at a time. Holding the pad down used to start a fresh animation per press, each
   // cancelling the last part-way and each racing the scrolling that focus does on its own, which
   // left the list parked somewhere between two rails with no way back up.
@@ -525,8 +587,13 @@ internal fun CatalogScreen(
                   onClearHistory = { confirmingHistoryClear = true },
                   firstCardFocusRequester = continueRowFocusRequester,
                   up = searchButtonFocusRequester,
-                  down = if (showRecommendedRail) recommendedFocusRequester else firstRailFocusRequester,
-                  hasGrid = sections.isNotEmpty() || showRecommendedRail,
+                  down =
+                    when {
+                      showRecommendedRail -> recommendedFocusRequester
+                      showActorRail -> actorFocusRequester
+                      else -> firstRailFocusRequester
+                    },
+                  hasGrid = sections.isNotEmpty() || showRecommendedRail || showActorRail,
                   edge = edge,
                 )
               }
@@ -546,7 +613,7 @@ internal fun CatalogScreen(
                     firstCardFocusRequester = recommendedFocusRequester,
                     up = up,
                     down = null,
-                    onMoveDown = { moveToRail(0) },
+                    onMoveDown = { if (showActorRail) actorFocusRequester.requestFocus() else moveToRail(0) },
                     onMoveUp = null,
                   ) { movie, cardModifier ->
                     PosterCard(
@@ -571,6 +638,67 @@ internal fun CatalogScreen(
                     firstCardFocusRequester = recommendedFocusRequester,
                     up = up,
                     down = null,
+                    onMoveDown = { if (showActorRail) actorFocusRequester.requestFocus() else moveToRail(0) },
+                    onMoveUp = null,
+                  ) { show, cardModifier ->
+                    PosterCard(
+                      title = show.name,
+                      subtitle = show.year ?: "—",
+                      rating = show.voteAverage,
+                      posterUrl = show.posterUrl,
+                      actionLabel = "Open ${show.name}",
+                      onClick = { onOpenShow(show) },
+                      modifier = cardModifier,
+                    )
+                  }
+                }
+              }
+            }
+            // A familiar face from the last thing watched, and the rest of their work.
+            if (showActorRail) {
+              item(key = "cast") {
+                val up =
+                  when {
+                    showRecommendedRail -> recommendedFocusRequester
+                    showContinueRow -> continueRowFocusRequester
+                    else -> searchButtonFocusRequester
+                  }
+                val heading = "More with ${featuredActor?.name.orEmpty()}"
+                if (tab == CatalogTab.MOVIES) {
+                  CatalogRail(
+                    heading = heading,
+                    items = actorMovies,
+                    key = { it.id },
+                    narrow = narrow,
+                    attribution = false,
+                    firstCardFocusRequester = actorFocusRequester,
+                    up = up,
+                    down = null,
+                    onMoveDown = { moveToRail(0) },
+                    onMoveUp = null,
+                  ) { movie, cardModifier ->
+                    PosterCard(
+                      title = movie.title,
+                      subtitle = movie.year ?: "—",
+                      rating = movie.voteAverage,
+                      posterUrl = movie.posterUrl,
+                      actionLabel = "Play ${movie.title}",
+                      watched = historyStore.find(vidfastMovieUrl(movie.id))?.completed == true,
+                      onClick = { onPlay(movie.toPlaybackContext()) },
+                      onDwell = { onConsidering(movie.toPlaybackContext()) },
+                      modifier = cardModifier,
+                    )
+                  }
+                } else {
+                  CatalogRail(
+                    heading = heading,
+                    items = actorShows,
+                    key = { it.id },
+                    narrow = narrow,
+                    attribution = false,
+                    firstCardFocusRequester = actorFocusRequester,
+                    up = up,
+                    down = null,
                     onMoveDown = { moveToRail(0) },
                     onMoveUp = null,
                   ) { show, cardModifier ->
@@ -587,7 +715,7 @@ internal fun CatalogScreen(
                 }
               }
             }
-            itemsIndexed(items = sections, key = { _, (category, _) -> category.name }) {
+            itemsIndexed(items = sections, key = { _, (category, _) -> category.id }) {
               index,
               (category, size) ->
               val railFocusRequester = railFocusRequesters[index]
@@ -597,7 +725,10 @@ internal fun CatalogScreen(
               // next one into view as it goes.
               val up =
                 if (index == 0) {
+                  // Whatever is immediately above, which is the last of the personalised rails
+                  // when the viewer has any history behind them.
                   when {
+                    showActorRail -> actorFocusRequester
                     showRecommendedRail -> recommendedFocusRequester
                     showContinueRow -> continueRowFocusRequester
                     else -> searchButtonFocusRequester
@@ -607,8 +738,11 @@ internal fun CatalogScreen(
                 }
               val down: FocusRequester? = null
               val railHeading =
-                if (tab == CatalogTab.MOVIES) "${category.label} movies"
-                else "${category.label} TV shows"
+                when {
+                  category.standaloneLabel -> category.label
+                  tab == CatalogTab.MOVIES -> "${category.label} movies"
+                  else -> "${category.label} TV shows"
+                }
               if (tab == CatalogTab.MOVIES) {
                 CatalogRail(
                   heading = railHeading,
@@ -750,6 +884,10 @@ internal fun CatalogScreen(
           recommendationSeeds = emptyList()
           recommendedMovies = emptyList()
           recommendedShows = emptyList()
+          // Built from the history that has just been thrown away, so it goes with it.
+          featuredActor = null
+          actorMovies = emptyList()
+          actorShows = emptyList()
           confirmingHistoryClear = false
           refreshHomeSurfaces(context)
           scope.launch {

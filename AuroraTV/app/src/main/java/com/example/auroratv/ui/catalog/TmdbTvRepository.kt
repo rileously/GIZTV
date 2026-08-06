@@ -51,7 +51,31 @@ internal data class TmdbEpisode(
 
 internal class TmdbTvRepository(private val apiKey: String) {
   suspend fun shows(category: CatalogCategory): List<TmdbShow> =
-    tmdbRequest(apiKey, category.showPath, mapOf("page" to "1"), ::parseTmdbShows)
+    tmdbRequest(
+      apiKey = apiKey,
+      path = category.showPath,
+      params = buildMap { put("page", "1"); putAll(category.showParams) },
+      parse = ::parseTmdbShows,
+    )
+
+  /** What else the billed lead of a show has been in. */
+  suspend fun showsWithActor(personId: Int): List<TmdbShow> =
+    tmdbRequest(
+      apiKey = apiKey,
+      path = "discover/tv",
+      params =
+        mapOf(
+          "page" to "1",
+          "with_cast" to personId.toString(),
+          "sort_by" to "popularity.desc",
+          "vote_count.gte" to "20",
+        ),
+      parse = ::parseTmdbShows,
+    )
+
+  /** Whoever is top of the billing on a show. */
+  suspend fun topBilledActor(showId: Int): TmdbActor? =
+    tmdbRequest(apiKey = apiKey, path = "tv/$showId/aggregate_credits", parse = ::parseTopBilledActor)
 
   /** What TMDB says goes with a show the viewer already got through. */
   suspend fun recommendations(showId: Int): List<TmdbShow> =
