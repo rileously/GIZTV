@@ -18,14 +18,23 @@ internal data class StreamProvider(
 /**
  * Tried in order; the first that produces a playable stream wins.
  *
- * vidfast leads because it is the one that reliably answers in practice. vidrock looked like the
- * better primary on paper — it hands out an HLS playlist with a full set of subtitle tracks, where
- * vidfast often serves a single progressive file with nothing to adapt between — but on a real
- * connection it fails, and a provider that has to be waited out before the next one is asked is
- * worse than a plainer one that works. It stays in the list, one place back.
+ * vidrock leads: it hands out an HLS playlist with a full set of subtitle tracks, so the player has
+ * real renditions to adapt between, where vidfast often serves a single progressive file with
+ * nothing to adapt and no captions of its own.
+ *
+ * It spent a release demoted for appearing to fail on every title. It was not failing — the
+ * resolver was taking the placeholder its player loads before it has resolved anything, and
+ * discarding the real playlist that followed. See `isDecoyMediaUrl`.
  */
 internal val STREAM_PROVIDERS: List<StreamProvider> =
   listOf(
+    StreamProvider(
+      id = "vidrock",
+      label = "VidRock",
+      host = "vidrock.ru",
+      movieUrl = { "https://vidrock.ru/movie/$it" },
+      episodeUrl = { show, season, episode -> "https://vidrock.ru/tv/$show/$season/$episode" },
+    ),
     StreamProvider(
       id = "vidfast",
       label = "VidFast",
@@ -34,13 +43,6 @@ internal val STREAM_PROVIDERS: List<StreamProvider> =
       episodeUrl = { show, season, episode ->
         "https://vidfast.vc/tv/$show/$season/$episode?autoPlay=true&sub=en&chromecast=false"
       },
-    ),
-    StreamProvider(
-      id = "vidrock",
-      label = "VidRock",
-      host = "vidrock.ru",
-      movieUrl = { "https://vidrock.ru/movie/$it" },
-      episodeUrl = { show, season, episode -> "https://vidrock.ru/tv/$show/$season/$episode" },
     ),
     StreamProvider(
       id = "vidlink",

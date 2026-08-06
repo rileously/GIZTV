@@ -128,6 +128,8 @@ private const val SUBTITLE_DISCOVERY_DELAY_MS = 2_500L
  * finding the match and watching it.
  */
 private const val SUBTITLE_GRACE_MS = 700L
+/** The window a placeholder file gets to be overtaken by the real playlist. */
+private const val PROGRESSIVE_STREAM_GRACE_MS = 2_500L
 private const val MAX_SUBTITLE_CATALOG_WAIT_MS = 8_000L
 private const val SUBTITLE_CATALOG_POLL_MS = 250L
 /** Silent attempts before the viewer is told anything went wrong. */
@@ -839,6 +841,8 @@ internal class AdBlockingWebViewClient(
 ) : WebViewClient() {
   private val mainHandler = Handler(Looper.getMainLooper())
   private val streamReported = AtomicBoolean(false)
+  /** Set once a stream has been handed to the player, after which nothing may overtake it. */
+  private val streamDispatched = AtomicBoolean(false)
   private val webPlaybackReported = AtomicBoolean(false)
   private val streamDispatchEnabled = AtomicBoolean(true)
   private val closed = AtomicBoolean(false)
@@ -878,6 +882,7 @@ internal class AdBlockingWebViewClient(
             compareBy<ExternalSubtitleTrack>({ englishSubtitleRank(it.label) }, { it.label.lowercase() })
           )
         Log.i("AuroraHls", "Opening native player with ${discovered.size} separate subtitle track(s)")
+        streamDispatched.set(true)
         onStreamDetected(stream.copy(subtitles = discovered))
       }
   }
@@ -888,6 +893,7 @@ internal class AdBlockingWebViewClient(
     pageGeneration.incrementAndGet()
     streamDispatchEnabled.set(true)
     streamReported.set(false)
+    streamDispatched.set(false)
     webPlaybackReported.set(false)
     blockedRequestCount.set(0)
     subtitles.clear()
@@ -992,7 +998,12 @@ internal class AdBlockingWebViewClient(
 
   fun queueStream(view: WebView?, url: String, headers: Map<String, String>) {
     if (closed.get() || !streamDispatchEnabled.get()) return
-    if (!streamReported.compareAndSet(false, true)) return
+    // Once handed over there is no taking it back, so a late playlist is only allowed to overtake
+    // a plain file while the handover is still pending.
+    if (streamDispatched.get()) return
+    if (!shouldReplacePendingStream(pendingStream?.url, url)) return
+    val upgrading = pendingStream != null
+    streamReported.set(true)
     pendingStream =
       HlsStreamRequest(
         url = url,
@@ -1002,14 +1013,14 @@ internal class AdBlockingWebViewClient(
         mimeType = streamMimeType(url),
       )
     streamQueuedAtMs = SystemClock.elapsedRealtime()
-    Log.i("AuroraHls", "Detected stream request: $url")
+    Log.i("AuroraHls", if (upgrading) "Better stream found: $url" else "Detected stream request: $url")
     mainHandler.post {
       if (!streamDispatchEnabled.get()) return@post
       onStage(PreparationStage.LOADING_SUBTITLES)
       onStatus("Video found · collecting separate subtitles…")
       collectPageSubtitles(view)
       mainHandler.removeCallbacks(dispatchPendingStream)
-      mainHandler.postDelayed(dispatchPendingStream, SUBTITLE_GRACE_MS)
+      mainHandler.postDelayed(dispatchPendingStream, streamDispatchGraceMs(url))
     }
   }
 
@@ -1241,8 +1252,46 @@ internal fun isProgressiveMediaUrl(url: String): Boolean {
   // Deliberately string work rather than Uri parsing, so the rule that decides whether a title
   // plays at all can be covered by an ordinary unit test.
   val path = url.substringBefore('#').substringBefore('?').lowercase()
-  return PROGRESSIVE_MEDIA_EXTENSIONS.any(path::endsWith)
+  if (!PROGRESSIVE_MEDIA_EXTENSIONS.any(path::endsWith)) return false
+  return !isDecoyMediaUrl(url)
 }
+
+private val DECOY_MEDIA_NAMES = listOf("demo-video", "demo", "sample", "preview", "placeholder")
+
+/**
+ * A video file a page keeps around that is not the film.
+ *
+ * vidrock's player loads a `demo-video.mp4` before it has resolved anything, so a resolver that
+ * takes the first file it sees commits to the decoy and throws away the real playlist that arrives
+ * a few seconds later.
+ */
+internal fun isDecoyMediaUrl(url: String): Boolean {
+  val file = url.substringBefore('#').substringBefore('?').substringAfterLast('/').lowercase()
+  val stem = file.substringBeforeLast('.')
+  return DECOY_MEDIA_NAMES.any { stem == it || stem.startsWith("$it-") || stem.startsWith("${it}_") }
+}
+
+/**
+ * Whether a newly seen address is a better answer than the one already in hand.
+ *
+ * A playlist beats a plain file. Pages routinely load a placeholder video while they work out what
+ * the viewer actually asked for, and the real title turns up as a playlist moments later; taking
+ * the first thing that looked like video is what made those pages unplayable.
+ */
+internal fun shouldReplacePendingStream(pendingUrl: String?, candidateUrl: String): Boolean {
+  if (pendingUrl == null) return true
+  return isHlsUrl(candidateUrl) && !isHlsUrl(pendingUrl)
+}
+
+/**
+ * How long to hold an address before handing it over.
+ *
+ * A playlist is almost certainly the film, so it only waits for its subtitles. A plain file is
+ * held a little longer, since that is exactly the window in which a page that loaded a placeholder
+ * reveals the real playlist.
+ */
+internal fun streamDispatchGraceMs(url: String): Long =
+  if (isHlsUrl(url)) SUBTITLE_GRACE_MS else PROGRESSIVE_STREAM_GRACE_MS
 
 /** Anything the player can be handed directly, whichever shape the source chose to serve it in. */
 internal fun isPlayableStreamUrl(url: String): Boolean =
