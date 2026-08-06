@@ -11,6 +11,7 @@ internal const val GROUP_AUDIO = "audio"
 internal const val GROUP_QUALITY = "quality"
 internal const val GROUP_SPEED = "speed"
 internal const val GROUP_RESIZE = "resize"
+internal const val GROUP_SERVER = "server"
 
 /**
  * The player's own settings, offered to whatever is holding the remote.

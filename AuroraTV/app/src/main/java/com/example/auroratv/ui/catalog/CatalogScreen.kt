@@ -1,6 +1,7 @@
 package com.example.auroratv.ui.catalog
 
 import android.util.Log
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
@@ -35,6 +36,7 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Search
@@ -125,6 +127,15 @@ internal fun CatalogScreen(
   onOpenRemote: (() -> Unit)? = null,
   /** A title the viewer has paused on, worth finding the stream for before they ask. */
   onConsidering: (PlaybackContext) -> Unit = {},
+  /**
+   * Leanback keeps Sports / Shorts / Web / IPTV in the top bar. On phone those live in the
+   * bottom footer, so the header only keeps the wordmark, compact tabs, and Remote — search
+   * expands on demand from the header icon or footer Search.
+   */
+  showTopDestinationActions: Boolean = true,
+  /** When true, expand and focus the catalog search field (phone bottom-nav Search). */
+  requestSearchFocus: Boolean = false,
+  onSearchFocusHandled: () -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -154,12 +165,15 @@ internal fun CatalogScreen(
   val railFocusRequesters = remember(categories) { List(categories.size) { FocusRequester() } }
   val gridState = rememberLazyGridState()
   val railState = rememberLazyListState()
+  // Phone footer owns destinations; hide the always-on search row until asked.
+  val phoneChrome = !showTopDestinationActions
 
   var tab by rememberSaveable {
     mutableStateOf(CatalogTab.entries.firstOrNull { it.name == uiPreferences.lastTab() } ?: CatalogTab.MOVIES)
   }
   var query by rememberSaveable { mutableStateOf("") }
   var searchActive by rememberSaveable { mutableStateOf(false) }
+  var searchExpanded by rememberSaveable { mutableStateOf(false) }
   // Every listing is on the page at once, one rail each, rather than behind a filter.
   var movieSections by remember { mutableStateOf<Map<CatalogCategory, List<TmdbMovie>>>(emptyMap()) }
   var showSections by remember { mutableStateOf<Map<CatalogCategory, List<TmdbShow>>>(emptyMap()) }
@@ -184,6 +198,10 @@ internal fun CatalogScreen(
   fun dismissKeyboard() {
     focusManager.clearFocus()
     keyboardController?.hide()
+  }
+
+  fun expandSearchUi() {
+    searchExpanded = true
   }
 
   suspend fun runLoad(activeTab: CatalogTab, searchQuery: String?) {
@@ -228,11 +246,23 @@ internal fun CatalogScreen(
     scope.launch { runLoad(activeTab, searchQuery) }
   }
 
+  fun collapseSearchUi() {
+    searchExpanded = false
+    if (query.isNotBlank() || searchActive) {
+      query = ""
+      searchActive = false
+      errorMessage = null
+      load(tab, null)
+    }
+    dismissKeyboard()
+  }
+
   fun selectTab(next: CatalogTab) {
     if (next == tab) return
     tab = next
     query = ""
     searchActive = false
+    searchExpanded = false
     errorMessage = null
     uiPreferences.setLastTab(next.name)
     load(next, null)
@@ -242,6 +272,7 @@ internal fun CatalogScreen(
     // Nothing typed yet, so Search means "let me type": the field takes focus and the keyboard
     // comes up on purpose, rather than the moment focus passes through the row.
     if (query.isBlank()) {
+      searchExpanded = true
       searchFieldFocusRequester.requestFocus()
       return
     }
@@ -250,6 +281,17 @@ internal fun CatalogScreen(
     focusManager.clearFocus()
     searchButtonFocusRequester.requestFocus()
   }
+
+  LaunchedEffect(requestSearchFocus) {
+    if (!requestSearchFocus) return@LaunchedEffect
+    searchExpanded = true
+    // One frame so the search row is placed after a destination change into this screen.
+    withFrameNanos {}
+    runCatching { searchFieldFocusRequester.requestFocus() }
+    onSearchFocusHandled()
+  }
+
+  BackHandler(enabled = phoneChrome && searchExpanded) { collapseSearchUi() }
 
   // Lent to a paired phone so a search typed on a real keyboard lands in the box rather than
   // arriving as a stream of key presses aimed at whatever happens to be focused. The television's
@@ -278,9 +320,12 @@ internal fun CatalogScreen(
         searchActive = false
         errorMessage = null
         loading = false
+        // Phone: clearing results collapses the expandable field.
+        if (phoneChrome) searchExpanded = false
       }
       return@LaunchedEffect
     }
+    if (phoneChrome) searchExpanded = true
     delay(SEARCH_DEBOUNCE_MS)
     // Set before the request, not after it. Cancellation is cooperative, so a superseded search
     // can still be finishing its last steps, and an assignment made after the await would switch
@@ -483,45 +528,83 @@ internal fun CatalogScreen(
   ) {
     val narrow = maxWidth < 600.dp
     val compact = maxHeight < 600.dp
+    val phoneDense = phoneChrome && narrow
+    // Phone: search stays collapsed until the header icon or footer Search opens it. TV keeps
+    // the leanback field always available for the remote.
+    val showSearchRow = browsing && (!phoneChrome || searchExpanded || searchActive)
+    val chromeDown =
+      when {
+        showSearchRow -> searchButtonFocusRequester
+        itemCount > 0 || showContinueRow -> firstBodyFocusRequester
+        else -> FocusRequester.Default
+      }
     // The inset belongs to the things that do not scroll. Putting it on this column boxed every
     // rail inside it too, so the card at the right edge was clipped by an invisible line instead of
     // running under the edge of the screen the way a rail is supposed to.
-    val edge = if (narrow) 18.dp else 42.dp
+    val edge = if (narrow) 14.dp else 42.dp
     val edgeOnly = Modifier.padding(horizontal = edge)
     Column(
-      modifier = Modifier.fillMaxSize().padding(vertical = if (compact) 14.dp else 22.dp)
+      modifier =
+        Modifier.fillMaxSize().padding(
+          vertical =
+            when {
+              phoneDense -> 8.dp
+              compact -> 14.dp
+              else -> 22.dp
+            }
+        )
     ) {
       CatalogTopBar(
         modifier = edgeOnly,
         narrow = narrow,
-        compact = compact,
+        compact = compact || phoneDense,
+        phoneDense = phoneDense,
+        showDestinationActions = showTopDestinationActions,
         onOpenWeb = { dismissKeyboard(); onOpenWeb() },
         onOpenShortDramas = { dismissKeyboard(); onOpenShortDramas() },
         onOpenSports = { dismissKeyboard(); onOpenSports() },
         onOpenIptv = { dismissKeyboard(); onOpenIptv() },
         onOpenRemote = onOpenRemote?.let { open -> { dismissKeyboard(); open() } },
+        onOpenSearch =
+          if (phoneChrome && browsing && !showSearchRow) {
+            {
+              expandSearchUi()
+              scope.launch {
+                withFrameNanos {}
+                runCatching { searchFieldFocusRequester.requestFocus() }
+              }
+            }
+          } else {
+            null
+          },
+        onCloseSearch =
+          if (phoneChrome && showSearchRow) {
+            { collapseSearchUi() }
+          } else {
+            null
+          },
         openWebModifier =
           Modifier.focusRequester(openWebFocusRequester).focusProperties {
             left = shortDramasFocusRequester
-            down = if (browsing) searchButtonFocusRequester else firstBodyFocusRequester
+            down = chromeDown
           },
         shortDramasModifier =
           Modifier.focusRequester(shortDramasFocusRequester).focusProperties {
             left = iptvFocusRequester
             right = openWebFocusRequester
-            down = if (browsing) searchButtonFocusRequester else firstBodyFocusRequester
+            down = chromeDown
           },
         iptvModifier =
           Modifier.focusRequester(iptvFocusRequester).focusProperties {
             left = sportsFocusRequester
             right = shortDramasFocusRequester
-            down = if (browsing) searchButtonFocusRequester else firstBodyFocusRequester
+            down = chromeDown
           },
         sportsModifier =
           Modifier.focusRequester(sportsFocusRequester).focusProperties {
             left = firstTabFocusRequester
             right = iptvFocusRequester
-            down = if (browsing) searchButtonFocusRequester else firstBodyFocusRequester
+            down = chromeDown
           },
         tabs = {
           SegmentedTabs(
@@ -529,11 +612,12 @@ internal fun CatalogScreen(
             selectedIndex = CatalogTab.entries.indexOf(tab),
             onSelect = { selectTab(CatalogTab.entries[it]) },
             firstTabFocusRequester = firstTabFocusRequester,
-            down = if (browsing) searchButtonFocusRequester else firstBodyFocusRequester,
+            down = chromeDown,
+            compact = phoneDense,
           )
         },
         search =
-          if (!browsing) null
+          if (!showSearchRow) null
           else {
             {
               CatalogSearchRow(
@@ -551,7 +635,15 @@ internal fun CatalogScreen(
             }
           },
       )
-      Spacer(Modifier.height(if (compact) 10.dp else 16.dp))
+      Spacer(
+        modifier.height(
+          when {
+            phoneDense -> 6.dp
+            compact -> 10.dp
+            else -> 16.dp
+          }
+        )
+      )
 
       when {
         // Only when there is nothing to show. Typing would otherwise replace the results with a
@@ -576,8 +668,15 @@ internal fun CatalogScreen(
             // The focus group is what lets a press of down reach a rail that has not been composed
             // yet: focus search asks the list to bring it into view first.
             modifier = Modifier.weight(1f).fillMaxWidth().focusGroup(),
-            contentPadding = PaddingValues(bottom = 22.dp),
-            verticalArrangement = Arrangement.spacedBy(if (compact) 12.dp else 20.dp),
+            contentPadding = PaddingValues(bottom = if (phoneDense) 8.dp else 22.dp),
+            verticalArrangement =
+              Arrangement.spacedBy(
+                when {
+                  phoneDense -> 10.dp
+                  compact -> 12.dp
+                  else -> 20.dp
+                }
+              ),
           ) {
             if (showContinueRow) {
               item {
@@ -801,7 +900,8 @@ internal fun CatalogScreen(
             modifier = Modifier.weight(1f).fillMaxWidth(),
             // Inset as content rather than as a border, so a focused card at the edge is not
             // clipped by the boundary it sits against.
-            contentPadding = PaddingValues(start = edge, end = edge, bottom = 22.dp),
+            contentPadding =
+              PaddingValues(start = edge, end = edge, bottom = if (phoneDense) 8.dp else 22.dp),
             horizontalArrangement = Arrangement.spacedBy(if (narrow) 12.dp else 18.dp),
             verticalArrangement = Arrangement.spacedBy(if (narrow) 16.dp else 22.dp),
           ) {
@@ -990,20 +1090,23 @@ private fun SectionHeading(
  * Wordmark, tabs, destinations and the search box, gathered into one header surface.
  *
  * Stacking these separately cost four rows of chrome before any artwork; on a 10-foot layout that
- * pushed the catalog itself under the fold. The surface behind them is what makes the row read as a
- * header rather than as loose buttons scattered over the artwork, and it gives the three groups
- * inside it — who you are, where you are, where else you could go — somewhere to sit.
+ * pushed the catalog itself under the fold. On phone the footer owns destinations, so this surface
+ * stays to brand + compact tabs + Remote, with search expanding only when asked.
  */
 @Composable
 private fun CatalogTopBar(
   modifier: Modifier = Modifier,
   narrow: Boolean,
   compact: Boolean,
+  phoneDense: Boolean = false,
+  showDestinationActions: Boolean,
   onOpenWeb: () -> Unit,
   onOpenShortDramas: () -> Unit,
   onOpenSports: () -> Unit,
   onOpenIptv: () -> Unit,
   onOpenRemote: (() -> Unit)?,
+  onOpenSearch: (() -> Unit)? = null,
+  onCloseSearch: (() -> Unit)? = null,
   openWebModifier: Modifier,
   shortDramasModifier: Modifier,
   sportsModifier: Modifier,
@@ -1011,43 +1114,51 @@ private fun CatalogTopBar(
   tabs: @Composable () -> Unit,
   search: (@Composable () -> Unit)?,
 ) {
-  val shape = RoundedCornerShape(if (narrow) 20.dp else 24.dp)
+  val shape = RoundedCornerShape(if (phoneDense) 16.dp else if (narrow) 20.dp else 24.dp)
   // Labels do not fit beside the wordmark on a phone, and a clipped label helps nobody; the icon
   // carries it there and the spoken label stays on for a screen reader either way.
   val labelled = !narrow
   val actions: @Composable () -> Unit = {
     Row(
-      horizontalArrangement = Arrangement.spacedBy(if (labelled) 8.dp else 6.dp),
+      horizontalArrangement = Arrangement.spacedBy(if (phoneDense) 4.dp else if (labelled) 8.dp else 6.dp),
       verticalAlignment = Alignment.CenterVertically,
     ) {
-      CatalogActionButton(
-        label = "Sports",
-        icon = Icons.Filled.SportsBasketball,
-        showLabel = labelled,
-        onClick = onOpenSports,
-        modifier = sportsModifier,
-      )
-      CatalogActionButton(
-        label = "IPTV",
-        icon = Icons.Filled.LiveTv,
-        showLabel = labelled,
-        onClick = onOpenIptv,
-        modifier = iptvModifier,
-      )
-      CatalogActionButton(
-        label = "Short dramas",
-        icon = Icons.Filled.Theaters,
-        showLabel = labelled,
-        onClick = onOpenShortDramas,
-        modifier = shortDramasModifier,
-      )
-      CatalogActionButton(
-        label = "Open web",
-        icon = Icons.Filled.Language,
-        showLabel = labelled,
-        onClick = onOpenWeb,
-        modifier = openWebModifier,
-      )
+      if (showDestinationActions) {
+        CatalogActionButton(
+          label = "Sports",
+          icon = Icons.Filled.SportsBasketball,
+          showLabel = labelled,
+          onClick = onOpenSports,
+          modifier = sportsModifier,
+        )
+        CatalogActionButton(
+          label = "IPTV",
+          icon = Icons.Filled.LiveTv,
+          showLabel = labelled,
+          onClick = onOpenIptv,
+          modifier = iptvModifier,
+        )
+        CatalogActionButton(
+          label = "Short dramas",
+          icon = Icons.Filled.Theaters,
+          showLabel = labelled,
+          onClick = onOpenShortDramas,
+          modifier = shortDramasModifier,
+        )
+        CatalogActionButton(
+          label = "Open web",
+          icon = Icons.Filled.Language,
+          showLabel = labelled,
+          onClick = onOpenWeb,
+          modifier = openWebModifier,
+        )
+      }
+      onOpenSearch?.let { open ->
+        CatalogIconButton("Search", Icons.Filled.Search, open)
+      }
+      onCloseSearch?.let { close ->
+        CatalogIconButton("Close search", Icons.Filled.Close, close)
+      }
       onOpenRemote?.let { open ->
         CatalogActionButton(
           label = "Remote",
@@ -1068,24 +1179,27 @@ private fun CatalogTopBar(
         )
         .border(1.dp, SoftWhite.copy(alpha = .07f), shape)
         .padding(
-          horizontal = if (narrow) 12.dp else 16.dp,
-          vertical = if (compact) 10.dp else 13.dp,
+          horizontal = if (phoneDense) 10.dp else if (narrow) 12.dp else 16.dp,
+          vertical = if (phoneDense) 8.dp else if (compact) 10.dp else 13.dp,
         ),
-    verticalArrangement = Arrangement.spacedBy(if (compact) 9.dp else 12.dp),
+    verticalArrangement = Arrangement.spacedBy(if (phoneDense) 6.dp else if (compact) 9.dp else 12.dp),
   ) {
     if (narrow) {
       Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        CatalogWordmark(compact = true)
-        Spacer(Modifier.weight(1f))
+        CatalogWordmark(compact = true, dense = phoneDense)
+        Spacer(modifier.weight(1f))
         actions()
       }
-      tabs()
+      // Phone: keep the Movies / TV Shows / My List track centered under the full header width.
+      Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        tabs()
+      }
     } else {
       Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         CatalogWordmark(compact = false)
-        Spacer(Modifier.width(24.dp))
+        Spacer(modifier.width(24.dp))
         tabs()
-        Spacer(Modifier.weight(1f))
+        Spacer(modifier.weight(1f))
         actions()
       }
     }
@@ -1094,27 +1208,32 @@ private fun CatalogTopBar(
 }
 
 @Composable
-private fun CatalogWordmark(compact: Boolean) {
+private fun CatalogWordmark(compact: Boolean, dense: Boolean = false) {
   Row(verticalAlignment = Alignment.CenterVertically) {
-    GizTvMark(modifier = Modifier.size(if (compact) 30.dp else 34.dp), cornerRadius = 10.dp)
-    Spacer(Modifier.width(10.dp))
+    GizTvMark(
+      modifier = Modifier.size(if (dense) 26.dp else if (compact) 30.dp else 34.dp),
+      cornerRadius = if (dense) 8.dp else 10.dp,
+    )
+    Spacer(Modifier.width(if (dense) 8.dp else 10.dp))
     Column {
       Text(
         "GIZTV",
         color = SoftWhite,
         fontWeight = FontWeight.Black,
-        letterSpacing = 2.5.sp,
-        fontSize = if (compact) 16.sp else 18.sp,
+        letterSpacing = if (dense) 2.sp else 2.5.sp,
+        fontSize = if (dense) 15.sp else if (compact) 16.sp else 18.sp,
       )
-      // Under the wordmark rather than beside it: the version is the least important thing in the
-      // bar, and a bordered chip on the same line gave it the weight of a button.
-      Text(
-        "v${BuildConfig.VERSION_NAME}",
-        color = AuroraMint.copy(alpha = .75f),
-        fontWeight = FontWeight.Bold,
-        letterSpacing = 1.sp,
-        fontSize = 9.sp,
-      )
+      if (!dense) {
+        // Under the wordmark rather than beside it: the version is the least important thing in the
+        // bar, and a bordered chip on the same line gave it the weight of a button.
+        Text(
+          "v${BuildConfig.VERSION_NAME}",
+          color = AuroraMint.copy(alpha = .75f),
+          fontWeight = FontWeight.Bold,
+          letterSpacing = 1.sp,
+          fontSize = 9.sp,
+        )
+      }
     }
   }
 }

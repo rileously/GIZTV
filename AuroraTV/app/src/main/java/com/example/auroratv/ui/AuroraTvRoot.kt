@@ -3,7 +3,9 @@ package com.example.auroratv.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -17,6 +19,7 @@ import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.unit.dp
 import com.example.auroratv.data.PlaybackContext
 import com.example.auroratv.data.CachedSubtitle
 import com.example.auroratv.data.StreamCacheStore
@@ -29,7 +32,10 @@ import com.example.auroratv.ui.browser.BrowserScreen
 import com.example.auroratv.ui.browser.StreamPrefetcher
 import com.example.auroratv.ui.catalog.CatalogScreen
 import com.example.auroratv.ui.catalog.STREAM_PROVIDER_COUNT
+import com.example.auroratv.ui.catalog.catalogTargetOf
 import com.example.auroratv.ui.catalog.nextProviderPageUrl
+import com.example.auroratv.ui.catalog.providerIndexOf
+import com.example.auroratv.ui.catalog.providerPageUrl
 import com.example.auroratv.ui.catalog.TmdbShow
 import com.example.auroratv.ui.catalog.TvShowDetailScreen
 import com.example.auroratv.ui.drama.ShortDrama
@@ -45,6 +51,7 @@ import com.example.auroratv.ui.player.ExternalSubtitleTrack
 import com.example.auroratv.ui.player.HlsStreamRequest
 import com.example.auroratv.ui.player.PlaybackProgressStore
 import com.example.auroratv.ui.player.playbackProgressKeyForPage
+import com.example.auroratv.ui.player.shouldComposeInAppPlayerSession
 import com.example.auroratv.ui.link.PairingCodeOverlay
 import com.example.auroratv.ui.link.RemoteScreen
 import com.example.auroratv.ui.update.AppUpdateController
@@ -77,6 +84,12 @@ internal fun nextIptvPlaybackSource(
   return sources.getOrNull(nextIndex)?.let { nextIndex to it }
 }
 
+/** Picks a specific IPTV backup by hand; null when the index is out of range. */
+internal fun iptvPlaybackSourceAt(
+  sources: List<HlsStreamRequest>,
+  index: Int,
+): Pair<Int, HlsStreamRequest>? = sources.getOrNull(index)?.let { index to it }
+
 private enum class Destination {
   CATALOG,
   SHOW_DETAIL,
@@ -89,6 +102,28 @@ private enum class Destination {
   BROWSER,
   PLAYER,
 }
+
+/** Browse surfaces that keep the phone footer visible (YouTube-style: hide on player/detail). */
+private fun Destination.showsPhoneBottomNav(): Boolean =
+  when (this) {
+    Destination.CATALOG,
+    Destination.SHORT_DRAMAS,
+    Destination.SPORTS,
+    Destination.IPTV,
+    Destination.WEB_HOME,
+    -> true
+    else -> false
+  }
+
+private fun Destination.toPhoneBottomTab(): PhoneBottomTab? =
+  when (this) {
+    Destination.CATALOG -> PhoneBottomTab.MOVIES
+    Destination.SPORTS -> PhoneBottomTab.SPORTS
+    Destination.SHORT_DRAMAS -> PhoneBottomTab.SHORTS
+    Destination.WEB_HOME -> PhoneBottomTab.WEB
+    Destination.IPTV -> PhoneBottomTab.IPTV
+    else -> null
+  }
 
 @Composable
 fun AuroraTvRoot(
@@ -132,7 +167,24 @@ fun AuroraTvRoot(
   var prefetched by remember { mutableStateOf<Pair<String, HlsStreamRequest>?>(null) }
   val streamCache = remember(appContext) { StreamCacheStore(appContext) }
   var streamFailoverAttempts by remember { mutableIntStateOf(0) }
+  // In-app mini player: the HLS session stays composed while browse destinations sit underneath.
+  var playerMinimized by remember { mutableStateOf(false) }
+  // Phone bottom-nav Search: expand/focus search in the current searchable section.
+  var requestSectionSearch by remember { mutableStateOf(false) }
   val scope = rememberCoroutineScope()
+  val showPhoneBottomNav = !isTelevision && destination.showsPhoneBottomNav()
+
+  fun exitDestinationFor(request: HlsStreamRequest): Destination =
+    when {
+      browserReturnDestination == Destination.IPTV -> Destination.IPTV
+      request.context != null -> browserReturnDestination
+      else -> Destination.BROWSER
+    }
+
+  fun clearPlayerSession() {
+    playerMinimized = false
+    streamRequest = null
+  }
 
   // What a paired phone's pad actually drives. Compose moves focus perfectly well when asked; what
   // it will not do is respond to a key event the app posted to itself while still in touch mode.
@@ -149,7 +201,16 @@ fun AuroraTvRoot(
     }
     onDispose { RemoteUiBridge.moveFocus = null }
   }
-  SideEffect { RemoteUiBridge.playerOpen = destination == Destination.PLAYER }
+  // Mini player leaves the catalog focusable; only the full-screen player owns the pad.
+  SideEffect {
+    RemoteUiBridge.playerOpen = destination == Destination.PLAYER && !playerMinimized
+  }
+  // A PLAYER destination with no stream (failover / dismiss race) must not keep the mini flag.
+  LaunchedEffect(destination, streamRequest) {
+    if (destination == Destination.PLAYER && streamRequest == null) {
+      playerMinimized = false
+    }
+  }
 
   // One stable handler for the drama destinations and the sports page. Registering a BackHandler
   // inside each screen instead would hand the press that leaves the detail page to the listing page
@@ -168,6 +229,7 @@ fun AuroraTvRoot(
 
   fun openForPlayback(context: PlaybackContext, returnTo: Destination) {
     streamFailoverAttempts = 0
+    playerMinimized = false
     pendingContext = context
     // The context carries the address this title is remembered by, which is not necessarily the
     // provider we ask first. Attempt zero is the head of the list, so reordering the providers
@@ -183,6 +245,8 @@ fun AuroraTvRoot(
       destination = Destination.PLAYER
       return
     }
+    // Stop any floating session while a new title is resolved.
+    streamRequest = null
     destination = Destination.BROWSER
 
     // A stream found earlier is worth trying before the page is ground through again. The loading
@@ -223,6 +287,45 @@ fun AuroraTvRoot(
     resumeContextFor(appContext, pageUrl)?.let { openForPlayback(it, Destination.CATALOG) }
   }
 
+  fun openPhoneTab(tab: PhoneBottomTab) {
+    when (tab) {
+      PhoneBottomTab.MOVIES -> {
+        requestSectionSearch = false
+        destination = Destination.CATALOG
+      }
+      PhoneBottomTab.SPORTS -> {
+        requestSectionSearch = false
+        destination = Destination.SPORTS
+      }
+      PhoneBottomTab.SHORTS -> {
+        requestSectionSearch = false
+        destination = Destination.SHORT_DRAMAS
+      }
+      PhoneBottomTab.WEB -> {
+        requestSectionSearch = false
+        destination = Destination.WEB_HOME
+      }
+      PhoneBottomTab.IPTV -> {
+        requestSectionSearch = false
+        destination = Destination.IPTV
+      }
+      PhoneBottomTab.SEARCH -> {
+        // Expand search in the current section when it supports it; otherwise land on Movies.
+        when (destination) {
+          Destination.CATALOG,
+          Destination.SPORTS,
+          Destination.SHORT_DRAMAS,
+          Destination.IPTV,
+          -> requestSectionSearch = true
+          else -> {
+            requestSectionSearch = true
+            destination = Destination.CATALOG
+          }
+        }
+      }
+    }
+  }
+
   @Composable
   fun Catalog() {
     CatalogScreen(
@@ -245,214 +348,304 @@ fun AuroraTvRoot(
       // A television is what a remote points at, so it is not offered one of its own.
       onOpenRemote =
         if (isTelevision) null else ({ destination = Destination.REMOTE }),
+      // Phone footer owns destination jumps; top-bar chips stay on leanback.
+      showTopDestinationActions = isTelevision,
+      requestSearchFocus = requestSectionSearch && destination == Destination.CATALOG,
+      onSearchFocusHandled = { requestSectionSearch = false },
     )
   }
 
   Box(Modifier.fillMaxSize()) {
-    // First in the box, so the player paints over it. Only ever alive while the player is up.
-    // Behind whatever is on screen. While the player is up this finds the next episode; on the
-    // catalog it finds whatever the viewer has stopped on, so pressing play has nothing left to
-    // wait for. Either way it is covered by the screen in front of it and takes no focus.
-    if (
-      destination == Destination.PLAYER ||
-        destination == Destination.CATALOG ||
-        destination == Destination.SPORTS
-    ) {
-      StreamPrefetcher(
-        target = prefetchTarget,
-        onResolved = { context, stream ->
-          prefetched = context.pageUrl to stream
-          // Kept beyond this run of the app too, since the work has been done either way.
-          streamCache.remember(
-            pageUrl = context.pageUrl,
-            url = stream.url,
-            headers = stream.headers,
-            subtitles =
-              stream.subtitles.map { CachedSubtitle(it.url, it.label, it.language, it.mimeType) },
-            sourcePageUrl = stream.sourcePageUrl,
+    Column(modifier = Modifier.fillMaxSize()) {
+      Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+        // First in the box, so the player paints over it. Only ever alive while the player is up.
+        // Behind whatever is on screen. While the player is up this finds the next episode; on the
+        // catalog it finds whatever the viewer has stopped on, so pressing play has nothing left to
+        // wait for. Either way it is covered by the screen in front of it and takes no focus.
+        if (
+          destination == Destination.PLAYER ||
+            destination == Destination.CATALOG ||
+            destination == Destination.SPORTS
+        ) {
+          StreamPrefetcher(
+            target = prefetchTarget,
+            onResolved = { context, stream ->
+              prefetched = context.pageUrl to stream
+              // Kept beyond this run of the app too, since the work has been done either way.
+              streamCache.remember(
+                pageUrl = context.pageUrl,
+                url = stream.url,
+                headers = stream.headers,
+                subtitles =
+                  stream.subtitles.map {
+                    CachedSubtitle(it.url, it.label, it.language, it.mimeType)
+                  },
+                sourcePageUrl = stream.sourcePageUrl,
+              )
+            },
           )
+        }
+
+        when (destination) {
+          Destination.CATALOG -> Catalog()
+          Destination.SHOW_DETAIL -> {
+            val show = selectedShow
+            if (show != null) {
+              TvShowDetailScreen(
+                show = show,
+                onPlayEpisode = { context -> openForPlayback(context, Destination.SHOW_DETAIL) },
+                onBack = { destination = Destination.CATALOG },
+              )
+            } else {
+              Catalog()
+            }
+          }
+          Destination.SHORT_DRAMAS ->
+            ShortDramaScreen(
+              onOpenDrama = { drama ->
+                selectedDrama = drama
+                destination = Destination.DRAMA_DETAIL
+              },
+              onResume = { context -> openForPlayback(context, Destination.SHORT_DRAMAS) },
+              onBack = { destination = Destination.CATALOG },
+              hideBackButton = showPhoneBottomNav,
+              requestSearchFocus = requestSectionSearch,
+              onSearchFocusHandled = { requestSectionSearch = false },
+            )
+          Destination.DRAMA_DETAIL -> {
+            val drama = selectedDrama
+            if (drama != null) {
+              ShortDramaDetailScreen(
+                drama = drama,
+                onPlayEpisode = { context -> openForPlayback(context, Destination.DRAMA_DETAIL) },
+                onBack = { destination = Destination.SHORT_DRAMAS },
+              )
+            } else {
+              Catalog()
+            }
+          }
+          Destination.REMOTE ->
+            RemoteScreen(
+              onBack = { destination = Destination.CATALOG },
+              onPlayHere = { pageUrl, title, subtitle, posterUrl, positionMs ->
+                // The position comes from the television, so the phone's player has to be told it
+                // before the title opens: it resumes from what this device has stored, and this device
+                // has been in another room.
+                PlaybackProgressStore(appContext)
+                  .update(
+                    key = playbackProgressKeyForPage(pageUrl),
+                    positionMs = positionMs,
+                    durationMs = 0L,
+                    playbackState = Player.STATE_READY,
+                  )
+                openForPlayback(
+                  PlaybackContext(
+                    pageUrl = pageUrl,
+                    title = title,
+                    subtitle = subtitle,
+                    posterUrl = posterUrl,
+                  ),
+                  Destination.CATALOG,
+                )
+              },
+            )
+          Destination.SPORTS ->
+            SportsScreen(
+              onPlay = { context -> openForPlayback(context, Destination.SPORTS) },
+              onConsidering = { considered ->
+                if (
+                  streamCache.find(considered.pageUrl) == null &&
+                    prefetchTarget?.pageUrl != considered.pageUrl
+                ) {
+                  prefetchTarget = considered
+                }
+              },
+              onBack = { destination = Destination.CATALOG },
+              hideBackButton = showPhoneBottomNav,
+              requestSearchFocus = requestSectionSearch,
+              onSearchFocusHandled = { requestSectionSearch = false },
+            )
+          Destination.IPTV ->
+            IptvScreen(
+              onPlay = { channel ->
+                streamFailoverAttempts = 0
+                pendingContext = null
+                browserReturnDestination = Destination.IPTV
+                iptvPlaybackSources = channel.toPlaybackRequests()
+                iptvPlaybackSourceIndex = 0
+                playerMinimized = false
+                streamRequest = iptvPlaybackSources.first()
+                destination = Destination.PLAYER
+              },
+              onBack = { destination = Destination.CATALOG },
+              browseState = iptvBrowseState,
+              onBrowseStateChanged = { iptvBrowseState = it },
+              hideBackButton = showPhoneBottomNav,
+              requestSearchFocus = requestSectionSearch,
+              onSearchFocusHandled = { requestSectionSearch = false },
+            )
+          Destination.WEB_HOME ->
+            AuroraTvApp(
+              onOpenBrowser = { url ->
+                pendingContext = null
+                browserUrl = url
+                browserReturnDestination = Destination.WEB_HOME
+                destination = Destination.BROWSER
+              },
+              onOpenMovies = { destination = Destination.CATALOG },
+            )
+          Destination.BROWSER ->
+            BrowserScreen(
+              initialUrl = browserUrl,
+              onUrlChanged = { browserUrl = it },
+              playback = pendingContext,
+              onExit = { destination = browserReturnDestination },
+              onStreamDetected = { request ->
+                playerMinimized = false
+                streamRequest = request.copy(context = pendingContext)
+                destination = Destination.PLAYER
+              },
+            )
+          Destination.PLAYER -> {
+            // Full-screen player is drawn above this when-block so a minimized session can keep the
+            // same ExoPlayer alive over the catalog. An empty request falls back to the home row.
+            if (streamRequest == null) {
+              Catalog()
+            }
+          }
+        }
+      }
+
+      if (showPhoneBottomNav) {
+        PhoneBottomNav(
+          selected =
+            if (requestSectionSearch) PhoneBottomTab.SEARCH else destination.toPhoneBottomTab(),
+          onSelect = ::openPhoneTab,
+        )
+      }
+    }
+
+    val activeRequest = streamRequest
+    if (
+      activeRequest != null &&
+        shouldComposeInAppPlayerSession(
+          hasStreamRequest = true,
+          fullPlayerVisible = destination == Destination.PLAYER && !playerMinimized,
+          miniPlayerActive = playerMinimized,
+        )
+    ) {
+      HlsPlayerScreen(
+        request = activeRequest,
+        minimized = playerMinimized,
+        miniPlayerBottomPadding =
+          if (!isTelevision && showPhoneBottomNav) {
+            PhoneBottomNavContentHeight + 8.dp
+          } else {
+            16.dp
+          },
+        // Leaving a catalog title returns to the list it came from, not to the loading page that
+        // resolved it. Streams found by hand still step back to the site they were found on.
+        onExit = {
+          val returnTo = exitDestinationFor(activeRequest)
+          clearPlayerSession()
+          destination = returnTo
         },
+        onMinimize = {
+          // In-app mini player is phone-only; TV / Leanback exits via onExit / Back.
+          if (!isTelevision) {
+            playerMinimized = true
+            destination = exitDestinationFor(activeRequest)
+          }
+        },
+        onExpand = {
+          playerMinimized = false
+          destination = Destination.PLAYER
+        },
+        onDismissMini = { clearPlayerSession() },
+        onPlayNext = { next -> openForPlayback(next, browserReturnDestination) },
+        onPrepareNext = { next -> prefetchTarget = next },
+        onHandedOver = {
+          clearPlayerSession()
+          destination = Destination.REMOTE
+        },
+        // A hand-picked server: IPTV jumps to that backup link; catalog titles re-resolve on
+        // the chosen provider. Progress was already saved by the player before this runs.
+        onSwitchServer = switchServer@{ serverIndex ->
+          playerMinimized = false
+          if (browserReturnDestination == Destination.IPTV) {
+            val selected = iptvPlaybackSourceAt(iptvPlaybackSources, serverIndex) ?: return@switchServer
+            if (selected.first != iptvPlaybackSourceIndex) {
+              iptvPlaybackSourceIndex = selected.first
+              streamRequest = selected.second
+            }
+            return@switchServer
+          }
+          val playbackContext = activeRequest.context ?: return@switchServer
+          val target = catalogTargetOf(playbackContext.pageUrl) ?: return@switchServer
+          if (providerIndexOf(activeRequest.sourcePageUrl) == serverIndex) return@switchServer
+          val providerUrl = providerPageUrl(target, serverIndex) ?: return@switchServer
+          streamCache.forget(playbackContext.pageUrl)
+          if (prefetched?.first == playbackContext.pageUrl) {
+            prefetched = null
+          }
+          // Failover continues from the chosen site if it cannot produce a stream.
+          streamFailoverAttempts = serverIndex
+          pendingContext = playbackContext
+          browserUrl = providerUrl
+          streamRequest = null
+          destination = Destination.BROWSER
+        },
+        // Signed stream addresses can expire or point to an unhealthy edge. Forget the dead
+        // address and resolve the title page again, but bound the automatic loop so a genuinely
+        // broken title still presents a useful error instead of loading forever.
+        onPlaybackFailed = {
+          playerMinimized = false
+          if (browserReturnDestination == Destination.IPTV) {
+            val nextSource =
+              nextIptvPlaybackSource(iptvPlaybackSources, iptvPlaybackSourceIndex)
+            if (nextSource != null) {
+              val (nextSourceIndex, nextRequest) = nextSource
+              iptvPlaybackSourceIndex = nextSourceIndex
+              streamRequest = nextRequest
+              true
+            } else {
+              false
+            }
+          } else {
+            val playbackContext = activeRequest.context
+            playbackContext?.pageUrl?.let(streamCache::forget)
+            when (
+              streamFailureAction(
+                hasPlaybackContext = playbackContext != null,
+                completedFailovers = streamFailoverAttempts,
+              )
+            ) {
+              StreamFailureAction.RESOLVE_FRESH_STREAM -> {
+                val canonicalPageUrl = requireNotNull(playbackContext).pageUrl
+                val nextAttempt = streamFailoverAttempts + 1
+                streamFailoverAttempts = nextAttempt
+                // The context keeps the address the catalog knows this title by, so watch
+                // history and Continue watching stay put no matter who ends up serving it.
+                // Only the page the resolver visits moves on to the next provider.
+                pendingContext = playbackContext
+                browserUrl = nextProviderPageUrl(canonicalPageUrl, nextAttempt) ?: canonicalPageUrl
+                streamRequest = null
+                destination = Destination.BROWSER
+                true
+              }
+              StreamFailureAction.SHOW_PLAYER_ERROR -> false
+            }
+          }
+        },
+        onPlaybackStable = { streamFailoverAttempts = 0 },
       )
     }
 
-    when (destination) {
-      Destination.CATALOG -> Catalog()
-      Destination.SHOW_DETAIL -> {
-        val show = selectedShow
-        if (show != null) {
-          TvShowDetailScreen(
-            show = show,
-            onPlayEpisode = { context -> openForPlayback(context, Destination.SHOW_DETAIL) },
-            onBack = { destination = Destination.CATALOG },
-          )
-        } else {
-          Catalog()
-        }
-      }
-      Destination.SHORT_DRAMAS ->
-        ShortDramaScreen(
-          onOpenDrama = { drama ->
-            selectedDrama = drama
-            destination = Destination.DRAMA_DETAIL
-          },
-          onResume = { context -> openForPlayback(context, Destination.SHORT_DRAMAS) },
-          onBack = { destination = Destination.CATALOG },
-        )
-      Destination.DRAMA_DETAIL -> {
-        val drama = selectedDrama
-        if (drama != null) {
-          ShortDramaDetailScreen(
-            drama = drama,
-            onPlayEpisode = { context -> openForPlayback(context, Destination.DRAMA_DETAIL) },
-            onBack = { destination = Destination.SHORT_DRAMAS },
-          )
-        } else {
-          Catalog()
-        }
-      }
-      Destination.REMOTE ->
-        RemoteScreen(
-          onBack = { destination = Destination.CATALOG },
-          onPlayHere = { pageUrl, title, subtitle, posterUrl, positionMs ->
-            // The position comes from the television, so the phone's player has to be told it
-            // before the title opens: it resumes from what this device has stored, and this device
-            // has been in another room.
-            PlaybackProgressStore(appContext)
-              .update(
-                key = playbackProgressKeyForPage(pageUrl),
-                positionMs = positionMs,
-                durationMs = 0L,
-                playbackState = Player.STATE_READY,
-              )
-            openForPlayback(
-              PlaybackContext(
-                pageUrl = pageUrl,
-                title = title,
-                subtitle = subtitle,
-                posterUrl = posterUrl,
-              ),
-              Destination.CATALOG,
-            )
-          },
-        )
-      Destination.SPORTS ->
-        SportsScreen(
-          onPlay = { context -> openForPlayback(context, Destination.SPORTS) },
-          onConsidering = { considered ->
-            if (
-              streamCache.find(considered.pageUrl) == null &&
-                prefetchTarget?.pageUrl != considered.pageUrl
-            ) {
-              prefetchTarget = considered
-            }
-          },
-          onBack = { destination = Destination.CATALOG },
-        )
-      Destination.IPTV ->
-        IptvScreen(
-          onPlay = { channel ->
-            streamFailoverAttempts = 0
-            pendingContext = null
-            browserReturnDestination = Destination.IPTV
-            iptvPlaybackSources = channel.toPlaybackRequests()
-            iptvPlaybackSourceIndex = 0
-            streamRequest = iptvPlaybackSources.first()
-            destination = Destination.PLAYER
-          },
-          onBack = { destination = Destination.CATALOG },
-          browseState = iptvBrowseState,
-          onBrowseStateChanged = { iptvBrowseState = it },
-        )
-      Destination.WEB_HOME ->
-        AuroraTvApp(
-          onOpenBrowser = { url ->
-            pendingContext = null
-            browserUrl = url
-            browserReturnDestination = Destination.WEB_HOME
-            destination = Destination.BROWSER
-          },
-          onOpenMovies = { destination = Destination.CATALOG },
-        )
-      Destination.BROWSER ->
-        BrowserScreen(
-          initialUrl = browserUrl,
-          onUrlChanged = { browserUrl = it },
-          playback = pendingContext,
-          onExit = { destination = browserReturnDestination },
-          onStreamDetected = { request ->
-            streamRequest = request.copy(context = pendingContext)
-            destination = Destination.PLAYER
-          },
-        )
-      Destination.PLAYER -> {
-        val request = streamRequest
-        if (request != null) {
-          HlsPlayerScreen(
-            request = request,
-            // Leaving a catalog title returns to the list it came from, not to the loading page that
-            // resolved it. Streams found by hand still step back to the site they were found on.
-            onExit = {
-              destination =
-                when {
-                  browserReturnDestination == Destination.IPTV -> Destination.IPTV
-                  request.context != null -> browserReturnDestination
-                  else -> Destination.BROWSER
-                }
-            },
-            onPlayNext = { next -> openForPlayback(next, browserReturnDestination) },
-            onPrepareNext = { next -> prefetchTarget = next },
-            onHandedOver = { destination = Destination.REMOTE },
-            // Signed stream addresses can expire or point to an unhealthy edge. Forget the dead
-            // address and resolve the title page again, but bound the automatic loop so a genuinely
-            // broken title still presents a useful error instead of loading forever.
-            onPlaybackFailed = {
-              if (browserReturnDestination == Destination.IPTV) {
-                val nextSource =
-                  nextIptvPlaybackSource(iptvPlaybackSources, iptvPlaybackSourceIndex)
-                if (nextSource != null) {
-                  val (nextSourceIndex, nextRequest) = nextSource
-                  iptvPlaybackSourceIndex = nextSourceIndex
-                  streamRequest = nextRequest
-                  true
-                } else {
-                  false
-                }
-              } else {
-                val playbackContext = request.context
-                playbackContext?.pageUrl?.let(streamCache::forget)
-                when (
-                  streamFailureAction(
-                    hasPlaybackContext = playbackContext != null,
-                    completedFailovers = streamFailoverAttempts,
-                  )
-                ) {
-                  StreamFailureAction.RESOLVE_FRESH_STREAM -> {
-                    val canonicalPageUrl = requireNotNull(playbackContext).pageUrl
-                    val nextAttempt = streamFailoverAttempts + 1
-                    streamFailoverAttempts = nextAttempt
-                    // The context keeps the address the catalog knows this title by, so watch
-                    // history and Continue watching stay put no matter who ends up serving it.
-                    // Only the page the resolver visits moves on to the next provider.
-                    pendingContext = playbackContext
-                    browserUrl = nextProviderPageUrl(canonicalPageUrl, nextAttempt) ?: canonicalPageUrl
-                    streamRequest = null
-                    destination = Destination.BROWSER
-                    true
-                  }
-                  StreamFailureAction.SHOW_PLAYER_ERROR -> false
-                }
-              }
-            },
-            onPlaybackStable = { streamFailoverAttempts = 0 },
-          )
-        } else {
-          Catalog()
-        }
-      }
-    }
-
     // Never interrupt playback or stream discovery with an update prompt.
-    if (destination != Destination.PLAYER && destination != Destination.BROWSER) {
+    if (
+      (destination != Destination.PLAYER || playerMinimized) &&
+        destination != Destination.BROWSER
+    ) {
       AppUpdateController()
     }
 

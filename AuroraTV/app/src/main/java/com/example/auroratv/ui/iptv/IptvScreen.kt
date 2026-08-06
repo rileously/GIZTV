@@ -1,6 +1,7 @@
 package com.example.auroratv.ui.iptv
 
 import android.util.Log
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
@@ -30,13 +31,18 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -68,6 +74,7 @@ import com.example.auroratv.theme.MutedBlue
 import com.example.auroratv.theme.NightSurface
 import com.example.auroratv.theme.SoftWhite
 import com.example.auroratv.ui.catalog.CatalogButton
+import com.example.auroratv.ui.catalog.CatalogIconButton
 import com.example.auroratv.ui.catalog.CatalogSearchField
 import com.example.auroratv.ui.catalog.ChipRow
 import com.example.auroratv.ui.catalog.GizTvMark
@@ -88,6 +95,10 @@ internal fun IptvScreen(
   onBack: () -> Unit,
   browseState: IptvBrowseState,
   onBrowseStateChanged: (IptvBrowseState) -> Unit,
+  /** Phone footer already provides navigation; hide the redundant Back control. */
+  hideBackButton: Boolean = false,
+  requestSearchFocus: Boolean = false,
+  onSearchFocusHandled: () -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -108,11 +119,20 @@ internal fun IptvScreen(
   val selectedGroup = browseState.selectedGroup
   val query = browseState.query
   var loading by remember { mutableStateOf(true) }
+  var searchExpanded by rememberSaveable { mutableStateOf(false) }
   var errorMessage by remember { mutableStateOf<String?>(null) }
 
   fun dismissKeyboard() {
     focusManager.clearFocus()
     keyboardController?.hide()
+  }
+
+  fun collapseSearchUi() {
+    searchExpanded = false
+    if (query.isNotBlank()) {
+      onBrowseStateChanged(browseState.copy(query = ""))
+    }
+    dismissKeyboard()
   }
 
   fun load(refresh: Boolean) {
@@ -131,6 +151,7 @@ internal fun IptvScreen(
 
   fun runSearch() {
     if (query.isBlank()) {
+      searchExpanded = true
       searchFieldFocusRequester.requestFocus()
     } else {
       dismissKeyboard()
@@ -138,9 +159,19 @@ internal fun IptvScreen(
     }
   }
 
+  LaunchedEffect(requestSearchFocus) {
+    if (!requestSearchFocus) return@LaunchedEffect
+    searchExpanded = true
+    withFrameNanos {}
+    runCatching { searchFieldFocusRequester.requestFocus() }
+    onSearchFocusHandled()
+  }
+
+  BackHandler(enabled = hideBackButton && searchExpanded) { collapseSearchUi() }
+
   LaunchedEffect(Unit) {
     load(refresh = false)
-    backFocusRequester.requestFocus()
+    if (!hideBackButton) backFocusRequester.requestFocus()
   }
 
   val channels = playlist?.channels.orEmpty()
@@ -176,6 +207,8 @@ internal fun IptvScreen(
   ) {
     val narrow = maxWidth < 600.dp
     val compact = maxHeight < 600.dp
+    val phoneDense = hideBackButton && narrow
+    val showSearchRow = !phoneDense || searchExpanded || query.isNotBlank()
     val showGroupFilters = activeCategory != ALL_IPTV_CHANNELS && groups.size > 2
     val categoryDownRequester = if (showGroupFilters) groupFocusRequester else searchFieldFocusRequester
     val searchUpRequester = if (showGroupFilters) groupFocusRequester else categoryFocusRequester
@@ -183,20 +216,28 @@ internal fun IptvScreen(
     Column(
       modifier =
         Modifier.fillMaxSize().padding(
-          horizontal = if (narrow) 18.dp else 42.dp,
-          vertical = if (compact) 14.dp else 22.dp,
+          horizontal = if (narrow) 14.dp else 42.dp,
+          vertical =
+            when {
+              phoneDense -> 8.dp
+              compact -> 14.dp
+              else -> 22.dp
+            },
         )
     ) {
       Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        GizTvMark(modifier = Modifier.size(34.dp), cornerRadius = 10.dp)
-        Spacer(Modifier.width(11.dp))
+        GizTvMark(
+          modifier = Modifier.size(if (phoneDense) 26.dp else 34.dp),
+          cornerRadius = if (phoneDense) 8.dp else 10.dp,
+        )
+        Spacer(modifier.width(if (phoneDense) 8.dp else 11.dp))
         Column {
           Text(
             "LIVE TV",
             color = SoftWhite,
             fontWeight = FontWeight.Black,
-            letterSpacing = 2.5.sp,
-            fontSize = 18.sp,
+            letterSpacing = if (phoneDense) 2.sp else 2.5.sp,
+            fontSize = if (phoneDense) 15.sp else 18.sp,
           )
           if (!narrow && channels.isNotEmpty()) {
             Text(
@@ -207,8 +248,27 @@ internal fun IptvScreen(
             )
           }
         }
-        Spacer(Modifier.weight(1f))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Spacer(modifier.weight(1f))
+        Row(
+          horizontalArrangement = Arrangement.spacedBy(if (phoneDense) 4.dp else 8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          if (phoneDense && !showSearchRow) {
+            CatalogIconButton(
+              "Search",
+              Icons.Filled.Search,
+              {
+                searchExpanded = true
+                scope.launch {
+                  withFrameNanos {}
+                  runCatching { searchFieldFocusRequester.requestFocus() }
+                }
+              },
+            )
+          }
+          if (phoneDense && showSearchRow) {
+            CatalogIconButton("Close search", Icons.Filled.Close, ::collapseSearchUi)
+          }
           CatalogButton(
             label = "Reload",
             onClick = { dismissKeyboard(); load(refresh = true) },
@@ -218,18 +278,20 @@ internal fun IptvScreen(
                 down = categoryFocusRequester
               },
           )
-          CatalogButton(
-            label = "Back",
-            onClick = { dismissKeyboard(); onBack() },
-            modifier =
-              Modifier.focusRequester(backFocusRequester).focusProperties {
-                left = reloadFocusRequester
-                down = categoryFocusRequester
-              },
-          )
+          if (!hideBackButton) {
+            CatalogButton(
+              label = "Back",
+              onClick = { dismissKeyboard(); onBack() },
+              modifier =
+                Modifier.focusRequester(backFocusRequester).focusProperties {
+                  left = reloadFocusRequester
+                  down = categoryFocusRequester
+                },
+            )
+          }
         }
       }
-      Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
+      Spacer(modifier.height(if (phoneDense) 6.dp else if (compact) 8.dp else 12.dp))
 
       IptvCategoryStrip(
         categories = categories,
@@ -272,39 +334,41 @@ internal fun IptvScreen(
         Spacer(Modifier.height(9.dp))
       }
 
-      Row(
-        modifier = Modifier.focusGroup(),
-        horizontalArrangement = Arrangement.spacedBy(9.dp),
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        CatalogSearchField(
-          value = query,
-          placeholder = "Search all channels…",
-          onValueChanged = { onBrowseStateChanged(browseState.copy(query = it)) },
-          onSearch = ::runSearch,
-          modifier =
-            Modifier.weight(1f).focusRequester(searchFieldFocusRequester).focusProperties {
-              up = searchUpRequester
-              right = searchButtonFocusRequester
-              down = bodyFocusRequester ?: FocusRequester.Default
-            }.remoteFocusNavigation(up = searchUpRequester, down = bodyFocusRequester),
-        )
-        CatalogButton(
-          label = "Search",
-          onClick = ::runSearch,
-          modifier =
-            Modifier.focusRequester(searchButtonFocusRequester).focusProperties {
-              up = searchUpRequester
-              left = searchFieldFocusRequester
-              down = bodyFocusRequester ?: FocusRequester.Default
-            }.remoteFocusNavigation(
-              up = searchUpRequester,
-              left = searchFieldFocusRequester,
-              down = bodyFocusRequester,
-            ),
-        )
+      if (showSearchRow) {
+        Row(
+          modifier = Modifier.focusGroup(),
+          horizontalArrangement = Arrangement.spacedBy(9.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          CatalogSearchField(
+            value = query,
+            placeholder = "Search all channels…",
+            onValueChanged = { onBrowseStateChanged(browseState.copy(query = it)) },
+            onSearch = ::runSearch,
+            modifier =
+              Modifier.weight(1f).focusRequester(searchFieldFocusRequester).focusProperties {
+                up = searchUpRequester
+                right = searchButtonFocusRequester
+                down = bodyFocusRequester ?: FocusRequester.Default
+              }.remoteFocusNavigation(up = searchUpRequester, down = bodyFocusRequester),
+          )
+          CatalogButton(
+            label = "Search",
+            onClick = ::runSearch,
+            modifier =
+              Modifier.focusRequester(searchButtonFocusRequester).focusProperties {
+                up = searchUpRequester
+                left = searchFieldFocusRequester
+                down = bodyFocusRequester ?: FocusRequester.Default
+              }.remoteFocusNavigation(
+                up = searchUpRequester,
+                left = searchFieldFocusRequester,
+                down = bodyFocusRequester,
+              ),
+          )
+        }
+        Spacer(Modifier.height(if (compact) 8.dp else 14.dp))
       }
-      Spacer(Modifier.height(if (compact) 8.dp else 14.dp))
 
       when {
         loading && channels.isEmpty() ->
@@ -330,9 +394,9 @@ internal fun IptvScreen(
             state = gridState,
             columns = GridCells.Adaptive(minSize = if (narrow) 220.dp else 270.dp),
             modifier = Modifier.weight(1f).fillMaxWidth(),
-            contentPadding = PaddingValues(bottom = 22.dp),
+            contentPadding = PaddingValues(bottom = if (phoneDense) 8.dp else 22.dp),
             horizontalArrangement = Arrangement.spacedBy(if (narrow) 12.dp else 16.dp),
-            verticalArrangement = Arrangement.spacedBy(if (narrow) 12.dp else 16.dp),
+            verticalArrangement = Arrangement.spacedBy(if (phoneDense) 10.dp else if (narrow) 12.dp else 16.dp),
           ) {
             item(span = { GridItemSpan(maxLineSpan) }) {
               Column {

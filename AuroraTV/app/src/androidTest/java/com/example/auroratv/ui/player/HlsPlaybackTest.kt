@@ -82,6 +82,10 @@ class HlsPlaybackTest {
     assertEquals(PlayerBackAction.CLOSE_SETTINGS, playerBackAction(settingsOpen = true, controlsVisible = true))
     assertEquals(PlayerBackAction.HIDE_CONTROLS, playerBackAction(settingsOpen = false, controlsVisible = true))
     assertEquals(PlayerBackAction.EXIT_PLAYER, playerBackAction(settingsOpen = false, controlsVisible = false))
+    assertEquals(
+      PlayerBackAction.MINIMIZE_PLAYER,
+      playerBackAction(settingsOpen = false, controlsVisible = false, canMinimize = true),
+    )
   }
 
   @Test
@@ -675,11 +679,11 @@ class HlsPlaybackTest {
   }
 
   @Test
-  fun subtitleSyncControls_useFineStepsAndClampAtThirtySeconds() {
+  fun subtitleSyncControls_useFineStepsAndClampAtOneMinute() {
     assertEquals(-500L, adjustSubtitleSync(0L, -500L))
     assertEquals(100L, adjustSubtitleSync(0L, 100L))
-    assertEquals(30_000L, adjustSubtitleSync(29_900L, 500L))
-    assertEquals(-30_000L, adjustSubtitleSync(-29_900L, -500L))
+    assertEquals(60_000L, adjustSubtitleSync(59_900L, 500L))
+    assertEquals(-60_000L, adjustSubtitleSync(-59_900L, -500L))
   }
 
   @Test

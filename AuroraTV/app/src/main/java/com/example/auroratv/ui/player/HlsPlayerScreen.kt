@@ -54,12 +54,14 @@ import androidx.compose.material.icons.filled.Brightness6
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Tv
@@ -110,6 +112,7 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -160,6 +163,7 @@ import com.example.auroratv.data.WatchHistoryStore
 import com.example.auroratv.link.GROUP_AUDIO
 import com.example.auroratv.link.GROUP_QUALITY
 import com.example.auroratv.link.GROUP_RESIZE
+import com.example.auroratv.link.GROUP_SERVER
 import com.example.auroratv.link.GROUP_SPEED
 import com.example.auroratv.link.GROUP_SUBTITLE
 import com.example.auroratv.link.LinkCommand
@@ -175,6 +179,9 @@ import com.example.auroratv.theme.DeepSpace
 import com.example.auroratv.theme.MutedBlue
 import com.example.auroratv.theme.NightSurface
 import com.example.auroratv.theme.SoftWhite
+import com.example.auroratv.ui.catalog.PlaybackServerOption
+import com.example.auroratv.ui.catalog.playbackServerOptions
+import com.example.auroratv.ui.catalog.selectedPlaybackServerIndex
 import com.example.auroratv.ui.catalog.serverLabelFor
 import com.example.auroratv.gizTvOrientation
 import java.util.Locale
@@ -567,6 +574,7 @@ private enum class PlayerControlDialog {
   PICTURE,
   SPEED,
   DECODER,
+  SERVER,
 }
 
 @androidx.annotation.OptIn(UnstableApi::class)
@@ -574,11 +582,23 @@ private enum class PlayerControlDialog {
 internal fun HlsPlayerScreen(
   request: HlsStreamRequest,
   onExit: () -> Unit,
+  /** In-app floating player over the catalog; keeps this composition (and ExoPlayer) alive. */
+  minimized: Boolean = false,
+  /** Extra lift above phone chrome (e.g. bottom navigation) while minimized. */
+  miniPlayerBottomPadding: Dp = 16.dp,
+  onMinimize: () -> Unit = {},
+  onExpand: () -> Unit = {},
+  onDismissMini: () -> Unit = onExit,
   onPlayNext: (PlaybackContext) -> Unit = {},
   /** Said once the episode is over, while the countdown is the only thing left to wait for. */
   onPrepareNext: (PlaybackContext) -> Unit = {},
   /** Said once a title has been handed to the television, so this screen can step aside. */
   onHandedOver: () -> Unit = {},
+  /**
+   * Asks the host to start a different server or backup link. Progress is saved before this runs
+   * so a catalog re-resolve can resume near the same place.
+   */
+  onSwitchServer: (Int) -> Unit = {},
   /** Requests another source or a fresh resolution. True means the caller accepted the retry. */
   onPlaybackFailed: () -> Boolean = { false },
   /** A full minute without interruption makes earlier failovers irrelevant again. */
@@ -645,6 +665,24 @@ internal fun HlsPlayerScreen(
   var resumePositionMs by remember(request) { mutableLongStateOf(savedProgressMs) }
   var activeDialog by remember(request) { mutableStateOf<PlayerControlDialog?>(null) }
   val settingsOpen = activeDialog != null
+  val serverOptions =
+    remember(request) {
+      playbackServerOptions(
+        catalogPageUrl = request.context?.pageUrl,
+        sourceCount = request.sourceCount,
+      )
+    }
+  val selectedServerIndex =
+    remember(request) {
+      selectedPlaybackServerIndex(
+        sourcePageUrl = request.sourcePageUrl,
+        sourceIndex = request.sourceIndex,
+        sourceCount = request.sourceCount,
+      )
+    }
+  val selectedServerLabel =
+    serverOptions.firstOrNull { it.index == selectedServerIndex }?.label
+      ?: serverLabelFor(request.sourcePageUrl)
   var resumePlayWhenReady by remember(request) { mutableStateOf(true) }
   var subtitleSize by remember(request) { mutableStateOf(playerPreferences.subtitleSize()) }
   var subtitlePosition by remember(request) { mutableStateOf(playerPreferences.subtitlePosition()) }
@@ -806,9 +844,13 @@ internal fun HlsPlayerScreen(
     }
   }
 
-  DisposableEffect(activity, isTelevision, shortForm) {
+  DisposableEffect(activity, isTelevision, shortForm, minimized) {
     activity?.requestedOrientation =
-      gizTvOrientation(isTelevision = isTelevision, playerActive = true, verticalVideo = shortForm)
+      gizTvOrientation(
+        isTelevision = isTelevision,
+        playerActive = !minimized,
+        verticalVideo = shortForm,
+      )
     onDispose {
       activity?.requestedOrientation = gizTvOrientation(isTelevision = isTelevision, playerActive = false)
     }
@@ -872,11 +914,26 @@ internal fun HlsPlayerScreen(
     controlsInteractionVersion++
   }
 
-  BackHandler {
-    when (playerBackAction(settingsOpen, controlsVisible)) {
+  val canMinimize =
+    canMinimizeToInAppPlayer(
+      minimized = minimized,
+      isCasting = isCasting,
+      hasError = error != null,
+      playbackFinished = playbackFinished,
+      isTelevision = isTelevision,
+    )
+
+  // While floating over the catalog, Back belongs to the browse destination underneath.
+  BackHandler(enabled = !minimized) {
+    when (playerBackAction(settingsOpen, controlsVisible, canMinimize = canMinimize)) {
       PlayerBackAction.CLOSE_SETTINGS -> closeSettings()
       PlayerBackAction.HIDE_CONTROLS -> {
         controlsVisible = false
+      }
+      PlayerBackAction.MINIMIZE_PLAYER -> {
+        activeDialog = null
+        controlsVisible = false
+        onMinimize()
       }
       PlayerBackAction.EXIT_PLAYER -> onExit()
     }
@@ -892,6 +949,19 @@ internal fun HlsPlayerScreen(
   // The same settings the television's own dialog offers, handed to whatever is holding the remote.
   // Every pick is routed back through the handlers below rather than reimplemented, so a subtitle
   // chosen on a phone reloads the media source exactly as one chosen on the sofa does.
+  val latestOnSwitchServer by rememberUpdatedState(onSwitchServer)
+
+  fun switchToServer(option: PlaybackServerOption) {
+    if (option.index == selectedServerIndex) {
+      closeSettings()
+      return
+    }
+    // Catalog re-resolve leaves this player; keep the sofa position under the canonical page key.
+    savePlaybackProgress()
+    closeSettings()
+    latestOnSwitchServer(option.index)
+  }
+
   val remoteOptions =
     remember(player) {
       object : RemotePlayerOptions {
@@ -913,6 +983,13 @@ internal fun HlsPlayerScreen(
                 qualityOptions.map { RemoteOptionItem(it.label, it.label, it == selectedQuality) },
               ),
               RemoteOptionGroup(
+                GROUP_SERVER,
+                "Server",
+                serverOptions.map {
+                  RemoteOptionItem(it.index.toString(), it.label, it.index == selectedServerIndex)
+                },
+              ),
+              RemoteOptionGroup(
                 GROUP_SPEED,
                 "Speed",
                 REMOTE_SPEEDS.map {
@@ -927,7 +1004,9 @@ internal fun HlsPlayerScreen(
                 },
               ),
             )
-            .filter { it.items.isNotEmpty() }
+            .filter { group ->
+              if (group.id == GROUP_SERVER) group.items.size > 1 else group.items.isNotEmpty()
+            }
 
         override fun select(groupId: String, itemId: String) {
           when (groupId) {
@@ -950,6 +1029,9 @@ internal fun HlsPlayerScreen(
                 playerPreferences.setStablePlayback(option.isStable)
                 selectVideoQuality(player, option)
               }
+            GROUP_SERVER ->
+              serverOptions.firstOrNull { it.index.toString() == itemId || it.label == itemId }
+                ?.let(::switchToServer)
             GROUP_SPEED ->
               itemId.toFloatOrNull()?.let { speed ->
                 playbackSpeed = speed
@@ -1316,7 +1398,8 @@ internal fun HlsPlayerScreen(
     }
   }
 
-  LaunchedEffect(controlsVisible, settingsOpen) {
+  LaunchedEffect(controlsVisible, settingsOpen, minimized) {
+    if (minimized) return@LaunchedEffect
     delay(80L)
     if (settingsOpen) return@LaunchedEffect
     if (controlsVisible) {
@@ -1335,15 +1418,17 @@ internal fun HlsPlayerScreen(
   )
 
   // Leaving the app hands the video to a floating window instead of stopping it.
+  // The in-app mini player already covers browse-while-watching inside AuroraTV.
   val pictureInPictureSupported = remember(context) { context.supportsPictureInPicture() }
   PictureInPictureEffect(
     enabled =
-      shouldEnterPictureInPicture(
-        supported = pictureInPictureSupported,
-        isCasting = isCasting,
-        hasError = error != null,
-        playbackFinished = playbackFinished,
-      ),
+      !minimized &&
+        shouldEnterPictureInPicture(
+          supported = pictureInPictureSupported,
+          isCasting = isCasting,
+          hasError = error != null,
+          playbackFinished = playbackFinished,
+        ),
     isPlaying = isVideoPlaying,
     aspectRatio =
       remember(videoSize) {
@@ -1376,6 +1461,39 @@ internal fun HlsPlayerScreen(
         Key.DirectionDown,
       )
     }
+
+  if (minimized) {
+    Box(Modifier.fillMaxSize()) {
+      InAppMiniPlayer(
+        player = player,
+        title = playbackTitle(request),
+        subtitle = playbackSubtitle(request),
+        isPlaying = isVideoPlaying,
+        isTelevision = isTelevision,
+        onExpand = onExpand,
+        onDismiss = {
+          savePlaybackProgress()
+          player.pause()
+          onDismissMini()
+        },
+        onPlayPause = {
+          if (isVideoPlaying) player.pause()
+          else {
+            if (player.playbackState == Player.STATE_ENDED) player.seekTo(0L)
+            player.play()
+          }
+        },
+        modifier =
+          Modifier
+            .align(Alignment.BottomEnd)
+            .padding(
+              end = if (isTelevision) 28.dp else 16.dp,
+              bottom = if (isTelevision) 28.dp else miniPlayerBottomPadding,
+            ),
+      )
+    }
+    return
+  }
 
   Box(
     Modifier.fillMaxSize().background(Color.Black)
@@ -1518,15 +1636,32 @@ internal fun HlsPlayerScreen(
         selectedAudio = selectedAudio.label,
         selectedSubtitle = selectedSubtitle.label,
         selectedResize = videoResize.label,
+        selectedServer = selectedServerLabel,
+        showServerControl = serverOptions.size > 1,
         subtitleOffsetMs = subtitleOffsetMs,
         playbackSpeed = playbackSpeed,
         playButtonFocusRequester = playButtonFocusRequester,
+        showMinimize = canMinimize,
         onInteraction = { controlsInteractionVersion++ },
-        onBack = onExit,
+        onBack = {
+          if (canMinimize) {
+            activeDialog = null
+            controlsVisible = false
+            onMinimize()
+          } else {
+            onExit()
+          }
+        },
+        onMinimize = {
+          activeDialog = null
+          controlsVisible = false
+          onMinimize()
+        },
         onSubtitles = { openSettings(PlayerControlDialog.SUBTITLES) },
         onSubtitleSync = { openSettings(PlayerControlDialog.SUBTITLE_SYNC) },
         onAudio = { openSettings(PlayerControlDialog.AUDIO) },
         onQuality = { openSettings(PlayerControlDialog.QUALITY) },
+        onServer = { openSettings(PlayerControlDialog.SERVER) },
         // Five sizes and an obvious order: pressing it once is quicker than opening a list to
         // pick the next one along, and the pill shows where you have got to.
         onPicture = { videoResize = videoResize.next() },
@@ -1610,6 +1745,8 @@ internal fun HlsPlayerScreen(
         selectedAudio = selectedAudio,
         subtitleOptions = subtitleOptions,
         selectedSubtitle = selectedSubtitle,
+        serverOptions = serverOptions,
+        selectedServerIndex = selectedServerIndex,
         subtitleSize = subtitleSize,
         subtitlePosition = subtitlePosition,
         subtitleStyle = subtitleStyle,
@@ -1634,6 +1771,7 @@ internal fun HlsPlayerScreen(
           playerPreferences.setSubtitleTrack(option)
           selectSubtitleTrack(player, option)
         },
+        onServerSelected = ::switchToServer,
         onSubtitleSizeSelected = {
           subtitleSize = it
           playerPreferences.setSubtitleSize(it)
@@ -1792,15 +1930,20 @@ private fun ModernPlayerControls(
   selectedAudio: String,
   selectedSubtitle: String,
   selectedResize: String,
+  selectedServer: String?,
+  showServerControl: Boolean,
   subtitleOffsetMs: Long,
   playbackSpeed: Float,
   playButtonFocusRequester: FocusRequester,
+  showMinimize: Boolean = false,
   onInteraction: () -> Unit,
   onBack: () -> Unit,
+  onMinimize: () -> Unit = {},
   onSubtitles: () -> Unit,
   onSubtitleSync: () -> Unit,
   onAudio: () -> Unit,
   onQuality: () -> Unit,
+  onServer: () -> Unit,
   onPicture: () -> Unit,
   onSpeed: () -> Unit,
   onDecoder: () -> Unit,
@@ -1866,6 +2009,16 @@ private fun ModernPlayerControls(
           onInteraction = onInteraction,
           modifier = Modifier.alpha(surroundingControlsAlpha),
         )
+        if (showMinimize) {
+          ModernPlayerActionPill(
+            icon = Icons.Filled.PictureInPictureAlt,
+            label = "Mini player",
+            value = null,
+            onClick = onMinimize,
+            onInteraction = onInteraction,
+            modifier = Modifier.alpha(surroundingControlsAlpha),
+          )
+        }
         Column(Modifier.weight(1f)) {
           Row(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1891,14 +2044,30 @@ private fun ModernPlayerControls(
               )
             }
           }
-          Text(
-            playbackTitle(request),
-            color = SoftWhite,
-            fontWeight = FontWeight.Black,
-            fontSize = if (compact) 17.sp else 21.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-          )
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Text(
+              playbackTitle(request),
+              color = SoftWhite,
+              fontWeight = FontWeight.Black,
+              fontSize = if (compact) 17.sp else 21.sp,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.weight(1f),
+            )
+            formatPlaybackRating(request.context?.rating)?.let { ratingLabel ->
+              Text(
+                ratingLabel,
+                color = MutedBlue,
+                fontWeight = FontWeight.Bold,
+                fontSize = if (compact) 12.sp else 14.sp,
+                maxLines = 1,
+              )
+            }
+          }
           playbackSubtitle(request)?.let {
             Text(
               it,
@@ -2046,6 +2215,17 @@ private fun ModernPlayerControls(
             val hiddenWhileSeekingModifier = Modifier.alpha(surroundingControlsAlpha)
             ModernPlayerActionPill(Icons.AutoMirrored.Filled.VolumeUp, "Audio", selectedAudio, onAudio, onInteraction, showValue = false, modifier = hiddenWhileSeekingModifier)
             ModernPlayerActionPill(Icons.Filled.HighQuality, "Quality", selectedQuality, onQuality, onInteraction, showValue = false, modifier = hiddenWhileSeekingModifier)
+            if (showServerControl) {
+              ModernPlayerActionPill(
+                Icons.Filled.Dns,
+                "Server",
+                selectedServer,
+                onServer,
+                onInteraction,
+                showValue = true,
+                modifier = hiddenWhileSeekingModifier,
+              )
+            }
             ModernPlayerActionPill(Icons.Filled.ClosedCaption, "Subtitles", selectedSubtitle, onSubtitles, onInteraction, showValue = false, modifier = hiddenWhileSeekingModifier)
             ModernPlayerActionPill(Icons.Filled.AspectRatio, "Picture", selectedResize, onPicture, onInteraction, showValue = true, modifier = hiddenWhileSeekingModifier)
             ModernPlayerActionPill(Icons.Filled.Speed, "Sync", subtitleSyncLabel(subtitleOffsetMs), onSubtitleSync, onInteraction, showValue = false, modifier = hiddenWhileSeekingModifier)
@@ -2055,6 +2235,16 @@ private fun ModernPlayerControls(
             val hiddenWhileSeekingModifier = Modifier.alpha(surroundingControlsAlpha)
             ModernTransportControl(Icons.AutoMirrored.Filled.VolumeUp, "Audio: $selectedAudio", 44.dp, onAudio, onInteraction, modifier = hiddenWhileSeekingModifier)
             ModernTransportControl(Icons.Filled.HighQuality, "Quality: $selectedQuality", 44.dp, onQuality, onInteraction, modifier = hiddenWhileSeekingModifier)
+            if (showServerControl) {
+              ModernTransportControl(
+                Icons.Filled.Dns,
+                "Server: ${selectedServer ?: "Server"}",
+                44.dp,
+                onServer,
+                onInteraction,
+                modifier = hiddenWhileSeekingModifier,
+              )
+            }
             ModernTransportControl(Icons.Filled.ClosedCaption, "Subtitles: $selectedSubtitle", 44.dp, onSubtitles, onInteraction, modifier = hiddenWhileSeekingModifier)
             ModernTransportControl(Icons.Filled.AspectRatio, "Picture size: $selectedResize", 44.dp, onPicture, onInteraction, modifier = hiddenWhileSeekingModifier)
             ModernTransportControl(Icons.Filled.Speed, "Subtitle sync ${subtitleSyncLabel(subtitleOffsetMs)}", 44.dp, onSubtitleSync, onInteraction, modifier = hiddenWhileSeekingModifier)
@@ -2503,6 +2693,10 @@ private fun playbackSubtitle(request: HlsStreamRequest): String? =
   request.context?.subtitle?.trim()?.takeIf { it.isNotBlank() }
     ?: request.subtitle?.trim()?.takeIf { it.isNotBlank() }
 
+/** TMDB-style vote average for the overlay, or null when there is nothing worth showing. */
+internal fun formatPlaybackRating(rating: Double?): String? =
+  rating?.takeIf { it > 0.0 }?.let { "★ ${String.format(Locale.US, "%.1f", it)}" }
+
 internal fun seekTargetPosition(currentPositionMs: Long, deltaMs: Long, durationMs: Long): Long {
   val upperBound = durationMs.takeIf { it != C.TIME_UNSET && it > 0L } ?: Long.MAX_VALUE
   return (currentPositionMs.coerceAtLeast(0L) + deltaMs).coerceIn(0L, upperBound)
@@ -2679,7 +2873,7 @@ private fun SubtitleSyncMiniOverlay(
               modifier =
                 Modifier
                   .fillMaxWidth()
-                  .heightIn(max = 168.dp)
+                  .heightIn(max = 300.dp)
                   .clip(RoundedCornerShape(12.dp))
                   .background(DeepSpace.copy(alpha = .72f)),
               verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -2878,6 +3072,8 @@ private fun PlayerControlDialogOverlay(
   selectedAudio: AudioTrackOption,
   subtitleOptions: List<SubtitleTrackOption>,
   selectedSubtitle: SubtitleTrackOption,
+  serverOptions: List<PlaybackServerOption>,
+  selectedServerIndex: Int,
   subtitleSize: SubtitleSizeOption,
   subtitlePosition: SubtitlePositionOption,
   subtitleStyle: SubtitleStyleOption,
@@ -2889,6 +3085,7 @@ private fun PlayerControlDialogOverlay(
   onQualitySelected: (VideoQualityOption) -> Unit,
   onAudioSelected: (AudioTrackOption) -> Unit,
   onSubtitleSelected: (SubtitleTrackOption) -> Unit,
+  onServerSelected: (PlaybackServerOption) -> Unit,
   onSubtitleSizeSelected: (SubtitleSizeOption) -> Unit,
   onSubtitlePositionSelected: (SubtitlePositionOption) -> Unit,
   onSubtitleStyleSelected: (SubtitleStyleOption) -> Unit,
@@ -2920,6 +3117,7 @@ private fun PlayerControlDialogOverlay(
       PlayerControlDialog.SUBTITLE_SYNC -> "Subtitle sync"
       PlayerControlDialog.AUDIO -> "Audio"
       PlayerControlDialog.QUALITY -> "Quality"
+      PlayerControlDialog.SERVER -> "Server"
       PlayerControlDialog.PICTURE -> "Picture"
       PlayerControlDialog.SPEED -> "Speed"
       PlayerControlDialog.DECODER -> "Decoder"
@@ -2930,6 +3128,7 @@ private fun PlayerControlDialogOverlay(
       PlayerControlDialog.SUBTITLE_SYNC -> Icons.Filled.ClosedCaption
       PlayerControlDialog.AUDIO -> Icons.AutoMirrored.Filled.VolumeUp
       PlayerControlDialog.QUALITY -> Icons.Filled.HighQuality
+      PlayerControlDialog.SERVER -> Icons.Filled.Dns
       PlayerControlDialog.PICTURE -> Icons.Filled.AspectRatio
       PlayerControlDialog.SPEED -> Icons.Filled.Speed
       PlayerControlDialog.DECODER -> Icons.Filled.Memory
@@ -2981,6 +3180,13 @@ private fun PlayerControlDialogOverlay(
               options = qualityOptions.map { it.label },
               selected = selectedQuality.label,
               onSelected = { label -> qualityOptions.firstOrNull { it.label == label }?.let(onQualitySelected) },
+              firstChoiceModifier = Modifier.focusRequester(firstChoiceFocus),
+            )
+          PlayerControlDialog.SERVER ->
+            DialogOptionList(
+              options = serverOptions.map { it.label },
+              selected = serverOptions.firstOrNull { it.index == selectedServerIndex }?.label.orEmpty(),
+              onSelected = { label -> serverOptions.firstOrNull { it.label == label }?.let(onServerSelected) },
               firstChoiceModifier = Modifier.focusRequester(firstChoiceFocus),
             )
           PlayerControlDialog.PICTURE ->
@@ -4129,13 +4335,19 @@ internal fun playerControllerTimeoutMs(isTelevision: Boolean): Int =
 internal enum class PlayerBackAction {
   CLOSE_SETTINGS,
   HIDE_CONTROLS,
+  MINIMIZE_PLAYER,
   EXIT_PLAYER,
 }
 
-internal fun playerBackAction(settingsOpen: Boolean, controlsVisible: Boolean): PlayerBackAction =
+internal fun playerBackAction(
+  settingsOpen: Boolean,
+  controlsVisible: Boolean,
+  canMinimize: Boolean = false,
+): PlayerBackAction =
   when {
     settingsOpen -> PlayerBackAction.CLOSE_SETTINGS
     controlsVisible -> PlayerBackAction.HIDE_CONTROLS
+    canMinimize -> PlayerBackAction.MINIMIZE_PLAYER
     else -> PlayerBackAction.EXIT_PLAYER
   }
 

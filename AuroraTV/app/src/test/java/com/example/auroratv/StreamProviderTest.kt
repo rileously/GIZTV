@@ -5,7 +5,9 @@ import com.example.auroratv.ui.catalog.CatalogTarget
 import com.example.auroratv.ui.catalog.STREAM_PROVIDERS
 import com.example.auroratv.ui.catalog.catalogTargetOf
 import com.example.auroratv.ui.catalog.nextProviderPageUrl
+import com.example.auroratv.ui.catalog.playbackServerOptions
 import com.example.auroratv.ui.catalog.providerPageUrl
+import com.example.auroratv.ui.catalog.selectedPlaybackServerIndex
 import com.example.auroratv.ui.catalog.serverLabelFor
 import com.example.auroratv.ui.catalog.vidfastEpisodeUrl
 import com.example.auroratv.ui.catalog.vidfastMovieUrl
@@ -149,5 +151,46 @@ class StreamProviderTest {
       assertEquals(provider.movieUrl(786892), providerPageUrl(target, index))
     }
     assertNull(providerPageUrl(target, STREAM_PROVIDERS.size))
+  }
+
+  @Test
+  fun catalogTitles_offerEveryProviderAsAServerChoice() {
+    val options = playbackServerOptions(catalogPageUrl = vidfastMovieUrl(786892), sourceCount = 1)
+    assertEquals(listOf("SR1", "SR2", "SR3"), options.map { it.label })
+    assertEquals(listOf(0, 1, 2), options.map { it.index })
+  }
+
+  @Test
+  fun nonCatalogPages_haveNoServerPicker() {
+    assertTrue(playbackServerOptions(catalogPageUrl = "https://skyflix.to/some-film", sourceCount = 1).isEmpty())
+    assertTrue(playbackServerOptions(catalogPageUrl = null, sourceCount = 1).isEmpty())
+  }
+
+  @Test
+  fun iptvChannels_offerEachBackupLinkWhenThereIsMoreThanOne() {
+    val options = playbackServerOptions(catalogPageUrl = null, sourceCount = 3)
+    assertEquals(listOf("Link 1", "Link 2", "Link 3"), options.map { it.label })
+    // Backup links win over a catalog page when both are present: the stream request already
+    // carries the IPTV mirrors, and those are what a hand-pick should change.
+    assertEquals(
+      listOf("Link 1", "Link 2"),
+      playbackServerOptions(catalogPageUrl = vidfastMovieUrl(786892), sourceCount = 2).map { it.label },
+    )
+  }
+
+  @Test
+  fun selectedServer_followsTheServingProviderOrIptvIndex() {
+    assertEquals(
+      1,
+      selectedPlaybackServerIndex(
+        sourcePageUrl = "https://vidlink.pro/movie/1?title=false",
+        sourceIndex = 0,
+        sourceCount = 1,
+      ),
+    )
+    assertEquals(
+      2,
+      selectedPlaybackServerIndex(sourcePageUrl = null, sourceIndex = 2, sourceCount = 4),
+    )
   }
 }

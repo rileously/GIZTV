@@ -6,6 +6,7 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.source.BehindLiveWindowException
 import com.example.auroratv.ui.StreamFailureAction
 import com.example.auroratv.ui.catalog.STREAM_PROVIDER_COUNT
+import com.example.auroratv.ui.iptvPlaybackSourceAt
 import com.example.auroratv.ui.nextIptvPlaybackSource
 import com.example.auroratv.ui.streamFailureAction
 import com.example.auroratv.ui.player.AutomaticQualityPhase
@@ -20,6 +21,7 @@ import com.example.auroratv.ui.player.adjustSubtitleSync
 import com.example.auroratv.ui.player.automaticQualityPhaseAfterBuffering
 import com.example.auroratv.ui.player.automaticQualityPhaseAfterStall
 import com.example.auroratv.ui.player.automaticQualityPromotion
+import com.example.auroratv.ui.player.canMinimizeToInAppPlayer
 import com.example.auroratv.ui.player.initialAutomaticQualityPhase
 import com.example.auroratv.ui.player.isBandwidthStall
 import com.example.auroratv.ui.player.dataSaverVideoFormatOrder
@@ -34,6 +36,7 @@ import com.example.auroratv.ui.player.playerSwipeControl
 import com.example.auroratv.ui.player.playerSwipeLevel
 import com.example.auroratv.ui.player.playbackBufferProfile
 import com.example.auroratv.ui.player.prolongedStallAction
+import com.example.auroratv.ui.player.shouldComposeInAppPlayerSession
 import com.example.auroratv.ui.player.stallTimeoutMs
 import com.example.auroratv.ui.player.reliableHlsLoadErrorPolicy
 import com.example.auroratv.ui.player.resumablePlaybackPosition
@@ -41,6 +44,7 @@ import com.example.auroratv.ui.player.subtitleSyncDescription
 import com.example.auroratv.ui.player.subtitleSyncLabel
 import com.example.auroratv.ui.player.touchSeekPositionMs
 import com.example.auroratv.ui.player.mediaVolumeIndex
+import com.example.auroratv.ui.player.formatPlaybackRating
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -78,11 +82,20 @@ class PlaybackLogicTest {
   }
 
   @Test
-  fun subtitleSync_stepsFinelyAndStopsAtThirtySeconds() {
+  fun playbackRating_showsOneDecimalWhenPresent() {
+    assertEquals("★ 8.2", formatPlaybackRating(8.24))
+    assertEquals("★ 7.0", formatPlaybackRating(7.0))
+    assertNull(formatPlaybackRating(null))
+    assertNull(formatPlaybackRating(0.0))
+    assertNull(formatPlaybackRating(-1.0))
+  }
+
+  @Test
+  fun subtitleSync_stepsFinelyAndStopsAtOneMinute() {
     assertEquals(-500L, adjustSubtitleSync(0L, -500L))
     assertEquals(100L, adjustSubtitleSync(0L, 100L))
-    assertEquals(30_000L, adjustSubtitleSync(29_900L, 500L))
-    assertEquals(-30_000L, adjustSubtitleSync(-29_900L, -500L))
+    assertEquals(60_000L, adjustSubtitleSync(59_900L, 500L))
+    assertEquals(-60_000L, adjustSubtitleSync(-59_900L, -500L))
   }
 
   @Test
@@ -97,6 +110,102 @@ class PlaybackLogicTest {
     assertEquals(PlayerBackAction.CLOSE_SETTINGS, playerBackAction(settingsOpen = true, controlsVisible = true))
     assertEquals(PlayerBackAction.HIDE_CONTROLS, playerBackAction(settingsOpen = false, controlsVisible = true))
     assertEquals(PlayerBackAction.EXIT_PLAYER, playerBackAction(settingsOpen = false, controlsVisible = false))
+    // A healthy stream shrinks into the in-app mini player instead of tearing playback down.
+    assertEquals(
+      PlayerBackAction.MINIMIZE_PLAYER,
+      playerBackAction(settingsOpen = false, controlsVisible = false, canMinimize = true),
+    )
+  }
+
+  @Test
+  fun inAppMiniPlayer_keepsTheSessionAliveOnlyWhileSomethingIsPlaying() {
+    assertTrue(
+      shouldComposeInAppPlayerSession(
+        hasStreamRequest = true,
+        fullPlayerVisible = true,
+        miniPlayerActive = false,
+      )
+    )
+    assertTrue(
+      shouldComposeInAppPlayerSession(
+        hasStreamRequest = true,
+        fullPlayerVisible = false,
+        miniPlayerActive = true,
+      )
+    )
+    assertFalse(
+      shouldComposeInAppPlayerSession(
+        hasStreamRequest = false,
+        fullPlayerVisible = false,
+        miniPlayerActive = true,
+      )
+    )
+    assertFalse(
+      shouldComposeInAppPlayerSession(
+        hasStreamRequest = true,
+        fullPlayerVisible = false,
+        miniPlayerActive = false,
+      )
+    )
+  }
+
+  @Test
+  fun inAppMiniPlayer_isOfferedOnlyForAHealthyLocalStream() {
+    assertTrue(
+      canMinimizeToInAppPlayer(
+        minimized = false,
+        isCasting = false,
+        hasError = false,
+        playbackFinished = false,
+        isTelevision = false,
+      )
+    )
+    assertFalse(
+      canMinimizeToInAppPlayer(
+        minimized = true,
+        isCasting = false,
+        hasError = false,
+        playbackFinished = false,
+        isTelevision = false,
+      )
+    )
+    assertFalse(
+      canMinimizeToInAppPlayer(
+        minimized = false,
+        isCasting = true,
+        hasError = false,
+        playbackFinished = false,
+        isTelevision = false,
+      )
+    )
+    assertFalse(
+      canMinimizeToInAppPlayer(
+        minimized = false,
+        isCasting = false,
+        hasError = true,
+        playbackFinished = false,
+        isTelevision = false,
+      )
+    )
+    assertFalse(
+      canMinimizeToInAppPlayer(
+        minimized = false,
+        isCasting = false,
+        hasError = false,
+        playbackFinished = true,
+        isTelevision = false,
+      )
+    )
+    // Leanback never shrinks into the in-app mini player.
+    assertFalse(
+      canMinimizeToInAppPlayer(
+        minimized = false,
+        isCasting = false,
+        hasError = false,
+        playbackFinished = false,
+        isTelevision = true,
+      )
+    )
   }
 
   @Test
@@ -279,6 +388,22 @@ class PlaybackLogicTest {
       nextIptvPlaybackSource(sources, currentIndex = 0)?.second?.url,
     )
     assertNull(nextIptvPlaybackSource(sources, currentIndex = 1))
+  }
+
+  @Test
+  fun iptvServerPick_jumpsToASpecificBackup() {
+    val sources =
+      listOf(
+        HlsStreamRequest("https://primary.example/live.m3u8", emptyMap()),
+        HlsStreamRequest("https://backup.example/live.m3u8", emptyMap()),
+        HlsStreamRequest("https://spare.example/live.m3u8", emptyMap()),
+      )
+
+    assertEquals(
+      "https://spare.example/live.m3u8",
+      iptvPlaybackSourceAt(sources, index = 2)?.second?.url,
+    )
+    assertNull(iptvPlaybackSourceAt(sources, index = 3))
   }
 
   @Test

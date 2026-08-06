@@ -61,19 +61,26 @@ class SubtitleCueParserTest {
         """
         WEBVTT
 
-        00:00:10.000 --> 00:00:11.000
+        00:00:30.000 --> 00:00:31.000
         Far early
 
-        00:01:00.000 --> 00:01:01.000
+        00:02:00.000 --> 00:02:01.000
+        Edge early
+
+        00:03:00.000 --> 00:03:01.000
         Near
 
-        00:02:00.000 --> 00:02:01.000
+        00:04:00.000 --> 00:04:01.000
+        Edge late
+
+        00:05:30.000 --> 00:05:31.000
         Far late
         """.trimIndent(),
         mimeType = "text/vtt",
       )
-    val nearby = nearbySubtitleCues(cues, positionMs = 60_000L, windowMs = 45_000L)
-    assertEquals(listOf("Near"), nearby.map { it.text })
+    // Default window is ±2 minutes around 3:00 → keep 2:00..4:00, drop 0:30 and 5:30.
+    val nearby = nearbySubtitleCues(cues, positionMs = 180_000L)
+    assertEquals(listOf("Edge early", "Near", "Edge late"), nearby.map { it.text })
   }
 
   @Test
@@ -81,7 +88,7 @@ class SubtitleCueParserTest {
     // Spoken line at 1:00; cue file says the line starts at 0:55 → captions are 5s early → +5s later.
     assertEquals(5_000L, subtitleOffsetForCueMatch(playbackPositionMs = 60_000L, cueStartMs = 55_000L))
     assertEquals(-2_000L, subtitleOffsetForCueMatch(playbackPositionMs = 60_000L, cueStartMs = 62_000L))
-    assertEquals(30_000L, subtitleOffsetForCueMatch(playbackPositionMs = 90_000L, cueStartMs = 0L))
+    assertEquals(60_000L, subtitleOffsetForCueMatch(playbackPositionMs = 90_000L, cueStartMs = 0L))
   }
 
   @Test

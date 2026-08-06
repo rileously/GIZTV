@@ -158,3 +158,45 @@ internal fun serverLabel(index: Int): String = "SR${index + 1}"
 
 /** The label for whichever provider served this address, or null if it was not one of ours. */
 internal fun serverLabelFor(pageUrl: String?): String? = providerIndexOf(pageUrl)?.let(::serverLabel)
+
+/**
+ * One entry in the player's Server picker.
+ *
+ * [index] is either a [STREAM_PROVIDERS] position or an IPTV backup-link position — whichever list
+ * [playbackServerOptions] built the choice from.
+ */
+internal data class PlaybackServerOption(val index: Int, val label: String)
+
+/**
+ * Servers the viewer can ask for by hand while a title is playing.
+ *
+ * Catalog titles expose every measured provider (SR1…). IPTV channels expose every backup link
+ * when there is more than one. Everything else — sports pages, short dramas, a bare browser find —
+ * has nothing further to try, so the control stays hidden.
+ */
+internal fun playbackServerOptions(
+  catalogPageUrl: String?,
+  sourceCount: Int,
+): List<PlaybackServerOption> {
+  if (sourceCount > 1) {
+    return (0 until sourceCount).map { index ->
+      PlaybackServerOption(index = index, label = "Link ${index + 1}")
+    }
+  }
+  if (catalogPageUrl == null || catalogTargetOf(catalogPageUrl) == null) return emptyList()
+  return STREAM_PROVIDERS.indices.map { index ->
+    PlaybackServerOption(index = index, label = serverLabel(index))
+  }
+}
+
+/** Which picker entry matches what is playing now. */
+internal fun selectedPlaybackServerIndex(
+  sourcePageUrl: String?,
+  sourceIndex: Int,
+  sourceCount: Int,
+): Int =
+  if (sourceCount > 1) {
+    sourceIndex.coerceIn(0, sourceCount - 1)
+  } else {
+    providerIndexOf(sourcePageUrl) ?: 0
+  }

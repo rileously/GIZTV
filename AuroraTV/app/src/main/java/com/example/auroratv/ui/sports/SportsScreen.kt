@@ -1,6 +1,7 @@
 package com.example.auroratv.ui.sports
 
 import android.util.Log
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -36,6 +37,9 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -44,6 +48,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -73,6 +78,7 @@ import com.example.auroratv.theme.MutedBlue
 import com.example.auroratv.theme.NightSurface
 import com.example.auroratv.theme.SoftWhite
 import com.example.auroratv.ui.catalog.CatalogButton
+import com.example.auroratv.ui.catalog.CatalogIconButton
 import com.example.auroratv.ui.catalog.CatalogSearchField
 import com.example.auroratv.ui.catalog.ChipRow
 import com.example.auroratv.ui.catalog.GizTvMark
@@ -101,6 +107,10 @@ internal fun SportsScreen(
   /** A fixture the viewer has paused on, worth finding the stream for before they ask. */
   onConsidering: (PlaybackContext) -> Unit = {},
   onBack: () -> Unit,
+  /** Phone footer already provides navigation; hide the redundant Back control. */
+  hideBackButton: Boolean = false,
+  requestSearchFocus: Boolean = false,
+  onSearchFocusHandled: () -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   val scope = rememberCoroutineScope()
@@ -117,6 +127,7 @@ internal fun SportsScreen(
   var selectedSport by rememberSaveable { mutableStateOf<String?>(null) }
   var query by rememberSaveable { mutableStateOf("") }
   var searchActive by rememberSaveable { mutableStateOf(false) }
+  var searchExpanded by rememberSaveable { mutableStateOf(false) }
   var events by remember { mutableStateOf<List<SportEvent>>(emptyList()) }
   var loading by remember { mutableStateOf(true) }
   var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -124,6 +135,15 @@ internal fun SportsScreen(
   fun dismissKeyboard() {
     focusManager.clearFocus()
     keyboardController?.hide()
+  }
+
+  fun collapseSearchUi() {
+    searchExpanded = false
+    if (query.isNotBlank() || searchActive) {
+      query = ""
+      searchActive = false
+    }
+    dismissKeyboard()
   }
 
   fun load(refresh: Boolean) {
@@ -143,6 +163,7 @@ internal fun SportsScreen(
   fun runSearch() {
     val trimmed = query.trim()
     if (trimmed.isBlank()) {
+      searchExpanded = true
       searchFieldFocusRequester.requestFocus()
       return
     }
@@ -151,9 +172,19 @@ internal fun SportsScreen(
     searchActive = true
   }
 
+  LaunchedEffect(requestSearchFocus) {
+    if (!requestSearchFocus) return@LaunchedEffect
+    searchExpanded = true
+    withFrameNanos {}
+    runCatching { searchFieldFocusRequester.requestFocus() }
+    onSearchFocusHandled()
+  }
+
+  BackHandler(enabled = hideBackButton && searchExpanded) { collapseSearchUi() }
+
   LaunchedEffect(Unit) {
     load(refresh = false)
-    backFocusRequester.requestFocus()
+    if (!hideBackButton) backFocusRequester.requestFocus()
   }
 
   // Scores move while the page is open, so it goes back for them on its own. A refresh that fails
@@ -202,33 +233,62 @@ internal fun SportsScreen(
   ) {
     val narrow = maxWidth < 600.dp
     val compact = maxHeight < 600.dp
+    val phoneDense = hideBackButton && narrow
+    val showSearchRow = !phoneDense || searchExpanded || searchActive || query.isNotBlank()
     val bodyFocusRequester = gridFocusRequester.takeIf { visible.isNotEmpty() }
 
     Column(
       modifier =
         Modifier.fillMaxSize().padding(
-          horizontal = if (narrow) 18.dp else 42.dp,
-          vertical = if (compact) 14.dp else 22.dp,
+          horizontal = if (narrow) 14.dp else 42.dp,
+          vertical =
+            when {
+              phoneDense -> 8.dp
+              compact -> 14.dp
+              else -> 22.dp
+            },
         )
     ) {
       Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        GizTvMark(modifier = Modifier.size(34.dp), cornerRadius = 10.dp)
-        Spacer(Modifier.width(11.dp))
+        GizTvMark(
+          modifier = Modifier.size(if (phoneDense) 26.dp else 34.dp),
+          cornerRadius = if (phoneDense) 8.dp else 10.dp,
+        )
+        Spacer(modifier.width(if (phoneDense) 8.dp else 11.dp))
         Text(
           "LIVE SPORTS",
           color = SoftWhite,
           fontWeight = FontWeight.Black,
-          letterSpacing = 2.5.sp,
-          fontSize = 18.sp,
+          letterSpacing = if (phoneDense) 2.sp else 2.5.sp,
+          fontSize = if (phoneDense) 15.sp else 18.sp,
         )
         // On a phone the wordmark, the count and two buttons do not fit one line; the count is the
         // part a viewer can do without, because every live card says so itself.
         if (liveCount > 0 && !narrow) {
-          Spacer(Modifier.width(10.dp))
+          Spacer(modifier.width(10.dp))
           LivePill(label = if (liveCount == 1) "1 LIVE" else "$liveCount LIVE")
         }
-        Spacer(Modifier.weight(1f))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Spacer(modifier.weight(1f))
+        Row(
+          horizontalArrangement = Arrangement.spacedBy(if (phoneDense) 4.dp else 8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          if (phoneDense && !showSearchRow) {
+            CatalogIconButton(
+              "Search",
+              Icons.Filled.Search,
+              {
+                searchExpanded = true
+                scope.launch {
+                  withFrameNanos {}
+                  runCatching { searchFieldFocusRequester.requestFocus() }
+                }
+              },
+            )
+          }
+          if (phoneDense && showSearchRow) {
+            CatalogIconButton("Close search", Icons.Filled.Close, ::collapseSearchUi)
+          }
           CatalogButton(
             label = "Refresh",
             onClick = { dismissKeyboard(); load(refresh = true) },
@@ -238,18 +298,20 @@ internal fun SportsScreen(
                 down = chipFocusRequester
               },
           )
-          CatalogButton(
-            label = "Back",
-            onClick = { dismissKeyboard(); onBack() },
-            modifier =
-              Modifier.focusRequester(backFocusRequester).focusProperties {
-                left = refreshFocusRequester
-                down = chipFocusRequester
-              },
-          )
+          if (!hideBackButton) {
+            CatalogButton(
+              label = "Back",
+              onClick = { dismissKeyboard(); onBack() },
+              modifier =
+                Modifier.focusRequester(backFocusRequester).focusProperties {
+                  left = refreshFocusRequester
+                  down = chipFocusRequester
+                },
+            )
+          }
         }
       }
-      Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
+      Spacer(modifier.height(if (phoneDense) 6.dp else if (compact) 8.dp else 12.dp))
       SportsFilterRow(
         filters = filters,
         // A search answers across every sport, so no chip is the selected one while it is showing.
@@ -258,21 +320,26 @@ internal fun SportsScreen(
           selectedSport = filters.getOrNull(index)
           query = ""
           searchActive = false
+          if (phoneDense) searchExpanded = false
         },
         query = query,
         onQueryChanged = {
           query = it
           // Clearing the box puts the chosen sport back rather than leaving an empty result page.
-          if (it.isBlank()) searchActive = false
+          if (it.isBlank()) {
+            searchActive = false
+            if (phoneDense) searchExpanded = false
+          }
         },
         onSearch = ::runSearch,
+        showSearch = showSearchRow,
         chipFocusRequester = chipFocusRequester,
         searchFieldFocusRequester = searchFieldFocusRequester,
         searchButtonFocusRequester = searchButtonFocusRequester,
-        backFocusRequester = backFocusRequester,
+        backFocusRequester = if (hideBackButton) refreshFocusRequester else backFocusRequester,
         bodyFocusRequester = bodyFocusRequester,
       )
-      Spacer(Modifier.height(if (compact) 8.dp else 14.dp))
+      Spacer(modifier.height(if (phoneDense) 6.dp else if (compact) 8.dp else 14.dp))
 
       when {
         loading && events.isEmpty() ->
@@ -296,9 +363,9 @@ internal fun SportsScreen(
             state = gridState,
             columns = GridCells.Adaptive(minSize = if (narrow) 240.dp else 300.dp),
             modifier = Modifier.weight(1f).fillMaxWidth(),
-            contentPadding = PaddingValues(bottom = 22.dp),
+            contentPadding = PaddingValues(bottom = if (phoneDense) 8.dp else 22.dp),
             horizontalArrangement = Arrangement.spacedBy(if (narrow) 12.dp else 16.dp),
-            verticalArrangement = Arrangement.spacedBy(if (narrow) 12.dp else 16.dp),
+            verticalArrangement = Arrangement.spacedBy(if (phoneDense) 10.dp else if (narrow) 12.dp else 16.dp),
           ) {
             item(span = { GridItemSpan(maxLineSpan) }) {
               Column {
@@ -359,6 +426,7 @@ private fun SportsFilterRow(
   query: String,
   onQueryChanged: (String) -> Unit,
   onSearch: () -> Unit,
+  showSearch: Boolean = true,
   chipFocusRequester: FocusRequester,
   searchFieldFocusRequester: FocusRequester,
   searchButtonFocusRequester: FocusRequester,
@@ -396,9 +464,11 @@ private fun SportsFilterRow(
         modifier = Modifier.horizontalScroll(rememberScrollState()),
       )
     }
-    Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.CenterVertically) {
-      CatalogSearchField(query, "Search teams or leagues…", onQueryChanged, onSearch, fieldModifier.weight(1f))
-      CatalogButton("Search", onSearch, buttonModifier)
+    if (showSearch) {
+      Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.CenterVertically) {
+        CatalogSearchField(query, "Search teams or leagues…", onQueryChanged, onSearch, fieldModifier.weight(1f))
+        CatalogButton("Search", onSearch, buttonModifier)
+      }
     }
   }
 }

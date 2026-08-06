@@ -16,7 +16,7 @@ internal data class SubtitleCue(
   val text: String,
 )
 
-internal const val NEARBY_SUBTITLE_CUE_WINDOW_MS = 45_000L
+internal const val NEARBY_SUBTITLE_CUE_WINDOW_MS = 120_000L
 
 /** Cues whose start falls inside [positionMs] ± [windowMs], in timeline order. */
 internal fun nearbySubtitleCues(

@@ -255,18 +255,24 @@ internal fun SegmentedTabs(
   onSelect: (Int) -> Unit,
   firstTabFocusRequester: FocusRequester,
   down: FocusRequester?,
+  /** Phone chrome: shorter track and tighter labels so the header stays one compact band. */
+  compact: Boolean = false,
   modifier: Modifier = Modifier,
 ) {
+  val trackRadius = if (compact) 16.dp else 21.dp
   Row(
     modifier =
-      modifier.focusGroup().clip(RoundedCornerShape(21.dp)).background(DeepSpace.copy(alpha = .55f))
-        .border(1.dp, SoftWhite.copy(alpha = .08f), RoundedCornerShape(21.dp)).padding(3.dp)
+      modifier.focusGroup().clip(RoundedCornerShape(trackRadius))
+        .background(DeepSpace.copy(alpha = .55f))
+        .border(1.dp, SoftWhite.copy(alpha = .08f), RoundedCornerShape(trackRadius))
+        .padding(if (compact) 2.dp else 3.dp)
   ) {
     labels.forEachIndexed { index, label ->
       SegmentedTab(
         label = label,
         selected = index == selectedIndex,
         onSelect = { onSelect(index) },
+        compact = compact,
         modifier =
           Modifier.focusProperties { if (down != null) this.down = down }
             .let { if (index == 0) it.focusRequester(firstTabFocusRequester) else it },
@@ -280,6 +286,7 @@ private fun SegmentedTab(
   label: String,
   selected: Boolean,
   onSelect: () -> Unit,
+  compact: Boolean,
   modifier: Modifier = Modifier,
 ) {
   var focused by remember { mutableStateOf(false) }
@@ -301,15 +308,17 @@ private fun SegmentedTab(
       },
       label = "$label content",
     )
+  val segmentRadius = if (compact) 14.dp else 17.dp
   // No scale on focus here: a segment growing out of its own track looks like a bug rather than a
   // highlight, so the ring and the fill carry it instead.
   Box(
     modifier =
-      modifier.height(34.dp).clip(RoundedCornerShape(17.dp)).background(background)
+      modifier.height(if (compact) 28.dp else 34.dp).clip(RoundedCornerShape(segmentRadius))
+        .background(background)
         .border(
           if (focused) 2.dp else 0.dp,
           if (focused) SoftWhite else Color.Transparent,
-          RoundedCornerShape(17.dp),
+          RoundedCornerShape(segmentRadius),
         )
         .onFocusChanged { focused = it.isFocused }.clickable(onClick = onSelect)
         .semantics {
@@ -317,14 +326,14 @@ private fun SegmentedTab(
           this.selected = selected
           contentDescription = label
         }
-        .padding(horizontal = 17.dp),
+        .padding(horizontal = if (compact) 10.dp else 17.dp),
     contentAlignment = Alignment.Center,
   ) {
     Text(
       label,
       color = content,
       fontWeight = if (selected) FontWeight.Black else FontWeight.Bold,
-      fontSize = 12.sp,
+      fontSize = if (compact) 11.sp else 12.sp,
       maxLines = 1,
     )
   }
