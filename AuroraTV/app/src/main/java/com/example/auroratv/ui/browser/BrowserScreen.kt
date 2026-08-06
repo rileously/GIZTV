@@ -432,7 +432,9 @@ internal fun BrowserScreen(
                 }
                 when {
                   isExternalSubtitleUrl(url) -> client.captureSubtitle(url)
-                  isHlsUrl(url) || mimeType?.contains("mpegurl", ignoreCase = true) == true ->
+                  isPlayableStreamUrl(url) ||
+                    mimeType?.contains("mpegurl", ignoreCase = true) == true ||
+                    mimeType?.startsWith("video/", ignoreCase = true) == true ->
                     client.queueStream(this@webView, url, headers)
                 }
               }
@@ -904,7 +906,7 @@ internal class AdBlockingWebViewClient(
       onStatus("Blocked unwanted navigation")
       return true
     }
-    if (isHlsUrl(url)) {
+    if (isPlayableStreamUrl(url)) {
       reportStream(view, request)
       return true
     }
@@ -935,7 +937,7 @@ internal class AdBlockingWebViewClient(
     if (resolvingOnly && isDecorativeRequest(request, url)) return emptyResponse()
     if (isSupportedSubtitleCatalogUrl(url)) captureSubtitleCatalog(url, request.requestHeaders)
     if (isExternalSubtitleUrl(url)) captureSubtitle(url)
-    if (isHlsUrl(url)) reportStream(view, request)
+    if (isPlayableStreamUrl(url)) reportStream(view, request)
     return null
   }
 
@@ -979,9 +981,10 @@ internal class AdBlockingWebViewClient(
         headers = headers,
         sourcePageUrl = currentPageUrl,
         title = currentPageTitle.takeIf { it.isNotBlank() },
+        mimeType = streamMimeType(url),
       )
     streamQueuedAtMs = SystemClock.elapsedRealtime()
-    Log.i("AuroraHls", "Detected HLS request: $url")
+    Log.i("AuroraHls", "Detected stream request: $url")
     mainHandler.post {
       if (!streamDispatchEnabled.get()) return@post
       onStage(PreparationStage.LOADING_SUBTITLES)
@@ -1207,6 +1210,34 @@ internal fun isHlsUrl(url: String): Boolean {
     (path == "/ltv" || path == "/gl")
 }
 
+private val PROGRESSIVE_MEDIA_EXTENSIONS = listOf(".mp4", ".m4v", ".mkv", ".webm")
+
+/**
+ * A complete video file, served as itself rather than through a playlist.
+ *
+ * Sources move between the two. vidfast now hands its titles out as plain files, and a resolver
+ * that recognised only .m3u8 watched the real video go past and went on waiting for a playlist
+ * that was never going to arrive.
+ */
+internal fun isProgressiveMediaUrl(url: String): Boolean {
+  // Deliberately string work rather than Uri parsing, so the rule that decides whether a title
+  // plays at all can be covered by an ordinary unit test.
+  val path = url.substringBefore('#').substringBefore('?').lowercase()
+  return PROGRESSIVE_MEDIA_EXTENSIONS.any(path::endsWith)
+}
+
+/** Anything the player can be handed directly, whichever shape the source chose to serve it in. */
+internal fun isPlayableStreamUrl(url: String): Boolean =
+  isHlsUrl(url) || isProgressiveMediaUrl(url)
+
+/**
+ * A playlist is announced, because interception sees the address before the content type. A plain
+ * file is left unannounced: Media3 reads what it actually is, which is more reliable than a
+ * guess made from the extension.
+ */
+internal fun streamMimeType(url: String): String? =
+  if (isHlsUrl(url)) MimeTypes.APPLICATION_M3U8 else null
+
 /** A complete YouTube player that must remain in WebView rather than being handed to Media3. */
 internal fun isYoutubeWebPlaybackUrl(url: String): Boolean {
   val parsed = runCatching { url.toUri() }.getOrNull() ?: return false
@@ -1414,7 +1445,7 @@ private fun isDecorativeRequest(request: WebResourceRequest, url: String): Boole
       .containsMatchIn(url.lowercase())
   if (!decorativeAccept && !decorativeSuffix) return false
   // A stream is the one thing that must never be intercepted, whatever it looks like.
-  return !isHlsUrl(url) && !isExternalSubtitleUrl(url) && !isSupportedSubtitleCatalogUrl(url)
+  return !isPlayableStreamUrl(url) && !isExternalSubtitleUrl(url) && !isSupportedSubtitleCatalogUrl(url)
 }
 
 private fun emptyResponse(): WebResourceResponse =
