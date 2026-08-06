@@ -34,6 +34,7 @@ import com.example.auroratv.ui.player.playerSwipeControl
 import com.example.auroratv.ui.player.playerSwipeLevel
 import com.example.auroratv.ui.player.playbackBufferProfile
 import com.example.auroratv.ui.player.prolongedStallAction
+import com.example.auroratv.ui.player.stallTimeoutMs
 import com.example.auroratv.ui.player.reliableHlsLoadErrorPolicy
 import com.example.auroratv.ui.player.resumablePlaybackPosition
 import com.example.auroratv.ui.player.subtitleSyncDescription
@@ -331,6 +332,16 @@ class PlaybackLogicTest {
 
     assertTrue(isBehindLiveWindowFailure(expiredWindow))
     assertFalse(isBehindLiveWindowFailure(IllegalStateException("ordinary source failure")))
+  }
+
+  @Test
+  fun aStreamThatHasShownNothingAtAll_isGivenUpOnSooner() {
+    // A stream that has been playing has proved it exists, so a stall is worth waiting out.
+    assertEquals(45_000L, stallTimeoutMs(hasStartedPlayback = true))
+    // One that has never produced a frame is more likely dead than slow, and every second spent
+    // proving it is a second staring at a spinner before the next server is even asked.
+    assertEquals(20_000L, stallTimeoutMs(hasStartedPlayback = false))
+    assertTrue(stallTimeoutMs(false) < stallTimeoutMs(true))
   }
 
   @Test

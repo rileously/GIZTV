@@ -82,6 +82,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.net.toUri
 import androidx.media3.common.MimeTypes
 import com.example.auroratv.ui.catalog.STREAM_PROVIDER_HOSTS
+import com.example.auroratv.ui.catalog.serverLabelFor
 import androidx.tv.material3.Text
 import com.example.auroratv.BuildConfig
 import com.example.auroratv.data.PlaybackContext
@@ -454,6 +455,7 @@ internal fun BrowserScreen(
     if (playback != null && !pageRevealed) {
       PreparingOverlay(
         playback = playback,
+        currentUrl = currentUrl,
         stage = stage,
         failed = preparationFailed,
         onRetry = {
@@ -496,6 +498,13 @@ internal fun BrowserScreen(
 @Composable
 private fun PreparingOverlay(
   playback: PlaybackContext,
+  /**
+   * The page being worked on right now, which is not [PlaybackContext.pageUrl].
+   *
+   * That one is the address the title is remembered by and never moves; this one follows the
+   * provider actually being asked, which is the whole point of showing it.
+   */
+  currentUrl: String,
   stage: PreparationStage,
   failed: Boolean,
   onRetry: () -> Unit,
@@ -637,7 +646,15 @@ private fun PreparingOverlay(
               GizTvMark(modifier = Modifier.size(28.dp), cornerRadius = 8.dp, alpha = .9f)
               Spacer(Modifier.width(11.dp))
               Column(Modifier.weight(1f)) {
-                Text(stage.label, color = SoftWhite, fontWeight = FontWeight.Black, fontSize = 14.sp)
+                // Naming the server turns a title bouncing between them from something that looks
+                // broken into something legible: SR1 had nothing, so SR2 is being asked.
+                val server = serverLabelFor(currentUrl)
+                Text(
+                  if (server == null) stage.label else "${stage.label} · $server",
+                  color = SoftWhite,
+                  fontWeight = FontWeight.Black,
+                  fontSize = 14.sp,
+                )
                 Text("Secure playback · ads blocked · English subtitles preferred", color = MutedBlue, fontSize = 10.sp)
               }
             }

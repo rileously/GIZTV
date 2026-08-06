@@ -171,6 +171,7 @@ import com.example.auroratv.theme.DeepSpace
 import com.example.auroratv.theme.MutedBlue
 import com.example.auroratv.theme.NightSurface
 import com.example.auroratv.theme.SoftWhite
+import com.example.auroratv.ui.catalog.serverLabelFor
 import com.example.auroratv.gizTvOrientation
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -277,6 +278,15 @@ private const val RELIABLE_HTTP_READ_TIMEOUT_MS = 60_000
 private const val RELIABLE_HLS_RETRY_COUNT = 6
 private const val BACKUP_AVAILABLE_RETRY_COUNT = 2
 private const val PROLONGED_STALL_TIMEOUT_MS = 45_000L
+/**
+ * How long a stream that has never produced a single frame is given.
+ *
+ * One that has been playing and then stalls has already proved it exists, so it is worth waiting
+ * out. One that has shown nothing at all is far more likely to be dead than slow, and every second
+ * spent proving it is a second the viewer spends watching a spinner before the next provider is
+ * even asked.
+ */
+private const val STARTUP_STALL_TIMEOUT_MS = 20_000L
 private const val STABLE_PLAYBACK_RESET_MS = 60_000L
 private const val LOCAL_STALL_RECOVERY_ATTEMPTS = 1
 private const val PLAYER_SWIPE_SENSITIVITY = 1.25f
@@ -488,6 +498,10 @@ internal enum class ProlongedStallAction {
   RELOAD_CURRENT_STREAM,
   REQUEST_FRESH_STREAM,
 }
+
+/** How long to sit on a stalled stream before doing something about it. */
+internal fun stallTimeoutMs(hasStartedPlayback: Boolean): Long =
+  if (hasStartedPlayback) PROLONGED_STALL_TIMEOUT_MS else STARTUP_STALL_TIMEOUT_MS
 
 internal fun prolongedStallAction(recoveryAttempts: Int): ProlongedStallAction =
   if (recoveryAttempts < LOCAL_STALL_RECOVERY_ATTEMPTS) {
@@ -1249,9 +1263,9 @@ internal fun HlsPlayerScreen(
 
   // A stream can keep the player in BUFFERING forever without producing an error. Give the same
   // address one clean reload, then ask the catalog resolver for a fresh signed address/server.
-  LaunchedEffect(player, isBuffering, wantsPlayback, error) {
+  LaunchedEffect(player, isBuffering, wantsPlayback, error, hasStartedPlayback) {
     if (!isBuffering || !wantsPlayback || error != null) return@LaunchedEffect
-    delay(PROLONGED_STALL_TIMEOUT_MS)
+    delay(stallTimeoutMs(hasStartedPlayback))
     when (prolongedStallAction(stallRecoveryAttempts)) {
       ProlongedStallAction.RELOAD_CURRENT_STREAM -> {
         stallRecoveryAttempts++
@@ -1847,12 +1861,30 @@ private fun ModernPlayerControls(
           modifier = Modifier.alpha(surroundingControlsAlpha),
         )
         Column(Modifier.weight(1f)) {
-          Text(
-            "NOW PLAYING",
-            color = AuroraMint,
-            fontWeight = FontWeight.Black,
-            fontSize = 11.sp,
-          )
+          Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Text(
+              "NOW PLAYING",
+              color = AuroraMint,
+              fontWeight = FontWeight.Black,
+              fontSize = 11.sp,
+            )
+            // Which site is serving this, so a title that plays badly can be told apart from a
+            // site that is having a bad day.
+            serverLabelFor(request.sourcePageUrl)?.let { server ->
+              Text(
+                server,
+                color = MutedBlue,
+                fontWeight = FontWeight.Black,
+                fontSize = 11.sp,
+                modifier =
+                  Modifier.background(NightSurface, RoundedCornerShape(4.dp))
+                    .padding(horizontal = 5.dp, vertical = 1.dp),
+              )
+            }
+          }
           Text(
             playbackTitle(request),
             color = SoftWhite,

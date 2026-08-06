@@ -18,19 +18,14 @@ internal data class StreamProvider(
 /**
  * Tried in order; the first that produces a playable stream wins.
  *
- * vidrock leads because it hands out an HLS playlist with a full set of subtitle tracks, which
- * gives the player real quality options to adapt between. vidfast currently serves a single
- * progressive file: one quality, no subtitles of its own, nothing to adapt.
+ * vidfast leads because it is the one that reliably answers in practice. vidrock looked like the
+ * better primary on paper — it hands out an HLS playlist with a full set of subtitle tracks, where
+ * vidfast often serves a single progressive file with nothing to adapt between — but on a real
+ * connection it fails, and a provider that has to be waited out before the next one is asked is
+ * worse than a plainer one that works. It stays in the list, one place back.
  */
 internal val STREAM_PROVIDERS: List<StreamProvider> =
   listOf(
-    StreamProvider(
-      id = "vidrock",
-      label = "VidRock",
-      host = "vidrock.ru",
-      movieUrl = { "https://vidrock.ru/movie/$it" },
-      episodeUrl = { show, season, episode -> "https://vidrock.ru/tv/$show/$season/$episode" },
-    ),
     StreamProvider(
       id = "vidfast",
       label = "VidFast",
@@ -39,6 +34,13 @@ internal val STREAM_PROVIDERS: List<StreamProvider> =
       episodeUrl = { show, season, episode ->
         "https://vidfast.vc/tv/$show/$season/$episode?autoPlay=true&sub=en&chromecast=false"
       },
+    ),
+    StreamProvider(
+      id = "vidrock",
+      label = "VidRock",
+      host = "vidrock.ru",
+      movieUrl = { "https://vidrock.ru/movie/$it" },
+      episodeUrl = { show, season, episode -> "https://vidrock.ru/tv/$show/$season/$episode" },
     ),
     StreamProvider(
       id = "vidlink",
@@ -130,3 +132,25 @@ internal fun nextProviderPageUrl(canonicalPageUrl: String, attempt: Int): String
 
 /** How many automatic attempts a catalog title is worth: one per provider. */
 internal val STREAM_PROVIDER_COUNT: Int = STREAM_PROVIDERS.size
+
+/** Which provider an address belongs to, or null for anything outside the list. */
+internal fun providerIndexOf(pageUrl: String?): Int? {
+  val url = pageUrl ?: return null
+  val host =
+    url.substringAfter("://", "").substringBefore('/').substringBefore(':').lowercase()
+  if (host.isEmpty()) return null
+  val index = STREAM_PROVIDERS.indexOfFirst { host == it.host || host.endsWith(".${it.host}") }
+  return index.takeIf { it >= 0 }
+}
+
+/**
+ * What to call a provider on screen.
+ *
+ * Numbered rather than named: which site is serving a title is the useful thing to know when one
+ * of them is having a bad day, and the number says where it sits in the running order without
+ * putting a brand in front of the viewer.
+ */
+internal fun serverLabel(index: Int): String = "SR${index + 1}"
+
+/** The label for whichever provider served this address, or null if it was not one of ours. */
+internal fun serverLabelFor(pageUrl: String?): String? = providerIndexOf(pageUrl)?.let(::serverLabel)

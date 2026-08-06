@@ -6,6 +6,7 @@ import com.example.auroratv.ui.catalog.STREAM_PROVIDERS
 import com.example.auroratv.ui.catalog.catalogTargetOf
 import com.example.auroratv.ui.catalog.nextProviderPageUrl
 import com.example.auroratv.ui.catalog.providerPageUrl
+import com.example.auroratv.ui.catalog.serverLabelFor
 import com.example.auroratv.ui.catalog.vidfastEpisodeUrl
 import com.example.auroratv.ui.catalog.vidfastMovieUrl
 import org.junit.Assert.assertEquals
@@ -110,9 +111,27 @@ class StreamProviderTest {
     // not at whichever provider happens to own the remembered address.
     val canonical = vidfastMovieUrl(786892)
     assertEquals(STREAM_PROVIDERS.first().movieUrl(786892), nextProviderPageUrl(canonical, 0))
-    assertEquals("vidrock", STREAM_PROVIDERS.first().id)
+    assertEquals("vidfast", STREAM_PROVIDERS.first().id)
     // ...and the remembered address still belongs to vidfast, so nobody loses their place.
     assertEquals("vidfast", CANONICAL_PROVIDER.id)
+  }
+
+  @Test
+  fun theServingSite_isNamedByItsPlaceInTheRunningOrder() {
+    assertEquals("SR1", serverLabelFor(vidfastMovieUrl(786892)))
+    assertEquals("SR2", serverLabelFor("https://vidrock.ru/movie/786892"))
+    assertEquals("SR3", serverLabelFor("https://vidlink.pro/tv/94997/1/1?title=false"))
+    assertEquals("SR4", serverLabelFor("https://vsembed.ru/embed/movie/786892?autoplay=1"))
+    // Subdomains still belong to their provider.
+    assertEquals("SR2", serverLabelFor("https://cdn.vidrock.ru/movie/786892"))
+  }
+
+  @Test
+  fun somethingServedFromOutsideTheList_isNotGivenAServerNumber() {
+    assertNull(serverLabelFor("https://hoofoot.ru/gl?id=hd11"))
+    assertNull(serverLabelFor("https://skyflix.to/some-film"))
+    assertNull(serverLabelFor(null))
+    assertNull(serverLabelFor(""))
   }
 
   @Test
