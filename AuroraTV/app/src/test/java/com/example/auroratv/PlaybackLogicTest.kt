@@ -354,9 +354,13 @@ class PlaybackLogicTest {
   @Test
   fun streamFailover_isAvailableOnlyForCatalogTitlesAndIsBounded() {
     // One attempt per provider after the first, so every site is asked before the viewer is told no.
-    assertEquals(StreamFailureAction.RESOLVE_FRESH_STREAM, streamFailureAction(true, 0))
-    assertEquals(StreamFailureAction.RESOLVE_FRESH_STREAM, streamFailureAction(true, 1))
-    assertEquals(StreamFailureAction.RESOLVE_FRESH_STREAM, streamFailureAction(true, 2))
+    repeat(STREAM_PROVIDER_COUNT - 1) { completed ->
+      assertEquals(
+        "failover $completed",
+        StreamFailureAction.RESOLVE_FRESH_STREAM,
+        streamFailureAction(true, completed),
+      )
+    }
     assertEquals(StreamFailureAction.SHOW_PLAYER_ERROR, streamFailureAction(true, STREAM_PROVIDER_COUNT - 1))
     // A stream found by plain browsing has no catalog title to ask a second provider about.
     assertEquals(StreamFailureAction.SHOW_PLAYER_ERROR, streamFailureAction(false, 0))

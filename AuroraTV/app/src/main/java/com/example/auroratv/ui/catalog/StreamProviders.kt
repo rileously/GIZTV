@@ -18,13 +18,17 @@ internal data class StreamProvider(
 /**
  * Tried in order; the first that produces a playable stream wins.
  *
- * vidrock leads: it hands out an HLS playlist with a full set of subtitle tracks, so the player has
- * real renditions to adapt between, where vidfast often serves a single progressive file with
- * nothing to adapt and no captions of its own.
+ * Ordered by what they were measured doing, not by what they advertise.
  *
- * It spent a release demoted for appearing to fail on every title. It was not failing — the
- * resolver was taking the placeholder its player loads before it has resolved anything, and
- * discarding the real playlist that followed. See `isDecoyMediaUrl`.
+ * vidrock leads: it hands out an HLS playlist with a full set of subtitle tracks, so the player has
+ * real renditions to adapt between. It spent a release demoted for appearing to fail on every
+ * title; it was not failing, the resolver was taking the placeholder its player loads before it
+ * has resolved anything and discarding the real playlist that followed. See `isDecoyMediaUrl`.
+ *
+ * vidfast trails because it is slow and inflexible, not because it is unreliable. Its own page
+ * spends around fifteen seconds working before it emits any address — roughly twice vidlink's
+ * whole resolution — and what it then emits is a single progressive file, sometimes 2160p, with no
+ * ladder for the player to adapt down. Nothing here can hurry it up; it can only be asked later.
  */
 internal val STREAM_PROVIDERS: List<StreamProvider> =
   listOf(
@@ -34,15 +38,6 @@ internal val STREAM_PROVIDERS: List<StreamProvider> =
       host = "vidrock.ru",
       movieUrl = { "https://vidrock.ru/movie/$it" },
       episodeUrl = { show, season, episode -> "https://vidrock.ru/tv/$show/$season/$episode" },
-    ),
-    StreamProvider(
-      id = "vidfast",
-      label = "VidFast",
-      host = "vidfast.vc",
-      movieUrl = { "https://vidfast.vc/movie/$it?autoPlay=true&sub=en&chromecast=false" },
-      episodeUrl = { show, season, episode ->
-        "https://vidfast.vc/tv/$show/$season/$episode?autoPlay=true&sub=en&chromecast=false"
-      },
     ),
     StreamProvider(
       id = "vidlink",
@@ -55,15 +50,22 @@ internal val STREAM_PROVIDERS: List<StreamProvider> =
       },
     ),
     StreamProvider(
-      id = "vsembed",
-      label = "VidSrc",
-      host = "vsembed.ru",
-      movieUrl = { "https://vsembed.ru/embed/movie/$it?autoplay=1&ds_lang=en" },
+      id = "vidfast",
+      label = "VidFast",
+      host = "vidfast.vc",
+      movieUrl = { "https://vidfast.vc/movie/$it?autoPlay=true&sub=en&chromecast=false" },
       episodeUrl = { show, season, episode ->
-        "https://vsembed.ru/embed/tv/$show/$season/$episode?autoplay=1&ds_lang=en"
+        "https://vidfast.vc/tv/$show/$season/$episode?autoPlay=true&sub=en&chromecast=false"
       },
     ),
   )
+
+// VidSrc (vsembed.ru) is deliberately absent. Its player is a nested iframe that assembles the
+// stream address inside the page from an obfuscated payload, next to a script whose whole job is
+// to stop that being observed. Measured against it, the page loads and nothing follows: no address
+// is ever requested, so there is nothing for the resolver to find. Left in the list it would only
+// add a dead attempt to the end of every failover. Its URL shapes are in the git history if the
+// site ever changes.
 
 /** Every host the resolver may legitimately end up on, for the checks that gate on one. */
 internal val STREAM_PROVIDER_HOSTS: List<String> = STREAM_PROVIDERS.map(StreamProvider::host)

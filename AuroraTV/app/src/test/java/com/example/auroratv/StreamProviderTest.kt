@@ -40,9 +40,16 @@ class StreamProviderTest {
     assertTrue(byId.getValue("vidlink").movieUrl(786892).startsWith("https://vidlink.pro/movie/786892"))
     assertTrue(byId.getValue("vidlink").episodeUrl(94997, 1, 1).startsWith("https://vidlink.pro/tv/94997/1/1"))
 
-    // vsembed is the odd one: its player lives under /embed.
-    assertTrue(byId.getValue("vsembed").movieUrl(786892).startsWith("https://vsembed.ru/embed/movie/786892"))
-    assertTrue(byId.getValue("vsembed").episodeUrl(94997, 1, 1).startsWith("https://vsembed.ru/embed/tv/94997/1/1"))
+    assertTrue(byId.getValue("vidfast").movieUrl(786892).startsWith("https://vidfast.vc/movie/786892"))
+    assertTrue(byId.getValue("vidfast").episodeUrl(94997, 1, 1).startsWith("https://vidfast.vc/tv/94997/1/1"))
+  }
+
+  @Test
+  fun onlySitesThatWereMeasuredPlaying_areInTheList() {
+    // VidSrc assembles its address inside the page behind an anti-inspection script, so the
+    // resolver never sees one. Carrying it would only add a dead attempt to every failover.
+    assertTrue(STREAM_PROVIDERS.none { it.host.contains("vsembed") })
+    assertEquals(listOf("vidrock", "vidlink", "vidfast"), STREAM_PROVIDERS.map { it.id })
   }
 
   @Test
@@ -119,9 +126,8 @@ class StreamProviderTest {
   @Test
   fun theServingSite_isNamedByItsPlaceInTheRunningOrder() {
     assertEquals("SR1", serverLabelFor("https://vidrock.ru/movie/786892"))
-    assertEquals("SR2", serverLabelFor(vidfastMovieUrl(786892)))
-    assertEquals("SR3", serverLabelFor("https://vidlink.pro/tv/94997/1/1?title=false"))
-    assertEquals("SR4", serverLabelFor("https://vsembed.ru/embed/movie/786892?autoplay=1"))
+    assertEquals("SR2", serverLabelFor("https://vidlink.pro/tv/94997/1/1?title=false"))
+    assertEquals("SR3", serverLabelFor(vidfastMovieUrl(786892)))
     // Subdomains still belong to their provider.
     assertEquals("SR1", serverLabelFor("https://cdn.vidrock.ru/movie/786892"))
   }
@@ -130,6 +136,8 @@ class StreamProviderTest {
   fun somethingServedFromOutsideTheList_isNotGivenAServerNumber() {
     assertNull(serverLabelFor("https://hoofoot.ru/gl?id=hd11"))
     assertNull(serverLabelFor("https://skyflix.to/some-film"))
+    // VidSrc was measured and dropped; nothing should still be pointing at it.
+    assertNull(serverLabelFor("https://vsembed.ru/embed/movie/786892"))
     assertNull(serverLabelFor(null))
     assertNull(serverLabelFor(""))
   }
