@@ -81,6 +81,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.net.toUri
 import androidx.media3.common.MimeTypes
+import com.example.auroratv.ui.catalog.STREAM_PROVIDER_HOSTS
 import androidx.tv.material3.Text
 import com.example.auroratv.BuildConfig
 import com.example.auroratv.data.PlaybackContext
@@ -1289,16 +1290,19 @@ internal fun subtitleCatalogUrlsForPage(pageUrl: String): List<String> {
 internal fun subtitleCatalogUrlsForEmbeddedPlayer(playerUrl: String): List<String> {
   val player = runCatching { playerUrl.toUri() }.getOrNull() ?: return emptyList()
   val host = player.host?.lowercase().orEmpty()
+  // Every provider is keyed on the same TMDB id, so the separate subtitle catalog is worth asking
+  // for whichever of them ended up serving the title.
   val supportedHost =
-    host == "vidfast.vc" || host.endsWith(".vidfast.vc") ||
+    STREAM_PROVIDER_HOSTS.any { host == it || host.endsWith(".$it") } ||
       host == "vixsrc.to" || host.endsWith(".vixsrc.to")
   if (!supportedHost) return emptyList()
 
+  // vsembed puts its player under /embed; the rest sit at the root.
   val path = player.path.orEmpty()
-  Regex("^/movie/(\\d+)(?:/|$)", RegexOption.IGNORE_CASE).find(path)?.let { match ->
+  Regex("^(?:/embed)?/movie/(\\d+)(?:/|$)", RegexOption.IGNORE_CASE).find(path)?.let { match ->
     return listOf("https://sub.vdrk.site/v1/movie/${match.groupValues[1]}")
   }
-  Regex("^/tv/(\\d+)/(\\d+)/(\\d+)(?:/|$)", RegexOption.IGNORE_CASE).find(path)?.let { match ->
+  Regex("^(?:/embed)?/tv/(\\d+)/(\\d+)/(\\d+)(?:/|$)", RegexOption.IGNORE_CASE).find(path)?.let { match ->
     val (_, showId, seasonNumber, episodeNumber) = match.groupValues
     return listOf("https://sub.vdrk.site/v1/tv/$showId/$seasonNumber/$episodeNumber")
   }

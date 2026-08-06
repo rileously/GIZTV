@@ -145,10 +145,10 @@ internal fun parseTmdbEpisodes(json: String): List<TmdbEpisode> {
     .sortedBy { it.episodeNumber }
 }
 
+/** The address the catalog knows an episode by; see [vidfastMovieUrl] for why it does not move. */
 internal fun vidfastEpisodeUrl(showId: Int, seasonNumber: Int, episodeNumber: Int): String {
   require(showId > 0) { "A valid TMDB show ID is required" }
   require(seasonNumber >= 0) { "A valid season number is required" }
   require(episodeNumber > 0) { "A valid episode number is required" }
-  return "https://vidfast.vc/tv/$showId/$seasonNumber/$episodeNumber" +
-    "?autoPlay=true&sub=en&chromecast=false"
+  return CANONICAL_PROVIDER.episodeUrl(showId, seasonNumber, episodeNumber)
 }

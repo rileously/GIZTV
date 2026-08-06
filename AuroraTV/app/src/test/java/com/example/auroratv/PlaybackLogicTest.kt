@@ -5,6 +5,7 @@ import androidx.media3.common.Format
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.source.BehindLiveWindowException
 import com.example.auroratv.ui.StreamFailureAction
+import com.example.auroratv.ui.catalog.STREAM_PROVIDER_COUNT
 import com.example.auroratv.ui.nextIptvPlaybackSource
 import com.example.auroratv.ui.streamFailureAction
 import com.example.auroratv.ui.player.AutomaticQualityPhase
@@ -341,9 +342,12 @@ class PlaybackLogicTest {
 
   @Test
   fun streamFailover_isAvailableOnlyForCatalogTitlesAndIsBounded() {
+    // One attempt per provider after the first, so every site is asked before the viewer is told no.
     assertEquals(StreamFailureAction.RESOLVE_FRESH_STREAM, streamFailureAction(true, 0))
     assertEquals(StreamFailureAction.RESOLVE_FRESH_STREAM, streamFailureAction(true, 1))
-    assertEquals(StreamFailureAction.SHOW_PLAYER_ERROR, streamFailureAction(true, 2))
+    assertEquals(StreamFailureAction.RESOLVE_FRESH_STREAM, streamFailureAction(true, 2))
+    assertEquals(StreamFailureAction.SHOW_PLAYER_ERROR, streamFailureAction(true, STREAM_PROVIDER_COUNT - 1))
+    // A stream found by plain browsing has no catalog title to ask a second provider about.
     assertEquals(StreamFailureAction.SHOW_PLAYER_ERROR, streamFailureAction(false, 0))
   }
 

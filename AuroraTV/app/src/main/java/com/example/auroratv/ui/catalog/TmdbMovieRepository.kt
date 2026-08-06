@@ -126,7 +126,13 @@ internal fun parseTmdbMovies(json: String): List<TmdbMovie> {
   }
 }
 
+/**
+ * The address the catalog knows a film by.
+ *
+ * It is the first provider's, and it stays that whichever provider ends up serving the film: watch
+ * history, Continue watching and the handover to a television are all keyed on it.
+ */
 internal fun vidfastMovieUrl(movieId: Int): String {
   require(movieId > 0) { "A valid TMDB movie ID is required" }
-  return "https://vidfast.vc/movie/$movieId?autoPlay=true&sub=en&chromecast=false"
+  return CANONICAL_PROVIDER.movieUrl(movieId)
 }

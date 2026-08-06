@@ -28,6 +28,8 @@ import com.example.auroratv.link.RemoteUiBridge
 import com.example.auroratv.ui.browser.BrowserScreen
 import com.example.auroratv.ui.browser.StreamPrefetcher
 import com.example.auroratv.ui.catalog.CatalogScreen
+import com.example.auroratv.ui.catalog.STREAM_PROVIDER_COUNT
+import com.example.auroratv.ui.catalog.nextProviderPageUrl
 import com.example.auroratv.ui.catalog.TmdbShow
 import com.example.auroratv.ui.catalog.TvShowDetailScreen
 import com.example.auroratv.ui.drama.ShortDrama
@@ -49,7 +51,8 @@ import com.example.auroratv.ui.update.AppUpdateController
 import kotlinx.coroutines.launch
 
 private const val SKYFLIX_URL = "https://skyflix.to/"
-private const val MAX_AUTOMATIC_STREAM_FAILOVERS = 2
+/** One attempt per provider after the first: every site gets asked before the viewer is told no. */
+private val MAX_AUTOMATIC_STREAM_FAILOVERS = STREAM_PROVIDER_COUNT - 1
 
 internal enum class StreamFailureAction {
   RESOLVE_FRESH_STREAM,
@@ -421,9 +424,14 @@ fun AuroraTvRoot(
                   )
                 ) {
                   StreamFailureAction.RESOLVE_FRESH_STREAM -> {
-                    streamFailoverAttempts++
+                    val canonicalPageUrl = requireNotNull(playbackContext).pageUrl
+                    val nextAttempt = streamFailoverAttempts + 1
+                    streamFailoverAttempts = nextAttempt
+                    // The context keeps the address the catalog knows this title by, so watch
+                    // history and Continue watching stay put no matter who ends up serving it.
+                    // Only the page the resolver visits moves on to the next provider.
                     pendingContext = playbackContext
-                    browserUrl = requireNotNull(playbackContext).pageUrl
+                    browserUrl = nextProviderPageUrl(canonicalPageUrl, nextAttempt) ?: canonicalPageUrl
                     streamRequest = null
                     destination = Destination.BROWSER
                     true
