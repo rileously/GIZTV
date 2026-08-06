@@ -5,7 +5,10 @@ import android.os.Looper
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.Format
+import androidx.media3.common.text.Cue
+import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
+import com.google.common.collect.ImmutableList
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ForwardingRenderer
 import androidx.media3.exoplayer.Renderer
@@ -37,12 +40,46 @@ internal class OffsetSubtitleRenderersFactory(
     out: ArrayList<Renderer>,
   ) {
     val firstTextRenderer = out.size
-    super.buildTextRenderers(context, output, outputLooper, extensionRendererMode, out)
+    // Filtering here rather than where subtitles are fetched, because it is the last point every
+    // track passes through: the ones this app finds separately, and the ones that arrive inside
+    // the stream, are both on their way to the screen by now.
+    super.buildTextRenderers(
+      context,
+      AdFreeTextOutput(output),
+      outputLooper,
+      extensionRendererMode,
+      out,
+    )
     for (index in firstTextRenderer until out.size) {
       if (out[index].trackType == C.TRACK_TYPE_TEXT) {
         out[index] = SubtitleOffsetRenderer(out[index], offsetMs)
       }
     }
+  }
+}
+
+/**
+ * Keeps a track's own advertising off the picture.
+ *
+ * The renderer produces whatever the file contained; this decides what reaches the screen. A group
+ * left with no cues at all is still passed on, so an advert simply leaves a gap where it was
+ * rather than freezing the previous line on screen.
+ */
+@OptIn(UnstableApi::class)
+internal class AdFreeTextOutput(private val delegate: TextOutput) : TextOutput {
+  override fun onCues(cueGroup: CueGroup) {
+    val kept = cueGroup.cues.filterNot { isPromotionalSubtitleCue(it.text) }
+    if (kept.size == cueGroup.cues.size) {
+      delegate.onCues(cueGroup)
+    } else {
+      delegate.onCues(CueGroup(ImmutableList.copyOf(kept), cueGroup.presentationTimeUs))
+    }
+  }
+
+  @Deprecated("Superseded by the CueGroup overload, which media3 calls.")
+  override fun onCues(cues: MutableList<Cue>) {
+    @Suppress("DEPRECATION")
+    delegate.onCues(cues.filterNot { isPromotionalSubtitleCue(it.text) }.toMutableList())
   }
 }
 
