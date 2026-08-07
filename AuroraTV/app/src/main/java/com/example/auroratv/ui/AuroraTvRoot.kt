@@ -10,6 +10,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.DisposableEffect
@@ -153,6 +154,14 @@ fun AuroraTvRoot(
     mutableStateOf(initialResume?.pageUrl ?: initialBrowserUrl ?: SKYFLIX_URL)
   }
   var browserReturnDestination by remember { mutableStateOf(Destination.CATALOG) }
+  /**
+   * Keeps each destination's saved state while it is off screen.
+   *
+   * Destinations are branches of a `when`, so opening a title removes the catalog from the
+   * composition entirely and every `rememberSaveable` in it — the scroll position most of all — goes
+   * with it. Coming back rebuilt the page at the top. This hands the subtree its state back.
+   */
+  val destinationState = rememberSaveableStateHolder()
   var selectedShow by remember { mutableStateOf<TmdbShow?>(null) }
   var selectedDrama by remember { mutableStateOf<ShortDrama?>(null) }
   // Held while the browser resolves a stream, then attached to the request the player receives.
@@ -390,7 +399,8 @@ fun AuroraTvRoot(
         }
 
         when (destination) {
-          Destination.CATALOG -> Catalog()
+          Destination.CATALOG ->
+            destinationState.SaveableStateProvider(Destination.CATALOG) { Catalog() }
           Destination.SHOW_DETAIL -> {
             val show = selectedShow
             if (show != null) {
@@ -513,7 +523,7 @@ fun AuroraTvRoot(
             // Full-screen player is drawn above this when-block so a minimized session can keep the
             // same ExoPlayer alive over the catalog. An empty request falls back to the home row.
             if (streamRequest == null) {
-              Catalog()
+              destinationState.SaveableStateProvider(Destination.CATALOG) { Catalog() }
             }
           }
         }

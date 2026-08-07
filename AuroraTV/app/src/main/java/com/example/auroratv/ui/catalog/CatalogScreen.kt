@@ -141,6 +141,21 @@ private const val RAIL_FADE_MS = 260
 /** One rail on the page: its listing, and how much of it is known so far. */
 private data class RailSlot(val category: CatalogCategory, val size: Int, val pending: Boolean)
 
+/**
+ * The listings this session already holds for [tab], read without suspending.
+ *
+ * The point is that it can be done while composing. Everything else about a rail arrives through a
+ * coroutine, which is a frame too late to stop the placeholder being drawn first.
+ */
+private fun <T : Any> heldRails(
+  tab: CatalogTab,
+  categories: List<CatalogCategory>,
+): Map<CatalogCategory, List<T>> = buildMap {
+  categories.forEach { category ->
+    CatalogCache.peek<List<T>>(catalogCacheKey(tab, category))?.let { put(category, it.value) }
+  }
+}
+
 internal enum class CatalogTab(val label: String) {
   MOVIES("Movies"),
   SHOWS("TV Shows"),
@@ -207,8 +222,13 @@ internal fun CatalogScreen(
   var searchActive by rememberSaveable { mutableStateOf(false) }
   var searchExpanded by rememberSaveable { mutableStateOf(false) }
   // Every listing is on the page at once, one rail each, rather than behind a filter.
-  var movieSections by remember { mutableStateOf<Map<CatalogCategory, List<TmdbMovie>>>(emptyMap()) }
-  var showSections by remember { mutableStateOf<Map<CatalogCategory, List<TmdbShow>>>(emptyMap()) }
+  //
+  // Seeded from the cache while composing rather than left empty for a coroutine to fill. Opening a
+  // title tears this screen down — the catalog is one branch of a `when` — so coming back rebuilds
+  // it from nothing, and rails that were on screen a moment ago would drop to placeholders and fade
+  // back in. The listings were never gone; only the state holding them was.
+  var movieSections by remember { mutableStateOf(heldRails<TmdbMovie>(CatalogTab.MOVIES, categories)) }
+  var showSections by remember { mutableStateOf(heldRails<TmdbShow>(CatalogTab.SHOWS, categories)) }
   var movies by remember { mutableStateOf<List<TmdbMovie>>(emptyList()) }
   var shows by remember { mutableStateOf<List<TmdbShow>>(emptyList()) }
   var savedItems by remember { mutableStateOf<List<LibraryItem>>(emptyList()) }
@@ -565,10 +585,18 @@ internal fun CatalogScreen(
       }
   }
 
-  // Switching tab should start at the top, not wherever the last list was scrolled to.
-  LaunchedEffect(tab, searchActive, loading) {
-    if (!loading && gridState.layoutInfo.totalItemsCount > 0) gridState.scrollToItem(0)
-    if (!loading && railState.layoutInfo.totalItemsCount > 0) railState.scrollToItem(0)
+  // Switching tab should start at the top, not wherever the last list was scrolled to. Arriving on
+  // the screen is not switching, though — and every return from a title arrives, because opening one
+  // tears this screen down. Sending the viewer back to the top of the page they had scrolled through
+  // is most of what made coming back feel like a reload.
+  var arrived by remember { mutableStateOf(false) }
+  LaunchedEffect(tab, searchActive) {
+    if (!arrived) {
+      arrived = true
+      return@LaunchedEffect
+    }
+    if (gridState.layoutInfo.totalItemsCount > 0) gridState.scrollToItem(0)
+    if (railState.layoutInfo.totalItemsCount > 0) railState.scrollToItem(0)
   }
 
   val browsing = tab != CatalogTab.MY_LIST
