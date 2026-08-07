@@ -68,20 +68,44 @@ internal class OffsetSubtitleRenderersFactory(
 @OptIn(UnstableApi::class)
 internal class AdFreeTextOutput(private val delegate: TextOutput) : TextOutput {
   override fun onCues(cueGroup: CueGroup) {
-    val kept = cueGroup.cues.filterNot { isPromotionalSubtitleCue(it.text) }
-    if (kept.size == cueGroup.cues.size) {
-      delegate.onCues(cueGroup)
-    } else {
-      delegate.onCues(CueGroup(ImmutableList.copyOf(kept), cueGroup.presentationTimeUs))
-    }
+    val kept =
+      cueGroup.cues.filterNot { isPromotionalSubtitleCue(it.text) }.map { it.atViewerChosenPosition() }
+    delegate.onCues(CueGroup(ImmutableList.copyOf(kept), cueGroup.presentationTimeUs))
   }
 
   @Deprecated("Superseded by the CueGroup overload, which media3 calls.")
   override fun onCues(cues: MutableList<Cue>) {
     @Suppress("DEPRECATION")
-    delegate.onCues(cues.filterNot { isPromotionalSubtitleCue(it.text) }.toMutableList())
+    delegate.onCues(
+      cues.filterNot { isPromotionalSubtitleCue(it.text) }.map { it.atViewerChosenPosition() }.toMutableList()
+    )
   }
 }
+
+/**
+ * Drops a cue's own idea of where it belongs on screen.
+ *
+ * `SubtitleView.setBottomPaddingFraction` only governs cues that do not carry a position of their
+ * own, and WebVTT lines nearly always do — so the viewer could move the Subtitle position setting
+ * between Bottom, Raised and High, watch the value change, and see the text stay exactly where it
+ * was. Clearing the line here hands placement back to the setting.
+ *
+ * The cost is that a track which deliberately lifted a line clear of on-screen text no longer can.
+ * That is the right trade: a setting the viewer has asked for should win over a guess the file made
+ * about a screen it never saw.
+ */
+@OptIn(UnstableApi::class)
+private fun Cue.atViewerChosenPosition(): Cue =
+  if (line == Cue.DIMEN_UNSET && position == Cue.DIMEN_UNSET) {
+    this
+  } else {
+    buildUpon()
+      .setLine(Cue.DIMEN_UNSET, Cue.LINE_TYPE_FRACTION)
+      .setLineAnchor(Cue.TYPE_UNSET)
+      .setPosition(Cue.DIMEN_UNSET)
+      .setPositionAnchor(Cue.TYPE_UNSET)
+      .build()
+  }
 
 /** For positive offsets the subtitle clock runs behind; negative offsets make it run ahead. */
 @OptIn(UnstableApi::class)

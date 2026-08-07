@@ -17,6 +17,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -325,11 +326,26 @@ private const val MINIMUM_WINDOW_BRIGHTNESS = .01f
  * Wide enough for a thumb on the cue text, narrow enough that edge brightness/volume swipes still
  * win when the finger starts clear of the captions.
  */
-private const val SUBTITLE_DRAG_HIT_FRACTION = .14f
+private const val SUBTITLE_DRAG_HIT_FRACTION = .22f
+/**
+ * How much of the bottom edge the player takes back from the system gesture area.
+ *
+ * Wide enough to cover the caption band at every subtitle position. Android caps the request at
+ * 200dp per edge regardless, so asking generously here costs nothing and claims no more than the
+ * platform is willing to give.
+ */
+private const val SUBTITLE_GESTURE_EXCLUSION_FRACTION = .28f
 /** One full-height drag covers this much of the Bottom→High padding range. */
 private const val SUBTITLE_DRAG_SENSITIVITY = .55f
 /** One row of a quick panel: the chips, and whatever has to line up beside them. */
 private val CHOICE_CHIP_HEIGHT = 36.dp
+/**
+ * What holding a finger on the picture runs it at.
+ *
+ * One value rather than a menu: the gesture exists to skim a slow stretch without leaving the
+ * picture, and a hold cannot express a choice between 1.25 and 1.5 anyway.
+ */
+private const val HOLD_TO_BOOST_SPEED = 2f
 private const val PLAYER_DOUBLE_TAP_SEEK_MS = 10_000L
 private const val PLAYER_DOUBLE_TAP_EDGE_FRACTION = .35f
 /** How long a seek burst stays on screen, and how long further taps keep winding it on. */
@@ -882,8 +898,18 @@ internal fun HlsPlayerScreen(
   var controlsInteractionVersion by remember { mutableIntStateOf(0) }
   var swipeFeedback by remember(request) { mutableStateOf<PlayerSwipeFeedback?>(null) }
   var swipeInProgress by remember(request) { mutableStateOf(false) }
+  /** True only while a finger is held down; the saved speed is untouched underneath it. */
+  var speedBoosted by remember(request) { mutableStateOf(false) }
   /** Continuous bottom-padding while a phone subtitle drag is active; null otherwise. */
   var subtitleDragPadding by remember(request) { mutableStateOf<Float?>(null) }
+  /**
+   * Whether text is actually reaching the screen, which is not the same as a track being chosen.
+   *
+   * The selection can sit on "Off" while the stream's own embedded track plays anyway, and gating
+   * the reposition drag on the selection meant captions the viewer could plainly see refused to be
+   * moved. What is on screen is the honest test.
+   */
+  var subtitlesRendering by remember(request) { mutableStateOf(false) }
   var seekBurst by remember(request) { mutableStateOf<PlayerSeekBurst?>(null) }
   var playbackFinished by remember(request) { mutableStateOf(false) }
   // What the bandwidth meter already knows decides where Auto opens. It is a process-wide singleton
@@ -1252,6 +1278,10 @@ internal fun HlsPlayerScreen(
   DisposableEffect(player, lifecycleOwner) {
     val listener =
       object : Player.Listener {
+        override fun onCues(cueGroup: androidx.media3.common.text.CueGroup) {
+          if (cueGroup.cues.isNotEmpty()) subtitlesRendering = true
+        }
+
         override fun onPlaybackStateChanged(playbackState: Int) {
           isBuffering = playbackState == Player.STATE_BUFFERING
           when (playbackState) {
@@ -1718,6 +1748,23 @@ internal fun HlsPlayerScreen(
         }
 
         detectTapGestures(
+          // Held down, the picture runs at double speed until the finger comes off. Driven from
+          // onPress rather than onLongPress alone because only onPress can wait for the release,
+          // and the boost has to end exactly when the hold does. onLongPress is still supplied so
+          // that letting go does not also register as a tap and toggle the controls.
+          onPress = {
+            tryAwaitRelease()
+            if (speedBoosted) {
+              speedBoosted = false
+              player.setPlaybackSpeed(playbackSpeed)
+            }
+          },
+          onLongPress = {
+            if (settingsOpen) return@detectTapGestures
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+            speedBoosted = true
+            player.setPlaybackSpeed(HOLD_TO_BOOST_SPEED)
+          },
           onDoubleTap = { offset ->
             if (settingsOpen) return@detectTapGestures
             val side = playerSeekSide(offset.x, size.width)
@@ -1748,6 +1795,7 @@ internal fun HlsPlayerScreen(
         player,
         subtitlePosition,
         selectedSubtitle.disabled,
+        subtitlesRendering,
       ) {
         if (isTelevision || settingsOpen || inPictureInPicture) return@pointerInput
 
@@ -1765,7 +1813,7 @@ internal fun HlsPlayerScreen(
                 touchY = start.y,
                 heightPx = size.height,
                 bottomPaddingFraction = subtitlePosition.bottomPadding,
-                subtitlesEnabled = !selectedSubtitle.disabled,
+                subtitlesEnabled = !selectedSubtitle.disabled || subtitlesRendering,
               )
             if (grabSubtitles) {
               draggingSubtitles = true
@@ -1955,6 +2003,36 @@ internal fun HlsPlayerScreen(
           positionLabel = nearestSubtitlePosition(padding).label,
           modifier = Modifier.fillMaxSize(),
         )
+      }
+
+      // Android reserves the bottom edge for its own swipe-up-to-home gesture, and the caption
+      // line sits inside it — so dragging a subtitle upward sent the app to the launcher instead of
+      // moving the text. This claims that strip back for the player. The platform caps how much of
+      // an edge an app may take, which is why it asks for the band rather than the whole screen.
+      if ((!selectedSubtitle.disabled || subtitlesRendering) && !isTelevision) {
+        Box(
+          modifier =
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+              .fillMaxHeight(SUBTITLE_GESTURE_EXCLUSION_FRACTION)
+              .systemGestureExclusion()
+        )
+      }
+
+      // Says what the hold is doing. Without it the picture simply speeds up, which reads as the
+      // stream misbehaving rather than as something the viewer is doing.
+      if (speedBoosted) {
+        Row(
+          modifier =
+            Modifier.align(Alignment.TopCenter).padding(top = 74.dp)
+              .clip(RoundedCornerShape(20.dp))
+              .background(Color.Black.copy(alpha = .66f))
+              .padding(horizontal = 16.dp, vertical = 9.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+          Icon(Icons.Filled.Speed, contentDescription = null, tint = AuroraMint, modifier = Modifier.size(17.dp))
+          Text("2× speed", color = SoftWhite, fontWeight = FontWeight.Black, fontSize = 13.sp)
+        }
       }
 
       // Sits under the swipe pill in the file so a burst never paints over a level being dragged.
@@ -2534,8 +2612,12 @@ private fun ModernPlayerControls(
             ModernPlayerActionPill(Icons.Filled.ClosedCaption, "Subtitles", selectedSubtitle, onSubtitles, onInteraction, showValue = false, modifier = hiddenWhileSeekingModifier)
             ModernPlayerActionPill(Icons.Filled.AspectRatio, "Picture", selectedResize, onPicture, onInteraction, showValue = true, modifier = hiddenWhileSeekingModifier)
             ModernPlayerActionPill(Icons.Filled.Speed, "Sync", subtitleSyncLabel(subtitleOffsetMs), onSubtitleSync, onInteraction, showValue = false, modifier = hiddenWhileSeekingModifier)
-            ModernPlayerActionPill(Icons.Filled.Speed, "Speed", speedLabel(playbackSpeed), onSpeed, onInteraction, showValue = false, modifier = hiddenWhileSeekingModifier)
-            ModernPlayerActionPill(Icons.Filled.Memory, "Decoder", null, onDecoder, onInteraction, showValue = false, modifier = hiddenWhileSeekingModifier)
+            // Speed and Decoder are remote-only. On a touch screen speed is the hold gesture, and
+            // the decoder picker is a repair tool nobody should be handed a button for.
+            if (isTelevision) {
+              ModernPlayerActionPill(Icons.Filled.Speed, "Speed", speedLabel(playbackSpeed), onSpeed, onInteraction, showValue = false, modifier = hiddenWhileSeekingModifier)
+              ModernPlayerActionPill(Icons.Filled.Memory, "Decoder", null, onDecoder, onInteraction, showValue = false, modifier = hiddenWhileSeekingModifier)
+            }
           } else {
             val hiddenWhileSeekingModifier = Modifier.alpha(surroundingControlsAlpha)
             ModernTransportControl(Icons.AutoMirrored.Filled.VolumeUp, "Audio: $selectedAudio", 44.dp, onAudio, onInteraction, modifier = hiddenWhileSeekingModifier)
@@ -2553,8 +2635,10 @@ private fun ModernPlayerControls(
             ModernTransportControl(Icons.Filled.ClosedCaption, "Subtitles: $selectedSubtitle", 44.dp, onSubtitles, onInteraction, modifier = hiddenWhileSeekingModifier)
             ModernTransportControl(Icons.Filled.AspectRatio, "Picture size: $selectedResize", 44.dp, onPicture, onInteraction, modifier = hiddenWhileSeekingModifier)
             ModernTransportControl(Icons.Filled.Speed, "Subtitle sync ${subtitleSyncLabel(subtitleOffsetMs)}", 44.dp, onSubtitleSync, onInteraction, modifier = hiddenWhileSeekingModifier)
-            ModernTransportControl(Icons.Filled.Speed, "Playback speed ${speedLabel(playbackSpeed)}", 44.dp, onSpeed, onInteraction, modifier = hiddenWhileSeekingModifier)
-            ModernTransportControl(Icons.Filled.Memory, "Decoder", 44.dp, onDecoder, onInteraction, modifier = hiddenWhileSeekingModifier)
+            if (isTelevision) {
+              ModernTransportControl(Icons.Filled.Speed, "Playback speed ${speedLabel(playbackSpeed)}", 44.dp, onSpeed, onInteraction, modifier = hiddenWhileSeekingModifier)
+              ModernTransportControl(Icons.Filled.Memory, "Decoder", 44.dp, onDecoder, onInteraction, modifier = hiddenWhileSeekingModifier)
+            }
           }
           }
         }
