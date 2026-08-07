@@ -2,10 +2,8 @@ package com.example.auroratv.ui.catalog
 
 import android.util.Log
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -135,8 +133,14 @@ private const val RAIL_LOOKAHEAD = 3
  */
 private const val RAIL_CONCURRENCY = 4
 
-/** Long enough to read as a fade, short enough that nobody waits on the animation itself. */
-private const val RAIL_FADE_MS = 260
+/**
+ * How many times a press of the pad asks an arriving rail for the focus before giving up.
+ *
+ * Spread over roughly a second, which covers a rail answering from the cache or from a reasonable
+ * connection. Beyond that the press is let go rather than stealing focus long after it was made.
+ */
+private const val RAIL_FOCUS_ATTEMPTS = 12
+private const val RAIL_FOCUS_RETRY_MS = 100L
 
 /** One rail on the page: its listing, and how much of it is known so far. */
 private data class RailSlot(val category: CatalogCategory, val size: Int, val pending: Boolean)
@@ -654,12 +658,16 @@ internal fun CatalogScreen(
         // animating on top of that is the fight rather than the smoothness.
         val onScreen = railState.layoutInfo.visibleItemsInfo.any { it.index == index }
         if (!onScreen) railState.animateScrollToItem(index)
-        runCatching { railFocusRequesters[target].requestFocus() }
-          .onFailure {
-            // One frame later the rail has certainly been placed.
-            withFrameNanos {}
-            runCatching { railFocusRequesters[target].requestFocus() }
-          }
+        // A rail that has not answered yet holds a placeholder, and a placeholder has no card to
+        // focus. Scrolling to it is also what asks for it, so the answer is on its way — the press
+        // waits for it rather than being dropped. Dropping it was what left the pad dead at the
+        // edge of the loaded rails: focus could not move down, and nothing below would load until
+        // it did.
+        repeat(RAIL_FOCUS_ATTEMPTS) { attempt ->
+          if (runCatching { railFocusRequesters[target].requestFocus() }.isSuccess) return@launch
+          withFrameNanos {}
+          if (attempt > 0) delay(RAIL_FOCUS_RETRY_MS)
+        }
       }
     Unit
   }
@@ -1023,15 +1031,11 @@ internal fun CatalogScreen(
               // Posters fade in over the placeholder rather than replacing it between two frames.
               // The swap happens in a slot that is already the right height, so the fade is the
               // only thing that moves.
-              Crossfade(
-                targetState = slot.pending,
-                animationSpec = tween(durationMillis = RAIL_FADE_MS),
-                label = "rail ${category.id}",
-                // Rails that answer out of order, and the odd one that answers with nothing, slide
-                // into place instead of jumping.
-                modifier = Modifier.animateItem(),
-              ) { waiting ->
-                if (waiting) {
+              // Swapped outright rather than crossfaded. The placeholder already holds the slot at
+              // the right height, so there is nothing to smooth over — and wrapping every rail in an
+              // animation container put a layer between the pad and the cards it has to reach.
+              Box(modifier = Modifier.animateItem()) {
+                if (slot.pending) {
                   RailSkeleton(narrow = narrow)
                 } else if (tab == CatalogTab.MOVIES) {
                   CatalogRail(
