@@ -2,8 +2,10 @@ package com.example.auroratv.ui.catalog
 
 import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -52,6 +54,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -105,9 +108,38 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 /** Long enough that a word typed at speed is one request, short enough to feel immediate. */
 private const val SEARCH_DEBOUNCE_MS = 350L
+
+/**
+ * Rails fetched before the viewer has scrolled anywhere.
+ *
+ * Enough to fill the first screen and a little past it. Asking for all eighteen up front was the
+ * whole of the wait on a cold start: the screen sat on "Loading…" until the slowest of them
+ * answered, however long ago the first one had.
+ */
+private const val EAGER_RAILS = 4
+
+/** How far past the last visible rail to fetch, so scrolling meets posters rather than shimmer. */
+private const val RAIL_LOOKAHEAD = 3
+
+/**
+ * Rails allowed to be fetching at once.
+ *
+ * They all go to the same host over `HttpURLConnection`, so eighteen at once queued for the
+ * connection pool regardless — but with the rail under the viewer's eyes as likely to be last in
+ * that queue as first.
+ */
+private const val RAIL_CONCURRENCY = 4
+
+/** Long enough to read as a fade, short enough that nobody waits on the animation itself. */
+private const val RAIL_FADE_MS = 260
+
+/** One rail on the page: its listing, and how much of it is known so far. */
+private data class RailSlot(val category: CatalogCategory, val size: Int, val pending: Boolean)
 
 internal enum class CatalogTab(val label: String) {
   MOVIES("Movies"),
@@ -194,6 +226,16 @@ internal fun CatalogScreen(
   var loading by remember { mutableStateOf(true) }
   var errorMessage by remember { mutableStateOf<String?>(null) }
   var confirmingHistoryClear by rememberSaveable { mutableStateOf(false) }
+  /** How far down the listings have been asked for; grows as the viewer scrolls towards them. */
+  var railsRequested by remember { mutableStateOf(EAGER_RAILS) }
+  /**
+   * Rails already asked for, keyed by tab.
+   *
+   * The lookahead re-runs on every scroll, so without this a rail already in flight would be
+   * started again on each frame the list moved.
+   */
+  val railsStarted = remember { mutableSetOf<String>() }
+  val railGate = remember { Semaphore(RAIL_CONCURRENCY) }
 
   fun dismissKeyboard() {
     focusManager.clearFocus()
@@ -204,35 +246,96 @@ internal fun CatalogScreen(
     searchExpanded = true
   }
 
+  /**
+   * Fetches one rail, putting whatever is already in hand on screen before the request goes out.
+   *
+   * Up to three answers arrive for the same rail, each replacing the last in place: the copy this
+   * session already holds, the copy the previous run left on disk, and what TMDB sends back. The
+   * rail fills in as they land instead of staying blank until the last of them.
+   */
+  suspend fun <T : Any> loadRail(
+    key: String,
+    label: String,
+    stored: suspend () -> List<T>?,
+    fetch: suspend () -> List<T>,
+    /** What this rail already holds, and null while it has never answered. */
+    held: () -> List<T>?,
+    publish: (List<T>) -> Unit,
+    /** Whether any rail on this tab has titles in it, which decides if a failure is worth saying. */
+    anyContent: () -> Boolean,
+  ) {
+    val cached = CatalogCache.peek<List<T>>(key)
+    if (cached != null) {
+      publish(cached.value)
+      // Fetched minutes ago, and a listing does not move that fast: a request whose result nobody
+      // would notice is a request worth not making.
+      if (cached.fresh) return
+    } else {
+      // Costs no network, so it is worth trying even on a good connection — the posters land a
+      // beat later rather than a round trip later.
+      runCatching { stored() }.getOrNull()?.takeIf { it.isNotEmpty() }?.let(publish)
+    }
+
+    runCatching { railGate.withPermit { CatalogCache.fetch(key, fetch) } }
+      .onSuccess {
+        publish(it)
+        if (it.isNotEmpty()) errorMessage = null
+      }
+      .onFailure { error ->
+        // Leaving the screen cancels this mid-flight, which is ordinary and not worth reporting.
+        if (error is kotlinx.coroutines.CancellationException) throw error
+        Log.e("GizTvTmdb", "TMDB rail $label failed", error)
+        // A rail that will not load simply does not appear. Only when none of them will is there
+        // anything the viewer can act on, and only then is it said.
+        if (!anyContent()) errorMessage = friendlyCatalogError(error)
+        // Marked answered either way, so the placeholder stops shimmering at something that is
+        // never coming.
+        if (held() == null) publish(emptyList())
+      }
+  }
+
+  /** Starts every rail down to [upTo] that has not been asked for yet. */
+  fun requestRails(activeTab: CatalogTab, upTo: Int) {
+    if (activeTab == CatalogTab.MY_LIST) return
+    categories.take(upTo.coerceIn(EAGER_RAILS, categories.size)).forEach { category ->
+      val key = catalogCacheKey(activeTab, category)
+      if (!railsStarted.add(key)) return@forEach
+      scope.launch {
+        if (activeTab == CatalogTab.MOVIES) {
+          loadRail(
+            key = key,
+            label = category.id,
+            stored = { movieRepository.storedMovies(category) },
+            fetch = { movieRepository.movies(category) },
+            held = { movieSections[category] },
+            publish = { movieSections = movieSections + (category to it) },
+            anyContent = { movieSections.values.any { items -> items.isNotEmpty() } },
+          )
+        } else {
+          loadRail(
+            key = key,
+            label = category.id,
+            stored = { tvRepository.storedShows(category) },
+            fetch = { tvRepository.shows(category) },
+            held = { showSections[category] },
+            publish = { showSections = showSections + (category to it) },
+            anyContent = { showSections.values.any { items -> items.isNotEmpty() } },
+          )
+        }
+      }
+    }
+  }
+
+  /** The views that are one answer rather than a page of rails: a search, and My List. */
   suspend fun runLoad(activeTab: CatalogTab, searchQuery: String?) {
     loading = true
     errorMessage = null
     runCatching {
-          when (activeTab) {
-            CatalogTab.MOVIES ->
-              if (searchQuery.isNullOrBlank()) {
-                // The listings are independent, so they are fetched together rather than in turn.
-                movieSections = coroutineScope {
-                  categories
-                    .map { category -> async { category to movieRepository.movies(category) } }
-                    .awaitAll()
-                    .toMap()
-                }
-              } else {
-                movies = movieRepository.searchMovies(searchQuery)
-              }
-            CatalogTab.SHOWS ->
-              if (searchQuery.isNullOrBlank()) {
-                showSections = coroutineScope {
-                  categories
-                    .map { category -> async { category to tvRepository.shows(category) } }
-                    .awaitAll()
-                    .toMap()
-                }
-              } else {
-                shows = tvRepository.searchShows(searchQuery)
-              }
-            CatalogTab.MY_LIST -> savedItems = myListStore.all()
+          when {
+            activeTab == CatalogTab.MY_LIST -> savedItems = myListStore.all()
+            activeTab == CatalogTab.MOVIES ->
+              movies = movieRepository.searchMovies(searchQuery.orEmpty())
+            else -> shows = tvRepository.searchShows(searchQuery.orEmpty())
           }
         }
         .onFailure {
@@ -243,7 +346,28 @@ internal fun CatalogScreen(
   }
 
   fun load(activeTab: CatalogTab, searchQuery: String?) {
+    if (searchQuery.isNullOrBlank() && activeTab != CatalogTab.MY_LIST) {
+      // The rails carry their own waiting, one placeholder each, so there is nothing here to hold
+      // the whole screen on.
+      loading = false
+      errorMessage = null
+      requestRails(activeTab, railsRequested)
+      return
+    }
     scope.launch { runLoad(activeTab, searchQuery) }
+  }
+
+  /** Throws away what failed and asks again, from the top. */
+  fun retryRails(activeTab: CatalogTab) {
+    errorMessage = null
+    CatalogCache.clear()
+    railsStarted.clear()
+    // A rail that failed is held as an empty answer, which is how it stops shimmering. Dropping
+    // those puts it back to unanswered, so the retry shows placeholders filling in rather than a
+    // blank page with nothing on it at all.
+    movieSections = movieSections.filterValues { it.isNotEmpty() }
+    showSections = showSections.filterValues { it.isNotEmpty() }
+    requestRails(activeTab, railsRequested)
   }
 
   fun collapseSearchUi() {
@@ -453,18 +577,22 @@ internal fun CatalogScreen(
   val showContinueRow = watchHistory.isNotEmpty() && !searchActive
   // Rails carry the browsable listings; a search and My List are a plain grid of one answer.
   val showRails = browsing && !searchActive
-  val sections: List<Pair<CatalogCategory, Int>> =
+  // A category missing from the map has not answered yet, and holds a placeholder rather than
+  // being left out — otherwise every rail that lands shifts the ones under it down the page.
+  val sections: List<RailSlot> =
     if (!showRails) emptyList()
     else
-      categories.map { category ->
-        val size =
-          if (tab == CatalogTab.MOVIES) movieSections[category].orEmpty().size
-          else showSections[category].orEmpty().size
-        category to size
-      }.filter { (_, size) -> size > 0 }
+      categories
+        .map { category ->
+          val loaded =
+            if (tab == CatalogTab.MOVIES) movieSections[category] else showSections[category]
+          RailSlot(category = category, size = loaded?.size ?: 0, pending = loaded == null)
+        }
+        // Only a rail that answered with nothing is dropped.
+        .filter { it.pending || it.size > 0 }
   val itemCount =
     when {
-      showRails -> sections.sumOf { (_, size) -> size }
+      showRails -> sections.sumOf { it.size }
       tab == CatalogTab.MOVIES -> movies.size
       tab == CatalogTab.SHOWS -> shows.size
       else -> savedItems.size
@@ -507,7 +635,32 @@ internal fun CatalogScreen(
       }
     Unit
   }
-  val firstRailFocusRequester = railFocusRequesters.first()
+  /**
+   * Asks for the rails the viewer is about to reach.
+   *
+   * The lookahead is what keeps this invisible: fetching starts a few rails before the one being
+   * scrolled towards, so the placeholder is usually gone by the time it comes into view. Nothing
+   * is ever un-asked-for again, hence the running high-water mark rather than a window.
+   */
+  LaunchedEffect(tab, searchActive) {
+    if (searchActive || tab == CatalogTab.MY_LIST) return@LaunchedEffect
+    requestRails(tab, railsRequested)
+    snapshotFlow { railState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
+      .collect { lastVisible ->
+        // Rail indices sit past the personalised rows at the top of the list; only a rail that
+        // answered with nothing separates this from the position in [categories], and the
+        // lookahead swallows that drift.
+        val reach = lastVisible - leadingRailItems + 1 + RAIL_LOOKAHEAD
+        if (reach > railsRequested) railsRequested = reach
+        requestRails(tab, railsRequested)
+      }
+  }
+
+  // The first rail that has actually answered. A placeholder holds no card, and a FocusRequester
+  // for a node that was never attached throws when something is sent to it — so the chrome and the
+  // personalised rails aim here rather than at position zero, which may still be shimmering.
+  val firstLoadedRail = sections.indexOfFirst { !it.pending }.coerceAtLeast(0)
+  val firstRailFocusRequester = railFocusRequesters[firstLoadedRail]
   val firstBodyFocusRequester =
     when {
       showContinueRow -> continueRowFocusRequester
@@ -646,22 +799,18 @@ internal fun CatalogScreen(
       )
 
       when {
-        // Only when there is nothing to show. Typing would otherwise replace the results with a
-        // loading panel on every letter, which flickers and loses the viewer's place.
-        loading && itemCount == 0 -> StatusPanel("Loading…", edgeOnly.weight(1f), loading = true)
-        errorMessage != null && itemCount == 0 ->
+        // Nothing at all came back, on any rail: the network is the problem, and a page of
+        // placeholders that will never fill would be a lie about it.
+        showRails && errorMessage != null && itemCount == 0 ->
           StatusPanel(
             message = errorMessage ?: "Content could not be loaded",
             modifier = edgeOnly.weight(1f),
             actionLabel = "Try again",
-            onAction = { load(tab, query.trim().takeIf(String::isNotBlank)) },
+            onAction = { retryRails(tab) },
           )
-        itemCount == 0 && !showContinueRow ->
-          StatusPanel(
-            if (tab == CatalogTab.MY_LIST) "Nothing saved yet. Open a title and choose Save to add it here."
-            else "Nothing found. Try another title.",
-            edgeOnly.weight(1f),
-          )
+        // Otherwise the rails go up straight away, each waiting for itself. There is no screen-wide
+        // loading panel here any more: it was one wait as long as the slowest of eighteen requests,
+        // with nothing to look at meanwhile.
         showRails ->
           LazyColumn(
             state = railState,
@@ -712,7 +861,7 @@ internal fun CatalogScreen(
                     firstCardFocusRequester = recommendedFocusRequester,
                     up = up,
                     down = null,
-                    onMoveDown = { if (showActorRail) actorFocusRequester.requestFocus() else moveToRail(0) },
+                    onMoveDown = { if (showActorRail) actorFocusRequester.requestFocus() else moveToRail(firstLoadedRail) },
                     onMoveUp = null,
                   ) { movie, cardModifier ->
                     PosterCard(
@@ -737,7 +886,7 @@ internal fun CatalogScreen(
                     firstCardFocusRequester = recommendedFocusRequester,
                     up = up,
                     down = null,
-                    onMoveDown = { if (showActorRail) actorFocusRequester.requestFocus() else moveToRail(0) },
+                    onMoveDown = { if (showActorRail) actorFocusRequester.requestFocus() else moveToRail(firstLoadedRail) },
                     onMoveUp = null,
                   ) { show, cardModifier ->
                     PosterCard(
@@ -773,7 +922,7 @@ internal fun CatalogScreen(
                     firstCardFocusRequester = actorFocusRequester,
                     up = up,
                     down = null,
-                    onMoveDown = { moveToRail(0) },
+                    onMoveDown = { moveToRail(firstLoadedRail) },
                     onMoveUp = null,
                   ) { movie, cardModifier ->
                     PosterCard(
@@ -798,7 +947,7 @@ internal fun CatalogScreen(
                     firstCardFocusRequester = actorFocusRequester,
                     up = up,
                     down = null,
-                    onMoveDown = { moveToRail(0) },
+                    onMoveDown = { moveToRail(firstLoadedRail) },
                     onMoveUp = null,
                   ) { show, cardModifier ->
                     PosterCard(
@@ -814,16 +963,17 @@ internal fun CatalogScreen(
                 }
               }
             }
-            itemsIndexed(items = sections, key = { _, (category, _) -> category.id }) {
-              index,
-              (category, size) ->
+            itemsIndexed(items = sections, key = { _, slot -> slot.category.id }) { index, slot ->
+              val category = slot.category
               val railFocusRequester = railFocusRequesters[index]
               // Only the way back into the chrome is named. A rail further down the page has not
               // been composed yet, and a FocusRequester for a node that does not exist does
               // nothing at all, so moving between rails is left to focus search, which scrolls the
               // next one into view as it goes.
+              // The topmost rail with anything in it, rather than position zero: while the rails
+              // above it are still placeholders, this is the one a press of up has to leave from.
               val up =
-                if (index == 0) {
+                if (index == firstLoadedRail) {
                   // Whatever is immediately above, which is the last of the personalised rails
                   // when the viewer has any history behind them.
                   when {
@@ -842,57 +992,87 @@ internal fun CatalogScreen(
                   tab == CatalogTab.MOVIES -> "${category.label} movies"
                   else -> "${category.label} TV shows"
                 }
-              if (tab == CatalogTab.MOVIES) {
-                CatalogRail(
-                  heading = railHeading,
-                  items = movieSections[category].orEmpty(),
-                  key = { it.id },
-                  narrow = narrow,
-                  attribution = index == 0,
-                  firstCardFocusRequester = railFocusRequester,
-                  up = up,
-                  down = down,
-                  onMoveDown = if (index + 1 < sections.size) { { moveToRail(index + 1) } } else null,
-                  onMoveUp = if (index > 0) { { moveToRail(index - 1) } } else null,
-                ) { movie, cardModifier ->
-                  PosterCard(
-                    title = movie.title,
-                    subtitle = movie.year ?: "—",
-                    rating = movie.voteAverage,
-                    posterUrl = movie.posterUrl,
-                    actionLabel = "Play ${movie.title}",
-                    watched = historyStore.find(vidfastMovieUrl(movie.id))?.completed == true,
-                    onClick = { onPlay(movie.toPlaybackContext()) },
-                    onDwell = { onConsidering(movie.toPlaybackContext()) },
-                    modifier = cardModifier,
-                  )
-                }
-              } else {
-                CatalogRail(
-                  heading = railHeading,
-                  items = showSections[category].orEmpty(),
-                  key = { it.id },
-                  narrow = narrow,
-                  attribution = index == 0,
-                  firstCardFocusRequester = railFocusRequester,
-                  up = up,
-                  down = down,
-                  onMoveDown = if (index + 1 < sections.size) { { moveToRail(index + 1) } } else null,
-                  onMoveUp = if (index > 0) { { moveToRail(index - 1) } } else null,
-                ) { show, cardModifier ->
-                  PosterCard(
-                    title = show.name,
-                    subtitle = show.year ?: "—",
-                    rating = show.voteAverage,
-                    posterUrl = show.posterUrl,
-                    actionLabel = "Open ${show.name}",
-                    onClick = { onOpenShow(show) },
-                    modifier = cardModifier,
-                  )
+              // Posters fade in over the placeholder rather than replacing it between two frames.
+              // The swap happens in a slot that is already the right height, so the fade is the
+              // only thing that moves.
+              Crossfade(
+                targetState = slot.pending,
+                animationSpec = tween(durationMillis = RAIL_FADE_MS),
+                label = "rail ${category.id}",
+                // Rails that answer out of order, and the odd one that answers with nothing, slide
+                // into place instead of jumping.
+                modifier = Modifier.animateItem(),
+              ) { waiting ->
+                if (waiting) {
+                  RailSkeleton(narrow = narrow)
+                } else if (tab == CatalogTab.MOVIES) {
+                  CatalogRail(
+                    heading = railHeading,
+                    items = movieSections[category].orEmpty(),
+                    key = { it.id },
+                    narrow = narrow,
+                    attribution = index == 0,
+                    firstCardFocusRequester = railFocusRequester,
+                    up = up,
+                    down = down,
+                    onMoveDown = if (index + 1 < sections.size) { { moveToRail(index + 1) } } else null,
+                    onMoveUp = if (index > 0) { { moveToRail(index - 1) } } else null,
+                  ) { movie, cardModifier ->
+                    PosterCard(
+                      title = movie.title,
+                      subtitle = movie.year ?: "—",
+                      rating = movie.voteAverage,
+                      posterUrl = movie.posterUrl,
+                      actionLabel = "Play ${movie.title}",
+                      watched = historyStore.find(vidfastMovieUrl(movie.id))?.completed == true,
+                      onClick = { onPlay(movie.toPlaybackContext()) },
+                      onDwell = { onConsidering(movie.toPlaybackContext()) },
+                      modifier = cardModifier,
+                    )
+                  }
+                } else {
+                  CatalogRail(
+                    heading = railHeading,
+                    items = showSections[category].orEmpty(),
+                    key = { it.id },
+                    narrow = narrow,
+                    attribution = index == 0,
+                    firstCardFocusRequester = railFocusRequester,
+                    up = up,
+                    down = down,
+                    onMoveDown = if (index + 1 < sections.size) { { moveToRail(index + 1) } } else null,
+                    onMoveUp = if (index > 0) { { moveToRail(index - 1) } } else null,
+                  ) { show, cardModifier ->
+                    PosterCard(
+                      title = show.name,
+                      subtitle = show.year ?: "—",
+                      rating = show.voteAverage,
+                      posterUrl = show.posterUrl,
+                      actionLabel = "Open ${show.name}",
+                      onClick = { onOpenShow(show) },
+                      modifier = cardModifier,
+                    )
+                  }
                 }
               }
             }
           }
+        // Only when there is nothing to show. Typing would otherwise replace the results with a
+        // loading panel on every letter, which flickers and loses the viewer's place.
+        loading && itemCount == 0 -> StatusPanel("Loading…", edgeOnly.weight(1f), loading = true)
+        errorMessage != null && itemCount == 0 ->
+          StatusPanel(
+            message = errorMessage ?: "Content could not be loaded",
+            modifier = edgeOnly.weight(1f),
+            actionLabel = "Try again",
+            onAction = { load(tab, query.trim().takeIf(String::isNotBlank)) },
+          )
+        itemCount == 0 && !showContinueRow ->
+          StatusPanel(
+            if (tab == CatalogTab.MY_LIST) "Nothing saved yet. Open a title and choose Save to add it here."
+            else "Nothing found. Try another title.",
+            edgeOnly.weight(1f),
+          )
         else ->
           LazyVerticalGrid(
             state = gridState,

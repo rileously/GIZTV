@@ -197,6 +197,21 @@ internal class TmdbMovieRepository(private val apiKey: String) {
   suspend fun movies(category: CatalogCategory): List<TmdbMovie> =
     requestMovies(path = category.moviePath, extra = category.movieParams)
 
+  /**
+   * The copy of this rail the last run left on disk, or null when there is none.
+   *
+   * Answered without a socket, so it goes on screen while the request that will replace it is
+   * still connecting. On a slow network that is the difference between a rail of posters and a
+   * blank strip for the twelve seconds the connection is allowed to take.
+   */
+  suspend fun storedMovies(category: CatalogCategory): List<TmdbMovie>? =
+    tmdbStored(
+      apiKey = apiKey,
+      path = category.moviePath,
+      params = movieParams(extra = category.movieParams),
+      parse = ::parseTmdbMovies,
+    )
+
   suspend fun searchMovies(query: String): List<TmdbMovie> =
     requestMovies(path = "search/movie", query = query.trim())
 
@@ -227,15 +242,23 @@ internal class TmdbMovieRepository(private val apiKey: String) {
     tmdbRequest(
       apiKey = apiKey,
       path = path,
-      params =
-        buildMap {
-          put("page", "1")
-          put("include_adult", "false")
-          if (query != null) put("query", query)
-          putAll(extra)
-        },
+      params = movieParams(query, extra),
       parse = ::parseTmdbMovies,
     )
+
+  /**
+   * Built in one place because the cache is keyed on the whole address.
+   *
+   * A stored read that spelled its parameters differently from the live one would look up a URL
+   * nothing had ever written, and quietly never hit.
+   */
+  private fun movieParams(query: String? = null, extra: Map<String, String> = emptyMap()) =
+    buildMap {
+      put("page", "1")
+      put("include_adult", "false")
+      if (query != null) put("query", query)
+      putAll(extra)
+    }
 }
 
 /** A billed performer, kept only so the catalog can ask what else they are in. */
@@ -263,22 +286,43 @@ internal suspend fun <T> tmdbRequest(
 ): T =
   withContext(Dispatchers.IO) {
     if (apiKey.isBlank()) throw IOException("TMDB API key is not configured")
-    val uri =
-      Uri.Builder()
-        .scheme("https")
-        .authority("api.themoviedb.org")
-        .appendPath("3")
-        .apply { path.split('/').forEach(::appendPath) }
-        .appendQueryParameter("api_key", apiKey)
-        .appendQueryParameter("language", "en-US")
-        .apply { params.forEach { (name, value) -> appendQueryParameter(name, value) } }
-        .build()
-
-    runCatching { readTmdb(uri.toString(), parse) ?: throw IOException("TMDB returned no body") }
+    val url = tmdbUrl(apiKey, path, params)
+    runCatching { readTmdb(url, parse) ?: throw IOException("TMDB returned no body") }
       // Nothing on the wire, so the last copy of this listing is better than an empty rail. A
       // listing a few days old still opens the right title.
-      .getOrElse { error -> readTmdb(uri.toString(), parse, cacheOnly = true) ?: throw error }
+      .getOrElse { error -> readTmdb(url, parse, cacheOnly = true) ?: throw error }
   }
+
+/**
+ * Whatever the response cache already holds for this endpoint, without reaching the network.
+ *
+ * Unlike the fallback inside [tmdbRequest], this is asked *first* rather than after a failure: a
+ * stored listing shown at once and replaced a moment later reads as a fast app, where the same
+ * listing shown only once the network has given up reads as a broken one. Null when nothing is
+ * stored, which is the ordinary answer on a first run.
+ */
+internal suspend fun <T> tmdbStored(
+  apiKey: String,
+  path: String,
+  params: Map<String, String> = emptyMap(),
+  parse: (String) -> T,
+): T? =
+  withContext(Dispatchers.IO) {
+    if (apiKey.isBlank()) return@withContext null
+    runCatching { readTmdb(tmdbUrl(apiKey, path, params), parse, cacheOnly = true) }.getOrNull()
+  }
+
+private fun tmdbUrl(apiKey: String, path: String, params: Map<String, String>): String =
+  Uri.Builder()
+    .scheme("https")
+    .authority("api.themoviedb.org")
+    .appendPath("3")
+    .apply { path.split('/').forEach(::appendPath) }
+    .appendQueryParameter("api_key", apiKey)
+    .appendQueryParameter("language", "en-US")
+    .apply { params.forEach { (name, value) -> appendQueryParameter(name, value) } }
+    .build()
+    .toString()
 
 private fun <T> readTmdb(url: String, parse: (String) -> T, cacheOnly: Boolean = false): T? {
   val connection = (URL(url).openConnection() as HttpURLConnection)

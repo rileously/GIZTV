@@ -370,6 +370,62 @@ internal fun StatusPanel(
   }
 }
 
+/**
+ * A rail that has not answered yet, drawn at the size the real one will be.
+ *
+ * The point is that nothing moves when the posters land. Rails that appeared one by one as their
+ * requests came back shoved everything under them down the page, so a viewer part-way through the
+ * listings kept losing their place — which is what made a slow load feel like a fault rather than
+ * a wait. A placeholder of the right height turns the same wait into a rail filling in.
+ */
+@Composable
+internal fun RailSkeleton(narrow: Boolean, modifier: Modifier = Modifier) {
+  val shimmer = rememberInfiniteTransition(label = "rail shimmer")
+  val alpha by
+    shimmer.animateFloat(
+      initialValue = .04f,
+      targetValue = .12f,
+      animationSpec =
+        infiniteRepeatable(tween(durationMillis = 1_000, easing = LinearEasing), RepeatMode.Reverse),
+      label = "rail shimmer alpha",
+    )
+  val edge = if (narrow) 18.dp else 42.dp
+  val cardWidth = if (narrow) 132.dp else 158.dp
+  Column(modifier) {
+    // Stands in for the heading, at the height the heading and its spacing occupy.
+    Box(
+      modifier =
+        Modifier.padding(horizontal = edge).height(19.dp).width(if (narrow) 150.dp else 210.dp)
+          .clip(RoundedCornerShape(6.dp)).background(SoftWhite.copy(alpha = alpha))
+    )
+    Spacer(Modifier.height(8.dp))
+    Row(
+      modifier = Modifier.fillMaxWidth().padding(horizontal = edge),
+      horizontalArrangement = Arrangement.spacedBy(if (narrow) 12.dp else 18.dp),
+    ) {
+      // More than fills the widest screen; the row clips rather than scrolls, and a placeholder
+      // nobody can reach has no business being a lazy list.
+      repeat(if (narrow) 4 else 8) {
+        Column(
+          modifier =
+            Modifier.width(cardWidth).clip(RoundedCornerShape(16.dp)).background(NightSurface)
+        ) {
+          Box(
+            modifier =
+              Modifier.fillMaxWidth().aspectRatio(2f / 3f).background(SoftWhite.copy(alpha = alpha))
+          )
+          // The same two lines of title and one of detail every poster card carries below its art.
+          Column(Modifier.padding(horizontal = 11.dp, vertical = 10.dp)) {
+            Box(Modifier.fillMaxWidth().height(34.dp).clip(RoundedCornerShape(5.dp)).background(SoftWhite.copy(alpha = alpha)))
+            Spacer(Modifier.height(5.dp))
+            Box(Modifier.width(46.dp).height(13.dp).clip(RoundedCornerShape(5.dp)).background(SoftWhite.copy(alpha = alpha)))
+          }
+        }
+      }
+    }
+  }
+}
+
 /** A horizontal strip of selectable chips wired for D-pad entry and exit. */
 @Composable
 internal fun ChipRow(

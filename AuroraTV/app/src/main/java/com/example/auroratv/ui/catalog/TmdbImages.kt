@@ -57,8 +57,16 @@ internal fun rememberTmdbImage(url: String?): ImageBitmap? {
 }
 
 private object TmdbImageCache {
+  /**
+   * A share of the heap rather than a fixed size.
+   *
+   * The old ten megabytes was written as though posters were thumbnails: a w500 poster decodes to
+   * about a megabyte and a half, so the cache held seven of them and a rail of twenty evicted its
+   * own first card before the last one had been reached. Scrolling back then decoded everything
+   * again, which is most of what the stutter was.
+   */
   private val cache =
-    object : LruCache<String, ImageBitmap>(10 * 1024) {
+    object : LruCache<String, ImageBitmap>(cacheKilobytes()) {
       override fun sizeOf(key: String, value: ImageBitmap): Int =
         (value.width * value.height * 4 / 1024).coerceAtLeast(1)
     }
@@ -67,5 +75,11 @@ private object TmdbImageCache {
 
   @Synchronized fun put(url: String, bitmap: ImageBitmap) {
     cache.put(url, bitmap)
+  }
+
+  /** An eighth of the heap, floored so a small device still holds a screenful of artwork. */
+  private fun cacheKilobytes(): Int {
+    val heapKilobytes = (Runtime.getRuntime().maxMemory() / 1024).coerceAtMost(Int.MAX_VALUE.toLong())
+    return (heapKilobytes / 8).toInt().coerceIn(24 * 1024, 96 * 1024)
   }
 }

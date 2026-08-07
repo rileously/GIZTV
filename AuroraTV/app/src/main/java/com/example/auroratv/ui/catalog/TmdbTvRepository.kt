@@ -54,9 +54,25 @@ internal class TmdbTvRepository(private val apiKey: String) {
     tmdbRequest(
       apiKey = apiKey,
       path = category.showPath,
-      params = buildMap { put("page", "1"); putAll(category.showParams) },
+      params = showParams(category),
       parse = ::parseTmdbShows,
     )
+
+  /** The copy of this rail the last run left on disk; see [TmdbMovieRepository.storedMovies]. */
+  suspend fun storedShows(category: CatalogCategory): List<TmdbShow>? =
+    tmdbStored(
+      apiKey = apiKey,
+      path = category.showPath,
+      params = showParams(category),
+      parse = ::parseTmdbShows,
+    )
+
+  /** One spelling of the query, so the stored read looks up the address the live one wrote. */
+  private fun showParams(category: CatalogCategory) =
+    buildMap {
+      put("page", "1")
+      putAll(category.showParams)
+    }
 
   /** What else the billed lead of a show has been in. */
   suspend fun showsWithActor(personId: Int): List<TmdbShow> =
