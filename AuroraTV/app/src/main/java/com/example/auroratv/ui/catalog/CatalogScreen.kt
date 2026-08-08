@@ -744,7 +744,7 @@ internal fun CatalogScreen(
     val chromeDown =
       when {
         showSearchRow -> searchButtonFocusRequester
-        itemCount > 0 || showContinueRow -> firstBodyFocusRequester
+        showRails || showContinueRow || itemCount > 0 -> firstBodyFocusRequester
         else -> FocusRequester.Default
       }
     // The inset belongs to the things that do not scroll. Putting it on this column boxed every
@@ -846,7 +846,7 @@ internal fun CatalogScreen(
                 searchButtonFocusRequester = searchButtonFocusRequester,
                 tabFocusRequester = firstTabFocusRequester,
                 bodyFocusRequester =
-                  firstBodyFocusRequester.takeIf { itemCount > 0 || showContinueRow },
+                  firstBodyFocusRequester.takeIf { showRails || showContinueRow || itemCount > 0 },
               )
             }
           },
