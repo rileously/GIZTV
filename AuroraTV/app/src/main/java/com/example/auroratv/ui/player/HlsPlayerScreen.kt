@@ -286,12 +286,12 @@ private const val PHONE_REBUFFER_MS = 5_000
  * more megabytes to fill before start and after every stall. Keep a useful safety net without
  * asking for 30–75 seconds of a single high-bitrate file.
  */
-private const val PROGRESSIVE_MIN_BUFFER_MS = 15_000
-private const val PROGRESSIVE_MAX_BUFFER_MS = 45_000
-private const val PROGRESSIVE_TV_START_BUFFER_MS = 2_500
-private const val PROGRESSIVE_PHONE_START_BUFFER_MS = 1_500
-private const val PROGRESSIVE_TV_REBUFFER_MS = 6_000
-private const val PROGRESSIVE_PHONE_REBUFFER_MS = 3_000
+private const val PROGRESSIVE_MIN_BUFFER_MS = 20_000
+private const val PROGRESSIVE_MAX_BUFFER_MS = 60_000
+private const val PROGRESSIVE_TV_START_BUFFER_MS = 4_000
+private const val PROGRESSIVE_PHONE_START_BUFFER_MS = 3_000
+private const val PROGRESSIVE_TV_REBUFFER_MS = 8_000
+private const val PROGRESSIVE_PHONE_REBUFFER_MS = 5_000
 /** Default cap when a progressive CDN filename encodes an oversized resolution (e.g. 2160p.mp4). */
 internal const val PROGRESSIVE_DEFAULT_MAX_HEIGHT = 1080
 private const val PHONE_AUTO_MAX_VIDEO_WIDTH = 1280
@@ -310,12 +310,9 @@ private const val PROLONGED_STALL_TIMEOUT_MS = 45_000L
 /**
  * How long a stream that has never produced a single frame is given.
  *
- * One that has been playing and then stalls has already proved it exists, so it is worth waiting
- * out. One that has shown nothing at all is far more likely to be dead than slow, and every second
- * spent proving it is a second the viewer spends watching a spinner before the next provider is
- * even asked.
+ * VidFast takes ~15s to resolve its embed before emitting a URL; giving 25s startup window prevents premature timeouts.
  */
-private const val STARTUP_STALL_TIMEOUT_MS = 20_000L
+private const val STARTUP_STALL_TIMEOUT_MS = 25_000L
 private const val STABLE_PLAYBACK_RESET_MS = 60_000L
 private const val LOCAL_STALL_RECOVERY_ATTEMPTS = 1
 private const val PLAYER_SWIPE_SENSITIVITY = 1.25f
@@ -524,7 +521,7 @@ private fun urlLooksLikeProgressiveMedia(url: String): Boolean {
 }
 
 private val PROGRESSIVE_QUALITY_FILE =
-  Regex("""/(\d{3,4}p|4k)\.(mp4|m4v|mkv|webm)$""", RegexOption.IGNORE_CASE)
+  Regex("""[/_.-](\d{3,4}p|4k)\.(mp4|m4v|mkv|webm)""", RegexOption.IGNORE_CASE)
 
 /**
  * Prefers a mid-tier progressive file when the CDN encodes resolution in the filename.
@@ -4542,15 +4539,17 @@ internal fun createHlsMediaSource(
     }
   val userAgent = safeHeaders.entries.firstOrNull { it.key.equals("user-agent", ignoreCase = true) }?.value ?: "GIZTV/1.0"
   val requestProperties = safeHeaders.filterKeys { !it.equals("user-agent", ignoreCase = true) }
+  val isProgressive = isProgressiveStreamRequest(request)
+  val connectTimeout = if (isProgressive) 12_000 else RELIABLE_HTTP_CONNECT_TIMEOUT_MS
+  val readTimeout = if (isProgressive) 15_000 else RELIABLE_HTTP_READ_TIMEOUT_MS
+
   val httpFactory =
     DefaultHttpDataSource.Factory()
       .setUserAgent(userAgent)
       .setTransferListener(bandwidthMeter)
       .setAllowCrossProtocolRedirects(true)
-      .setConnectTimeoutMs(RELIABLE_HTTP_CONNECT_TIMEOUT_MS)
-      // A segment arriving slowly is still progress. Let it finish instead of turning a weak but
-      // usable connection into a timeout/retry loop.
-      .setReadTimeoutMs(RELIABLE_HTTP_READ_TIMEOUT_MS)
+      .setConnectTimeoutMs(connectTimeout)
+      .setReadTimeoutMs(readTimeout)
       .setDefaultRequestProperties(requestProperties)
   val dataSourceFactory = DefaultDataSource.Factory(context, httpFactory)
   val mediaItem = createMediaItem(request)
