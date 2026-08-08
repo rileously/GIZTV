@@ -1364,7 +1364,20 @@ internal fun HlsPlayerScreen(
 
         override fun onDeviceInfoChanged(deviceInfo: DeviceInfo) {
           isCasting = deviceInfo.playbackType == DeviceInfo.PLAYBACK_TYPE_REMOTE
-          if (isCasting) status = "Casting to Chromecast · subtitles available in CC"
+          if (isCasting) {
+            status =
+              when {
+                request.drm != null ->
+                  "Casting · DRM titles often stay black on Chromecast"
+                !isCastContainerSupported(
+                  resolvePlaybackMimeType(request.url, request.mimeType),
+                ) ->
+                  "Casting · this file type may not play on Chromecast"
+                  castRequiresPhoneProxy(request.headers) ->
+                  "Casting to Chromecast · keep the phone on this Wi-Fi"
+                else -> "Casting to Chromecast · subtitles available in CC"
+              }
+          }
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -1475,6 +1488,7 @@ internal fun HlsPlayerScreen(
       lifecycleOwner.lifecycle.removeObserver(observer)
       player.removeListener(listener)
       player.release()
+      CastMediaProxy.clearSessions()
     }
   }
 
@@ -4352,6 +4366,7 @@ internal fun createCastAwarePlayer(
   if (isTelevision) return localPlayer
   var remotePlayer: RemoteCastPlayer? = null
   return try {
+    CastMediaProxy.init(context.applicationContext)
     remotePlayer =
       RemoteCastPlayer.Builder(context.applicationContext)
         .setMediaItemConverter(CastSubtitleMediaItemConverter())
@@ -4400,12 +4415,13 @@ internal fun createHlsPlayer(
   val progressiveMaxHeight =
     if (compatibilityMode) COMPATIBILITY_MAX_VIDEO_HEIGHT else PROGRESSIVE_DEFAULT_MAX_HEIGHT
   val cappedUrl = preferProgressivePlaybackUrl(request.url, progressiveMaxHeight)
-  // Clear a stale HLS mime on progressive filenames so Media3 sniffs the file instead of parsing
-  // an MP4 as a playlist (common when a cached stream omitted mimeType and hit the default).
+  // Resolve an explicit mime for both local Media3 and Chromecast. Progressive filenames used to
+  // clear mimeType for sniffing, which left Cast with a null content type (session connects, no
+  // video). Stale HLS mimes on .mp4 paths are corrected here too.
   val playbackRequest =
     request.copy(
       url = cappedUrl,
-      mimeType = if (progressive) null else request.mimeType,
+      mimeType = resolvePlaybackMimeType(cappedUrl, request.mimeType),
     )
   if (playbackRequest.url != request.url) {
     android.util.Log.i(
@@ -4618,12 +4634,41 @@ internal fun createMediaItem(request: HlsStreamRequest): MediaItem {
         }
         .build()
     }
+  val mimeType = resolvePlaybackMimeType(request.url, request.mimeType)
+  val castExtras =
+    castHeadersBundle(request.headers).apply {
+      putBoolean(CAST_EXTRA_IS_LIVE, request.isLive)
+      putBoolean(CAST_EXTRA_HAS_DRM, request.drm != null)
+    }
+  val metadata =
+    androidx.media3.common.MediaMetadata.Builder()
+      .setTitle(request.title?.takeIf(String::isNotBlank) ?: "GIZTV")
+      .apply { request.subtitle?.takeIf(String::isNotBlank)?.let(::setSubtitle) }
+      .setMediaType(
+        when {
+          request.context?.kindLabel.equals("TV", ignoreCase = true) ||
+            request.context?.kindLabel.equals("Episode", ignoreCase = true) ->
+            androidx.media3.common.MediaMetadata.MEDIA_TYPE_TV_SHOW
+          else -> androidx.media3.common.MediaMetadata.MEDIA_TYPE_MOVIE
+        },
+      )
+      .build()
 
   return MediaItem.Builder()
     .setUri(request.url)
+    .setMimeType(mimeType)
+    .setMediaMetadata(metadata)
+    .setRequestMetadata(
+      MediaItem.RequestMetadata.Builder().setExtras(castExtras).build(),
+    )
     .apply {
-      request.mimeType?.let(::setMimeType)
       request.drm?.toMedia3Configuration()?.let(::setDrmConfiguration)
+      if (request.isLive) {
+        // Non-default live config makes DefaultMediaItemConverter announce STREAM_TYPE_LIVE.
+        setLiveConfiguration(
+          MediaItem.LiveConfiguration.Builder().setTargetOffsetMs(3_000L).build(),
+        )
+      }
     }
     .setSubtitleConfigurations(subtitles)
     .build()
