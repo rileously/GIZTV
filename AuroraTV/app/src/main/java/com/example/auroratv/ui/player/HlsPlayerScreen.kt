@@ -121,6 +121,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.DeviceInfo
 import androidx.media3.common.Format
@@ -4165,6 +4166,8 @@ internal fun audioTrackOptions(tracks: Tracks): List<AudioTrackOption> {
 }
 
 private fun audioTrackLabel(format: Format, index: Int): String {
+  val isDescriptive = (format.roleFlags and C.ROLE_FLAG_DESCRIBES_VIDEO) != 0
+  val isCommentary = (format.roleFlags and C.ROLE_FLAG_COMMENTARY) != 0
   val languageName =
     format.language
       ?.takeIf { it.isNotBlank() && it != "und" }
@@ -4177,7 +4180,12 @@ private fun audioTrackLabel(format: Format, index: Int): String {
       }
   val name = format.label?.takeIf(String::isNotBlank) ?: languageName ?: "Audio ${index + 1}"
   val channelSuffix = if (format.channelCount >= 6 && !name.contains("5.1")) " · 5.1" else ""
-  return name + channelSuffix
+  val roleSuffix = when {
+    isDescriptive -> " (Audio Description)"
+    isCommentary -> " (Commentary)"
+    else -> ""
+  }
+  return name + channelSuffix + roleSuffix
 }
 
 @androidx.annotation.OptIn(UnstableApi::class)
@@ -4261,9 +4269,38 @@ private fun preferredEnglishAudioOverride(tracks: Tracks): TrackSelectionOverrid
           .filter(group::isTrackSupported)
           .map { index -> Triple(group, index, group.getTrackFormat(index)) }
       }
+      .sortedWith(
+        compareBy<Triple<Tracks.Group, Int, Format>>(
+          // 1. Avoid Audio Description / Commentary tracks (which cause weird audio)
+          { (_, _, format) ->
+            val roleFlags = format.roleFlags
+            if ((roleFlags and (C.ROLE_FLAG_DESCRIBES_VIDEO or C.ROLE_FLAG_COMMENTARY)) != 0) 1 else 0
+          },
+          // 2. Prefer English language or English label
+          { (_, _, format) ->
+            val lang = format.language?.lowercase()
+            val label = format.label?.lowercase().orEmpty()
+            if (lang in setOf("en", "eng") || label.contains("english")) 0 else 1
+          },
+          // 3. Prefer MAIN or DEFAULT role/selection flags
+          { (_, _, format) ->
+            if ((format.roleFlags and C.ROLE_FLAG_MAIN) != 0 || (format.selectionFlags and C.SELECTION_FLAG_DEFAULT) != 0) 0 else 1
+          },
+          // 4. Prefer stereo (2 channels) over multi-channel or unusual channel counts
+          { (_, _, format) ->
+            when (format.channelCount) {
+              2 -> 0
+              6 -> 1
+              1 -> 2
+              else -> 3
+            }
+          }
+        )
+      )
       .firstOrNull { (_, _, format) ->
-        format.language?.lowercase() in setOf("en", "eng") ||
-          format.label?.contains("english", ignoreCase = true) == true
+        val lang = format.language?.lowercase()
+        val label = format.label?.lowercase().orEmpty()
+        lang in setOf("en", "eng") || label.contains("english") || lang.isNullOrBlank() || lang == "und"
       }
   return candidate?.let { (group, index, _) -> TrackSelectionOverride(group.mediaTrackGroup, index) }
 }
@@ -4450,10 +4487,17 @@ internal fun createHlsPlayer(
         if (compatibilityMode) setMediaCodecSelector(MediaCodecSelector.PREFER_SOFTWARE)
       }
 
+  val audioAttributes =
+    AudioAttributes.Builder()
+      .setUsage(C.USAGE_MEDIA)
+      .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+      .build()
+
   return ExoPlayer.Builder(context, renderersFactory)
     .setLoadControl(loadControl)
     .setBandwidthMeter(bandwidthMeter)
     .setTrackSelector(trackSelector)
+    .setAudioAttributes(audioAttributes, true)
     .build()
     .apply {
       setHandleAudioBecomingNoisy(true)
@@ -4461,6 +4505,7 @@ internal fun createHlsPlayer(
         trackSelectionParameters
           .buildUpon()
           .setPreferredAudioLanguages("en", "eng")
+          .setPreferredAudioRoleFlags(C.ROLE_FLAG_MAIN)
           .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
           .setPreferredTextLanguages("en", "eng")
           .setSelectUndeterminedTextLanguage(true)
