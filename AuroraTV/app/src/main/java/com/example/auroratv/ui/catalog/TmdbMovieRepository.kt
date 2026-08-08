@@ -294,6 +294,7 @@ internal data class TmdbPersonDetails(
   val profilePath: String?,
   val knownForDepartment: String?,
   val popularity: Double,
+  val gender: Int = 0,
 ) {
   val photoUrl: String?
     get() = profilePath?.let { "https://image.tmdb.org/t/p/w500$it" }
@@ -310,6 +311,7 @@ internal fun parseTmdbPersonDetails(json: String): TmdbPersonDetails {
     profilePath = root.optString("profile_path").trim().takeIf { it.isNotBlank() && it != "null" },
     knownForDepartment = root.optString("known_for_department").trim().takeIf(String::isNotBlank),
     popularity = root.optDouble("popularity", 0.0),
+    gender = root.optInt("gender", 0),
   )
 }
 

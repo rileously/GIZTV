@@ -118,7 +118,8 @@ internal fun PersonDetailScreen(
   val roleLabel = when {
     isDirector -> "Director"
     details?.knownForDepartment?.equals("Directing", ignoreCase = true) == true -> "Director"
-    else -> "Actor / Actress"
+    details?.gender == 1 -> "Actress"
+    else -> "Actor"
   }
 
   BoxWithConstraints(

@@ -315,26 +315,40 @@ internal fun MovieDetailScreen(
           )
 
           director?.let { d ->
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(10.dp))
             Row(
               verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(10.dp),
               modifier = Modifier
-                .clip(RoundedCornerShape(6.dp))
+                .clip(RoundedCornerShape(12.dp))
+                .background(NightSurface)
+                .border(1.dp, SoftWhite.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
                 .clickable { if (d.id > 0) onOpenPerson(d.id, d.name, true) }
-                .padding(vertical = 2.dp, horizontal = 4.dp)
+                .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
-              Text(
-                text = "Director: ",
-                color = MutedBlue,
-                fontWeight = FontWeight.Medium,
-                fontSize = 13.sp
+              TmdbArtwork(
+                url = d.photoUrl,
+                contentDescription = d.name,
+                modifier = Modifier
+                  .size(38.dp)
+                  .clip(CircleShape),
+                compact = true,
+                fallbackLabel = d.name.take(1)
               )
-              Text(
-                text = d.name,
-                color = AuroraMint,
-                fontWeight = FontWeight.Bold,
-                fontSize = 13.sp
-              )
+              Column {
+                Text(
+                  text = "Director",
+                  color = MutedBlue,
+                  fontSize = 11.sp,
+                  fontWeight = FontWeight.Medium
+                )
+                Text(
+                  text = d.name,
+                  color = SoftWhite,
+                  fontWeight = FontWeight.Bold,
+                  fontSize = 13.sp
+                )
+              }
             }
           }
         }
