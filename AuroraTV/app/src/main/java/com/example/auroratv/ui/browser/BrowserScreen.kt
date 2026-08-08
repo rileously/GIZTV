@@ -78,6 +78,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.auroratv.data.Bookmark
+import com.example.auroratv.data.BookmarkStore
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.net.toUri
 import androidx.media3.common.MimeTypes
@@ -282,6 +284,12 @@ internal fun BrowserScreen(
   var preparationAttempt by remember { mutableIntStateOf(0) }
   val resolutionStore = remember(context) { StreamResolutionStore(context) }
   val streamCacheStore = remember(context) { StreamCacheStore(context) }
+  val bookmarkStore = remember(context) { BookmarkStore(context) }
+  // Read once and kept in hand, so the toolbar star and the panel agree without touching disk on
+  // every recomposition.
+  var bookmarks by remember { mutableStateOf(bookmarkStore.all()) }
+  var showBookmarks by remember { mutableStateOf(false) }
+  val currentSaved = remember(bookmarks, currentUrl) { bookmarks.any { it.url == currentUrl.trim() } }
   var automaticRetries by remember(playback) { mutableIntStateOf(0) }
   var attemptStartedAtMs by remember(playback) { mutableLongStateOf(SystemClock.elapsedRealtime()) }
   // The viewer can drop out of the branded wait and drive the page by hand.
@@ -311,6 +319,9 @@ internal fun BrowserScreen(
   BackHandler {
     val browser = webView
     when {
+      // The panel is the topmost thing on screen, so Back dismisses it before it means anything to
+      // the page underneath.
+      showBookmarks -> showBookmarks = false
       playback != null && !pageRevealed -> onExit()
       browser?.canGoBack() == true -> browser.goBack()
       else -> onExit()
@@ -325,10 +336,20 @@ internal fun BrowserScreen(
         url = currentUrl,
         status = status,
         canGoBack = canGoBack,
+        saved = currentSaved,
+        savedCount = bookmarks.size,
         onExit = onExit,
         onBack = { webView?.goBack() },
         onReload = { webView?.reload() },
         onHome = { webView?.loadUrl(initialUrl) },
+        onToggleSaved = {
+          // Only a real page is worth a row; the placeholder the WebView starts on is not.
+          if (isWebUrl(currentUrl)) {
+            bookmarkStore.toggle(Bookmark(url = currentUrl.trim(), title = title))
+            bookmarks = bookmarkStore.all()
+          }
+        },
+        onOpenBookmarks = { showBookmarks = true },
       )
       if (progress in 1..99) {
         Box(Modifier.fillMaxWidth().height(3.dp).background(NightSurface)) {
@@ -471,6 +492,23 @@ internal fun BrowserScreen(
         },
         onShowPage = { pageRevealed = true },
         onCancel = onExit,
+      )
+    }
+
+    if (showBookmarks) {
+      BookmarksPanel(
+        bookmarks = bookmarks,
+        onOpen = { bookmark ->
+          showBookmarks = false
+          webView?.loadUrl(bookmark.url)
+        },
+        onRemove = { bookmark ->
+          bookmarkStore.remove(bookmark.url)
+          bookmarks = bookmarkStore.all()
+          // Nothing left to choose from, so the panel has nothing to say.
+          if (bookmarks.isEmpty()) showBookmarks = false
+        },
+        onDismiss = { showBookmarks = false },
       )
     }
   }
@@ -1141,10 +1179,14 @@ private fun BrowserToolbar(
   url: String,
   status: String,
   canGoBack: Boolean,
+  saved: Boolean,
+  savedCount: Int,
   onExit: () -> Unit,
   onBack: () -> Unit,
   onReload: () -> Unit,
   onHome: () -> Unit,
+  onToggleSaved: () -> Unit,
+  onOpenBookmarks: () -> Unit,
 ) {
   BoxWithConstraints(Modifier.fillMaxWidth().background(NightSurface)) {
     if (maxWidth < 600.dp) {
@@ -1154,6 +1196,8 @@ private fun BrowserToolbar(
           BrowserToolbarButton("Back", onBack, enabled = canGoBack)
           BrowserToolbarButton("Home", onHome)
           BrowserToolbarButton("Reload", onReload)
+          BrowserToolbarButton(if (saved) "★" else "☆", onToggleSaved)
+          BrowserToolbarButton("Saved", onOpenBookmarks, enabled = savedCount > 0)
         }
         Spacer(Modifier.height(5.dp))
         Text(title, color = SoftWhite, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1170,6 +1214,8 @@ private fun BrowserToolbar(
     BrowserToolbarButton("‹ Back", onBack, enabled = canGoBack)
     BrowserToolbarButton("⌂ Home", onHome)
     BrowserToolbarButton("↻ Reload", onReload)
+    BrowserToolbarButton(if (saved) "★ Saved" else "☆ Save", onToggleSaved)
+    BrowserToolbarButton("Saved ($savedCount)", onOpenBookmarks, enabled = savedCount > 0)
     Spacer(Modifier.width(8.dp))
     Column(Modifier.weight(1f)) {
       Text(title, color = SoftWhite, fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1199,6 +1245,99 @@ private fun BrowserToolbarButton(label: String, onClick: () -> Unit, enabled: Bo
     contentAlignment = Alignment.Center,
   ) {
     Text(label, color = foreground, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+  }
+}
+
+/**
+ * The viewer's saved pages, over the page they were on.
+ *
+ * Opened from the toolbar and never shown empty: the button that opens it is disabled until there
+ * is something to list, so there is no empty state to design around.
+ */
+@Composable
+private fun BookmarksPanel(
+  bookmarks: List<Bookmark>,
+  onOpen: (Bookmark) -> Unit,
+  onRemove: (Bookmark) -> Unit,
+  onDismiss: () -> Unit,
+) {
+  val firstItem = remember { FocusRequester() }
+  // The remote has nowhere else to be while this is up, so the top row takes focus itself.
+  LaunchedEffect(Unit) { runCatching { firstItem.requestFocus() } }
+
+  Box(
+    Modifier.fillMaxSize().background(DeepSpace.copy(alpha = .92f)).clickable(onClick = onDismiss),
+    contentAlignment = Alignment.Center,
+  ) {
+    Column(
+      Modifier.widthIn(max = 720.dp).fillMaxWidth().padding(horizontal = 28.dp)
+        .clip(RoundedCornerShape(20.dp)).background(NightSurface).padding(24.dp).focusGroup()
+    ) {
+      Text("SAVED PAGES", color = AuroraMint, fontWeight = FontWeight.Black, fontSize = 11.sp, letterSpacing = 2.sp)
+      Spacer(Modifier.height(4.dp))
+      Text(
+        "Pages you saved with ☆ in the toolbar.",
+        color = MutedBlue,
+        fontSize = 12.sp,
+      )
+      Spacer(Modifier.height(16.dp))
+      Column(
+        Modifier.verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        bookmarks.forEachIndexed { index, bookmark ->
+          BookmarkRow(
+            bookmark = bookmark,
+            onOpen = { onOpen(bookmark) },
+            onRemove = { onRemove(bookmark) },
+            modifier = if (index == 0) Modifier.focusRequester(firstItem) else Modifier,
+          )
+        }
+      }
+      Spacer(Modifier.height(16.dp))
+      BrowserToolbarButton("Close", onDismiss)
+    }
+  }
+}
+
+@Composable
+private fun BookmarkRow(
+  bookmark: Bookmark,
+  onOpen: () -> Unit,
+  onRemove: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  var focused by remember { mutableStateOf(false) }
+  val background by animateColorAsState(
+    if (focused) SoftWhite.copy(alpha = .12f) else DeepSpace.copy(alpha = .6f),
+    label = "bookmark row background",
+  )
+  Row(
+    modifier =
+      Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(background)
+        .border(1.dp, if (focused) AuroraBlue else Color.Transparent, RoundedCornerShape(12.dp))
+        .padding(horizontal = 14.dp, vertical = 10.dp),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(10.dp),
+  ) {
+    Column(
+      modifier
+        .weight(1f)
+        .onFocusChanged { focused = it.isFocused }
+        .clickable(onClick = onOpen)
+        .semantics { role = Role.Button; contentDescription = "Open ${bookmark.title}" }
+    ) {
+      Text(
+        bookmark.title,
+        color = SoftWhite,
+        fontWeight = FontWeight.Bold,
+        fontSize = 14.sp,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+      )
+      Text(bookmark.host, color = MutedBlue, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+    BrowserToolbarButton("Remove", onRemove)
   }
 }
 
