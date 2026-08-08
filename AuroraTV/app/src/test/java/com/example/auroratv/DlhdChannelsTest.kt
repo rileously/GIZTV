@@ -1,10 +1,12 @@
 package com.example.auroratv
 
+import com.example.auroratv.ui.dlhd.isDlhdAdultChannel
 import com.example.auroratv.ui.dlhd.parseDlhd24x7Channels
 import com.example.auroratv.ui.iptv.DLHD_IPTV_GROUP
 import com.example.auroratv.ui.iptv.IPTV_CATEGORY_DADDYLIVE
 import com.example.auroratv.ui.iptv.iptvCategoryFor
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -40,6 +42,47 @@ class DlhdChannelsTest {
     assertEquals("ABC USA", channels.single().name)
   }
 
+  @Test
+  fun parser_dropsAdultAnd18PlusChannels() {
+    val channels = parseDlhd24x7Channels(ADULT_MIXED_HTML)
+
+    assertEquals(
+      listOf("Adult Swim", "FOX USA", "La Sexta Spain"),
+      channels.map { it.name },
+    )
+  }
+
+  @Test
+  fun adultFilter_flagsAdultTitlesAndKeepsMainstreamOnes() {
+    val removed =
+      listOf(
+        "18+ (Player-01)",
+        "18+ (Player-20)",
+        "XXX",
+        "Adult Channel",
+        "Porn Hub Live",
+        "Brazzers TV",
+        "Playboy TV",
+        "Hustler TV",
+        "Red Light",
+        "Eros",
+        "Spice",
+        "X-Rated Night",
+      )
+    val kept =
+      listOf(
+        "FOX USA",
+        "Fox News",
+        "Adult Swim",
+        "La Sexta Spain",
+        "ABC USA",
+        "Animal Planet",
+      )
+
+    removed.forEach { name -> assertTrue(name, isDlhdAdultChannel(name)) }
+    kept.forEach { name -> assertFalse(name, isDlhdAdultChannel(name)) }
+  }
+
   private companion object {
     val SAMPLE_HTML =
       """
@@ -67,6 +110,29 @@ class DlhdChannelsTest {
       </a>
       <a class="card" href="/watch.php?id=51" data-title="abc usa again" data-first="A">
         <div class="card__title">ABC USA Duplicate</div>
+      </a>
+      """
+        .trimIndent()
+
+    val ADULT_MIXED_HTML =
+      """
+      <a class="card" href="/watch.php?id=51" data-title="abc usa" data-first="A">
+        <div class="card__title">FOX USA</div>
+      </a>
+      <a class="card" href="/watch.php?id=9001" data-title="18+ player-01" data-first="1">
+        <div class="card__title">18+ (Player-01)</div>
+      </a>
+      <a class="card" href="/watch.php?id=9002" data-title="playboy tv" data-first="P">
+        <div class="card__title">Playboy TV</div>
+      </a>
+      <a class="card" href="/watch.php?id=9003" data-title="adult swim" data-first="A">
+        <div class="card__title">Adult Swim</div>
+      </a>
+      <a class="card" href="/watch.php?id=9004" data-title="xxx" data-first="X">
+        <div class="card__title">XXX</div>
+      </a>
+      <a class="card" href="/watch.php?id=9005" data-title="la sexta spain" data-first="L">
+        <div class="card__title">La Sexta Spain</div>
       </a>
       """
         .trimIndent()

@@ -64,10 +64,22 @@ private val CHANNEL_CARD =
   )
 
 /**
+ * Adult / 18+ titles that show up in the DaddyLive 24/7 grid (and a few brand names that
+ * sometimes appear there). Matched as whole words so ordinary channels like Fox stay put.
+ *
+ * "Adult Swim" is allowlisted below — that is Cartoon Network, not porn.
+ */
+private val DLHD_ADULT_NAME =
+  Pattern.compile(
+    """(?i)(?:\b18\s*\+|\bxxx\b|\bx-rated\b|\bx\s+rated\b|\badult\b|\bporn(?:o|ographic|hub)?\b|\bhentai\b|\bnsfw\b|\bbrazzers\b|\bplayboy\b|\bhustler\b|\bblue\s+hustler\b|\bred\s+lights?\b|\beros\b|\bspice\b|\bpenthouse\b|\bvivid\b|\bbangbros\b|\breality\s+kings\b|\bxhamster\b|\bmilf\b|\bhardcore\b|\berotic\b)""",
+  )
+
+/**
  * Reads the 24/7 channel grid HTML into IPTV rows that open via the watch page.
  *
  * The page is a card grid rather than an M3U, so this is the only step that turns a name and id
- * into something the IPTV screen can list.
+ * into something the IPTV screen can list. Adult / 18+ cards are dropped here so they never
+ * reach the IPTV playlist.
  */
 internal fun parseDlhd24x7Channels(html: String): List<IptvChannel> {
   val channels = ArrayList<IptvChannel>()
@@ -81,6 +93,7 @@ internal fun parseDlhd24x7Channels(html: String): List<IptvChannel> {
         .replace(Regex("\\s+"), " ")
         .trim()
     if (path.isBlank() || channelId.isBlank() || name.isBlank()) continue
+    if (isDlhdAdultChannel(name)) continue
     if (!seen.add(channelId)) continue
     channels.add(
       IptvChannel(
@@ -98,6 +111,16 @@ internal fun parseDlhd24x7Channels(html: String): List<IptvChannel> {
     )
   }
   return channels.sortedBy { it.name.lowercase(Locale.US) }
+}
+
+/** True when a DaddyLive 24/7 title is adult / 18+ content that should stay out of IPTV. */
+internal fun isDlhdAdultChannel(name: String): Boolean {
+  val normalized = name.replace(Regex("\\s+"), " ").trim()
+  if (normalized.isEmpty()) return false
+  // Mainstream TV-MA animation block, not an adult channel brand.
+  if (normalized.equals("Adult Swim", ignoreCase = true)) return false
+  if (normalized.startsWith("Adult Swim ", ignoreCase = true)) return false
+  return DLHD_ADULT_NAME.matcher(normalized).find()
 }
 
 private fun stripHtmlTags(value: String): String = value.replace(Regex("<[^>]+>"), " ")
