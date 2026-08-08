@@ -20,6 +20,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 /**
  * One soccer fixture from DaddyLive's schedule, with the channel pages that carry it.
@@ -77,10 +78,10 @@ internal const val DLHD_CATEGORY_ALL = "All"
 internal const val DLHD_CATEGORY_SOCCER = "All Soccer"
 internal const val DLHD_CATEGORY_CLUB_FRIENDLY = "Club Friendly"
 
-private const val DLHD_SOCCER_SCHEDULE_URL =
-  "$DLHD_ORIGIN/index.php?cat=All+Soccer+Events+%E2%9A%BD"
-private const val DLHD_CLUB_FRIENDLY_SCHEDULE_URL =
-  "$DLHD_ORIGIN/index.php?cat=Club+Friendly+%E2%9A%BD"
+/** Homepage still embeds today's schedule; filtered `?cat=` pages are often empty shells. */
+private const val DLHD_HOME_SCHEDULE_URL = "$DLHD_ORIGIN/"
+/** Secondary football board DaddyLive loads through JS (`schedule-api.php`). */
+private const val DLHD_EXTRA_SCHEDULE_API = "$DLHD_ORIGIN/schedule-api.php?source=extra"
 
 /** How long a fetched schedule stays good before the page asks again. */
 private const val FEED_TTL_MS = 60_000L
@@ -100,21 +101,42 @@ internal object DlhdSoccerRepository {
 
 private suspend fun requestEvents(): List<DlhdSoccerEvent> =
   withContext(Dispatchers.IO) {
-    // Both category pages are asked together: Club Friendly is its own listing, and All Soccer does
-    // not always carry every friendly, so one request would leave half the night off the page.
+    // Category URLs like `?cat=All+Soccer+Events` no longer ship fixtures inline — the browser fills
+    // Extra boards over JSON, and the homepage still has the main All Soccer / Club Friendly blocks.
+    val homeHtml = async { fetchScheduleHtml(DLHD_HOME_SCHEDULE_URL) }
+    val extraHtml =
+      async {
+        runCatching { fetchScheduleApiHtml(DLHD_EXTRA_SCHEDULE_API) }.getOrDefault("")
+      }
+    val home = homeHtml.await()
     val soccer =
-      async {
-        fetchScheduleHtml(DLHD_SOCCER_SCHEDULE_URL).let {
-          parseDlhdSoccerSchedule(it, category = DLHD_CATEGORY_SOCCER)
-        }
+      extractDlhdCategoryBody(home, "All Soccer")?.let { body ->
+        parseDlhdSoccerSchedule(
+          withScheduleDayContext(home, body),
+          category = DLHD_CATEGORY_SOCCER,
+        )
       }
+        .orEmpty()
     val friendlies =
-      async {
-        fetchScheduleHtml(DLHD_CLUB_FRIENDLY_SCHEDULE_URL).let {
-          parseDlhdSoccerSchedule(it, category = DLHD_CATEGORY_CLUB_FRIENDLY)
-        }
+      extractDlhdCategoryBody(home, "Club Friendly")?.let { body ->
+        parseDlhdSoccerSchedule(
+          withScheduleDayContext(home, body),
+          category = DLHD_CATEGORY_CLUB_FRIENDLY,
+        )
       }
-    mergeDlhdSchedules(soccer.await(), friendlies.await())
+        .orEmpty()
+    val extra =
+      parseDlhdSoccerSchedule(
+          withScheduleDayContext(home, extraHtml.await()),
+          category = DLHD_CATEGORY_SOCCER,
+        )
+        .map(::retagFriendlyExtraEvent)
+        .filter(::isSoccerRelatedEvent)
+    val merged = mergeDlhdSchedules(soccer, friendlies, extra)
+    if (merged.isEmpty()) {
+      throw IOException("Soccer schedule came back empty. Try again in a moment.")
+    }
+    merged
   }
 
 private fun fetchScheduleHtml(url: String): String {
@@ -132,6 +154,23 @@ private fun fetchScheduleHtml(url: String): String {
     }
     if (status !in 200..299) throw IOException("Soccer schedule returned HTTP $status")
     return connection.inputStream.bufferedReader().use { it.readText() }
+  } finally {
+    connection.disconnect()
+  }
+}
+
+private fun fetchScheduleApiHtml(url: String): String {
+  val connection = (URL(url).openConnection() as HttpURLConnection)
+  try {
+    connection.requestMethod = "GET"
+    connection.setRequestProperty("Accept", "application/json")
+    connection.setRequestProperty("Referer", "$DLHD_ORIGIN/")
+    connection.setRequestProperty("User-Agent", dlhdUserAgent())
+    connection.connectTimeout = 12_000
+    connection.readTimeout = 20_000
+    val status = connection.responseCode
+    if (status !in 200..299) throw IOException("Soccer schedule API returned HTTP $status")
+    return parseDlhdScheduleApiHtml(connection.inputStream.bufferedReader().use { it.readText() })
   } finally {
     connection.disconnect()
   }
@@ -229,6 +268,106 @@ internal fun eventsForDlhdCategory(
     null, DLHD_CATEGORY_ALL -> events
     else -> events.filter { it.category == category }
   }
+
+/**
+ * Pulls one schedule category body out of the homepage markup.
+ *
+ * DaddyLive groups fixtures under `card__meta` labels like "All Soccer Events" — the filtered
+ * `?cat=` pages no longer contain those bodies, so the app reads them from `/` instead.
+ */
+internal fun extractDlhdCategoryBody(html: String, nameContains: String): String? {
+  val needle = nameContains.trim()
+  if (needle.isEmpty()) return null
+  val meta =
+    Pattern.compile(
+      """class="card__meta">([\s\S]*?)</div>""",
+      Pattern.CASE_INSENSITIVE,
+    )
+  val matcher = meta.matcher(html)
+  while (matcher.find()) {
+    val label =
+      decodeHtml(stripTags(matcher.group(1).orEmpty()))
+        .replace(Regex("\\s+"), " ")
+        .trim()
+    if (!label.contains(needle, ignoreCase = true)) continue
+    val after = html.substring(matcher.end())
+    val bodyOpen =
+      Regex("""class="schedule__categoryBody"[^>]*>""", RegexOption.IGNORE_CASE).find(after)
+        ?: continue
+    // Nav / promo cards also use card__meta; the category body must sit right under the header.
+    if (bodyOpen.range.first > 500) continue
+    val rest = after.substring(bodyOpen.range.last + 1)
+    val nextCategory =
+      Regex("""class="schedule__category[\s"]""", RegexOption.IGNORE_CASE).find(rest)
+    return rest.substring(0, nextCategory?.range?.first ?: rest.length)
+  }
+  return null
+}
+
+/** Keeps the UK day heading so kick-off parsing still works on a category fragment. */
+internal fun withScheduleDayContext(pageHtml: String, fragmentHtml: String): String {
+  val matcher = DAY_TITLE.matcher(pageHtml)
+  if (!matcher.find()) return fragmentHtml
+  val title = matcher.group(1)?.trim().orEmpty()
+  if (title.isBlank()) return fragmentHtml
+  return """<div class="schedule__dayTitle">$title</div>""" + fragmentHtml
+}
+
+/** Reads `{"success":true,"html":"..."}` payloads from DaddyLive's remote schedule boards. */
+internal fun parseDlhdScheduleApiHtml(json: String): String {
+  val payload = runCatching { JSONObject(json) }.getOrNull() ?: return ""
+  if (!payload.optBoolean("success")) return ""
+  return payload.optString("html").orEmpty()
+}
+
+private fun retagFriendlyExtraEvent(event: DlhdSoccerEvent): DlhdSoccerEvent {
+  val blob = "${event.league} ${event.match}"
+  return if (blob.contains("Club Friendly", ignoreCase = true) ||
+      blob.contains("Friendly", ignoreCase = true)
+  ) {
+    event.copy(category = DLHD_CATEGORY_CLUB_FRIENDLY)
+  } else {
+    event
+  }
+}
+
+/** Extra boards mix sports; keep football/soccer and drop rugby, boxing, IndyCar, CFL, etc. */
+internal fun isSoccerRelatedEvent(event: DlhdSoccerEvent): Boolean {
+  val blob = "${event.league} ${event.match}".lowercase(Locale.US)
+  if (
+    blob.contains("am. football") ||
+      blob.contains("american football") ||
+      blob.contains("canadian football") ||
+      blob.contains(" rugby") ||
+      blob.startsWith("rugby") ||
+      blob.contains("boxing") ||
+      blob.contains("basketball") ||
+      blob.contains("wnba") ||
+      blob.contains("motorsport") ||
+      blob.contains("indycar") ||
+      " cfl" in " $blob" ||
+      blob.endsWith(" cfl") ||
+      blob.contains(" - cfl")
+  ) {
+    return false
+  }
+  return blob.contains("football") ||
+    blob.contains("soccer") ||
+    blob.contains("friendly") ||
+    blob.contains("mls") ||
+    blob.contains("premier league") ||
+    blob.contains("liga") ||
+    blob.contains("efl") ||
+    blob.contains("bundesliga") ||
+    blob.contains("eredivisie") ||
+    blob.contains("serie a") ||
+    blob.contains("la liga") ||
+    blob.contains("brasileir") ||
+    blob.contains("championship") ||
+    blob.contains("league cup") ||
+    blob.contains("champions league") ||
+    blob.contains("europa")
+}
 
 private fun sortDlhdEvents(events: List<DlhdSoccerEvent>): List<DlhdSoccerEvent> =
   events.sortedWith(
