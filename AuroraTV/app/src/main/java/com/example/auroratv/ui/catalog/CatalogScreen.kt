@@ -83,6 +83,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import com.example.auroratv.BuildConfig
+import kotlinx.coroutines.async
 import com.example.auroratv.data.LibraryItem
 import com.example.auroratv.data.LibraryKind
 import com.example.auroratv.data.MyListStore
@@ -359,17 +360,25 @@ internal fun CatalogScreen(
     loading = true
     errorMessage = null
     runCatching {
-          when {
-            activeTab == CatalogTab.MY_LIST -> savedItems = myListStore.all()
-            activeTab == CatalogTab.MOVIES ->
-              movies = movieRepository.searchMovies(searchQuery.orEmpty())
-            else -> shows = tvRepository.searchShows(searchQuery.orEmpty())
-          }
+      if (activeTab == CatalogTab.MY_LIST && searchQuery.isNullOrBlank()) {
+        savedItems = myListStore.all()
+      } else if (!searchQuery.isNullOrBlank()) {
+        val q = searchQuery.trim()
+        val movieDeferred = scope.async { movieRepository.searchMovies(q) }
+        val showDeferred = scope.async { tvRepository.searchShows(q) }
+        movies = movieDeferred.await()
+        shows = showDeferred.await()
+      } else {
+        if (activeTab == CatalogTab.MOVIES) {
+          movies = movieRepository.searchMovies("")
+        } else {
+          shows = tvRepository.searchShows("")
         }
-        .onFailure {
-          Log.e("GizTvTmdb", "TMDB ${activeTab.name} load failed", it)
-          errorMessage = friendlyCatalogError(it)
-        }
+      }
+    }.onFailure {
+      Log.e("GizTvTmdb", "TMDB load failed", it)
+      errorMessage = friendlyCatalogError(it)
+    }
     loading = false
   }
 
@@ -629,6 +638,7 @@ internal fun CatalogScreen(
   val itemCount =
     when {
       showRails -> sections.sumOf { it.size }
+      searchActive -> movies.size + shows.size
       tab == CatalogTab.MOVIES -> movies.size
       tab == CatalogTab.SHOWS -> shows.size
       else -> savedItems.size
@@ -1149,14 +1159,12 @@ internal fun CatalogScreen(
                 )
               }
             }
-            if (itemCount > 0) {
-              item(span = { GridItemSpan(maxLineSpan) }) {
-                SectionHeading(heading = heading, itemCount = itemCount, narrow = narrow)
-              }
-            }
-            when (tab) {
-              CatalogTab.MOVIES ->
-                items(items = movies, key = { it.id }) { movie ->
+            if (searchActive) {
+              if (movies.isNotEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                  SectionHeading(heading = "Movies (${movies.size})", itemCount = movies.size, narrow = narrow)
+                }
+                items(items = movies, key = { "movie-${it.id}" }) { movie ->
                   PosterCard(
                     title = movie.title,
                     subtitle = movie.year ?: "—",
@@ -1169,8 +1177,12 @@ internal fun CatalogScreen(
                     modifier = gridEntryModifier(movie.id == movies.firstOrNull()?.id, gridFocusRequester),
                   )
                 }
-              CatalogTab.SHOWS ->
-                items(items = shows, key = { it.id }) { show ->
+              }
+              if (shows.isNotEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                  SectionHeading(heading = "TV Shows (${shows.size})", itemCount = shows.size, narrow = narrow)
+                }
+                items(items = shows, key = { "show-${it.id}" }) { show ->
                   PosterCard(
                     title = show.name,
                     subtitle = show.year ?: "—",
@@ -1178,25 +1190,58 @@ internal fun CatalogScreen(
                     posterUrl = show.posterUrl,
                     actionLabel = "Open ${show.name}",
                     onClick = { onOpenShow(show) },
-                    modifier = gridEntryModifier(show.id == shows.firstOrNull()?.id, gridFocusRequester),
+                    modifier = gridEntryModifier(movies.isEmpty() && show.id == shows.firstOrNull()?.id, gridFocusRequester),
                   )
                 }
-              CatalogTab.MY_LIST ->
-                items(items = savedItems, key = { "${it.kind}-${it.id}" }) { item ->
-                  PosterCard(
-                    title = item.title,
-                    subtitle = item.year ?: "—",
-                    rating = item.voteAverage,
-                    posterUrl = item.posterUrl,
-                    actionLabel = "Open ${item.title}",
-                    onClick = {
-                      if (item.kind == LibraryKind.SHOW) onOpenShow(item.toShow())
-                      else onOpenMovie(item.toMovie())
-                    },
-                    modifier =
-                      gridEntryModifier(item.id == savedItems.firstOrNull()?.id, gridFocusRequester),
-                  )
-                }
+              }
+            } else if (itemCount > 0) {
+              item(span = { GridItemSpan(maxLineSpan) }) {
+                SectionHeading(heading = heading, itemCount = itemCount, narrow = narrow)
+              }
+              when (tab) {
+                CatalogTab.MOVIES ->
+                  items(items = movies, key = { it.id }) { movie ->
+                    PosterCard(
+                      title = movie.title,
+                      subtitle = movie.year ?: "—",
+                      rating = movie.voteAverage,
+                      posterUrl = movie.posterUrl,
+                      actionLabel = "Open ${movie.title}",
+                      watched = historyStore.find(vidfastMovieUrl(movie.id))?.completed == true,
+                      onClick = { onOpenMovie(movie) },
+                      onDwell = { onConsidering(movie.toPlaybackContext()) },
+                      modifier = gridEntryModifier(movie.id == movies.firstOrNull()?.id, gridFocusRequester),
+                    )
+                  }
+                CatalogTab.SHOWS ->
+                  items(items = shows, key = { it.id }) { show ->
+                    PosterCard(
+                      title = show.name,
+                      subtitle = show.year ?: "—",
+                      rating = show.voteAverage,
+                      posterUrl = show.posterUrl,
+                      actionLabel = "Open ${show.name}",
+                      onClick = { onOpenShow(show) },
+                      modifier = gridEntryModifier(show.id == shows.firstOrNull()?.id, gridFocusRequester),
+                    )
+                  }
+                CatalogTab.MY_LIST ->
+                  items(items = savedItems, key = { "${it.kind}-${it.id}" }) { item ->
+                    PosterCard(
+                      title = item.title,
+                      subtitle = item.year ?: "—",
+                      rating = item.voteAverage,
+                      posterUrl = item.posterUrl,
+                      actionLabel = "Open ${item.title}",
+                      onClick = {
+                        if (item.kind == LibraryKind.SHOW) onOpenShow(item.toShow())
+                        else onOpenMovie(item.toMovie())
+                      },
+                      modifier =
+                        gridEntryModifier(item.id == savedItems.firstOrNull()?.id, gridFocusRequester),
+                    )
+                  }
+              }
             }
           }
       }
