@@ -506,8 +506,9 @@ internal fun CatalogScreen(
   LaunchedEffect(Unit) {
     watchHistory = historyStore.all()
     continueWatching = historyStore.continueWatching()
-    load(tab, null)
-    firstTabFocusRequester.requestFocus()
+    if (!searchActive && query.isBlank() && movieSections.isEmpty() && showSections.isEmpty()) {
+      load(tab, null)
+    }
   }
 
   /**
