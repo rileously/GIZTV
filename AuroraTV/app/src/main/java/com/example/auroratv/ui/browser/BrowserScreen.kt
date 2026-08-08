@@ -134,7 +134,9 @@ private const val SUBTITLE_GRACE_MS = 700L
 private const val PROGRESSIVE_STREAM_GRACE_MS = 2_500L
 private const val MAX_SUBTITLE_CATALOG_WAIT_MS = 8_000L
 private const val SUBTITLE_CATALOG_POLL_MS = 250L
-/** Silent attempts before the viewer is told anything went wrong. */
+internal const val CHROME_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
 private const val AUTOMATIC_RETRY_ATTEMPTS = 1
 
 private val blockedHosts =
@@ -385,7 +387,7 @@ internal fun BrowserScreen(
                 if (playback != null) WebSettings.LOAD_NO_CACHE else WebSettings.LOAD_DEFAULT
               mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
               setGeolocationEnabled(false)
-              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) safeBrowsingEnabled = true
+              settings.userAgentString = CHROME_USER_AGENT
             }
             CookieManager.getInstance().apply {
               setAcceptCookie(true)
@@ -1349,9 +1351,15 @@ private fun isWebUrl(url: String): Boolean {
 internal fun isHlsUrl(url: String): Boolean {
   val normalized = url.lowercase()
   if (
-    normalized.contains(".m3u8") ||
+    normalized.contains("m3u8") ||
       normalized.contains("format=m3u8") ||
-      normalized.contains("mime=application%2fx-mpegurl")
+      normalized.contains("format=hls") ||
+      normalized.contains("type=hls") ||
+      normalized.contains("mime=application%2fx-mpegurl") ||
+      normalized.contains("/hls/") ||
+      normalized.contains("/playlist") ||
+      normalized.contains("vidlink.pro/api") ||
+      normalized.contains("vidlink.stream")
   ) {
     return true
   }

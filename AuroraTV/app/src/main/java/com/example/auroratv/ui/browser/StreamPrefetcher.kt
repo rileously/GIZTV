@@ -61,6 +61,7 @@ internal fun StreamPrefetcher(
           cacheMode = WebSettings.LOAD_NO_CACHE
           mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
           setGeolocationEnabled(false)
+          userAgentString = CHROME_USER_AGENT
           if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) safeBrowsingEnabled = true
         }
         CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
