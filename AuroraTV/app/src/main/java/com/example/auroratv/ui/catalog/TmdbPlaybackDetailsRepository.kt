@@ -48,15 +48,29 @@ internal data class TmdbPlaybackDetails(
   val directors: List<PlaybackDirector> = emptyList(),
   val tagline: String? = null,
   val reviews: List<PlaybackReview> = emptyList(),
+  val backdropPath: String? = null,
 ) {
   val castNames: List<String>
     get() = cast.map { it.name }
 
   val director: PlaybackDirector?
     get() = directors.firstOrNull()
+
+  val backdropUrl: String?
+    get() = backdropPath?.let { "https://image.tmdb.org/t/p/w780$it" }
 }
 
 internal class TmdbPlaybackDetailsRepository(private val apiKey: String) {
+  suspend fun movieDetails(movieId: Int): TmdbPlaybackDetails? =
+    runCatching {
+      tmdbRequest(
+        apiKey = apiKey,
+        path = "movie/$movieId",
+        params = mapOf("append_to_response" to "credits,reviews"),
+        parse = { parseTmdbPlaybackDetails(it, episode = false) },
+      )
+    }.getOrNull()
+
   suspend fun details(playback: PlaybackContext): TmdbPlaybackDetails? {
     val path =
       if (playback.isEpisode) {
@@ -152,6 +166,7 @@ internal fun parseTmdbPlaybackDetails(json: String, episode: Boolean): TmdbPlayb
     directors = parsePlaybackDirectors(credits?.optJSONArray("crew")),
     tagline = root.optString("tagline").trim().takeIf(String::isNotBlank),
     reviews = parsePlaybackReviews(root.optJSONObject("reviews")),
+    backdropPath = root.optString("backdrop_path").trim().takeIf { it.isNotBlank() && it != "null" },
   )
 }
 

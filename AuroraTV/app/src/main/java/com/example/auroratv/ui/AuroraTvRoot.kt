@@ -38,7 +38,9 @@ import com.example.auroratv.ui.catalog.catalogTargetOf
 import com.example.auroratv.ui.catalog.nextProviderPageUrl
 import com.example.auroratv.ui.catalog.providerIndexOf
 import com.example.auroratv.ui.catalog.providerPageUrl
+import com.example.auroratv.ui.catalog.TmdbMovie
 import com.example.auroratv.ui.catalog.TmdbShow
+import com.example.auroratv.ui.catalog.MovieDetailScreen
 import com.example.auroratv.ui.catalog.TvShowDetailScreen
 import com.example.auroratv.ui.drama.ShortDrama
 import com.example.auroratv.ui.drama.ShortDramaDetailScreen
@@ -95,6 +97,7 @@ internal fun iptvPlaybackSourceAt(
 
 private enum class Destination {
   CATALOG,
+  MOVIE_DETAIL,
   SHOW_DETAIL,
   SHORT_DRAMAS,
   DRAMA_DETAIL,
@@ -167,6 +170,7 @@ fun AuroraTvRoot(
    * with it. Coming back rebuilt the page at the top. This hands the subtree its state back.
    */
   val destinationState = rememberSaveableStateHolder()
+  var selectedMovie by remember { mutableStateOf<TmdbMovie?>(null) }
   var selectedShow by remember { mutableStateOf<TmdbShow?>(null) }
   var selectedDrama by remember { mutableStateOf<ShortDrama?>(null) }
   // Held while the browser resolves a stream, then attached to the request the player receives.
@@ -353,6 +357,10 @@ fun AuroraTvRoot(
   fun Catalog() {
     CatalogScreen(
       onPlay = { context -> openForPlayback(context, Destination.CATALOG) },
+      onOpenMovie = { movie ->
+        selectedMovie = movie
+        destination = Destination.MOVIE_DETAIL
+      },
       onOpenShow = { show ->
         selectedShow = show
         destination = Destination.SHOW_DETAIL
@@ -414,6 +422,19 @@ fun AuroraTvRoot(
         when (destination) {
           Destination.CATALOG ->
             destinationState.SaveableStateProvider(Destination.CATALOG) { Catalog() }
+          Destination.MOVIE_DETAIL -> {
+            val movie = selectedMovie
+            if (movie != null) {
+              MovieDetailScreen(
+                movie = movie,
+                onPlay = { context -> openForPlayback(context, Destination.MOVIE_DETAIL) },
+                onOpenMovie = { nextMovie -> selectedMovie = nextMovie },
+                onBack = { destination = Destination.CATALOG },
+              )
+            } else {
+              Catalog()
+            }
+          }
           Destination.SHOW_DETAIL -> {
             val show = selectedShow
             if (show != null) {

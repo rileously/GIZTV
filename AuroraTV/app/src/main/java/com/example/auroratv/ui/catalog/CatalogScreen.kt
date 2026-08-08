@@ -170,6 +170,7 @@ internal enum class CatalogTab(val label: String) {
 @Composable
 internal fun CatalogScreen(
   onPlay: (PlaybackContext) -> Unit,
+  onOpenMovie: (TmdbMovie) -> Unit,
   onOpenShow: (TmdbShow) -> Unit,
   onOpenWeb: () -> Unit,
   onOpenShortDramas: () -> Unit,
@@ -920,9 +921,9 @@ internal fun CatalogScreen(
                       subtitle = movie.year ?: "—",
                       rating = movie.voteAverage,
                       posterUrl = movie.posterUrl,
-                      actionLabel = "Play ${movie.title}",
+                      actionLabel = "Open ${movie.title}",
                       watched = historyStore.find(vidfastMovieUrl(movie.id))?.completed == true,
-                      onClick = { onPlay(movie.toPlaybackContext()) },
+                      onClick = { onOpenMovie(movie) },
                       onDwell = { onConsidering(movie.toPlaybackContext()) },
                       modifier = cardModifier,
                     )
@@ -981,9 +982,9 @@ internal fun CatalogScreen(
                       subtitle = movie.year ?: "—",
                       rating = movie.voteAverage,
                       posterUrl = movie.posterUrl,
-                      actionLabel = "Play ${movie.title}",
+                      actionLabel = "Open ${movie.title}",
                       watched = historyStore.find(vidfastMovieUrl(movie.id))?.completed == true,
-                      onClick = { onPlay(movie.toPlaybackContext()) },
+                      onClick = { onOpenMovie(movie) },
                       onDwell = { onConsidering(movie.toPlaybackContext()) },
                       modifier = cardModifier,
                     )
@@ -1072,9 +1073,9 @@ internal fun CatalogScreen(
                       subtitle = movie.year ?: "—",
                       rating = movie.voteAverage,
                       posterUrl = movie.posterUrl,
-                      actionLabel = "Play ${movie.title}",
+                      actionLabel = "Open ${movie.title}",
                       watched = historyStore.find(vidfastMovieUrl(movie.id))?.completed == true,
-                      onClick = { onPlay(movie.toPlaybackContext()) },
+                      onClick = { onOpenMovie(movie) },
                       onDwell = { onConsidering(movie.toPlaybackContext()) },
                       modifier = cardModifier,
                     )
@@ -1161,9 +1162,9 @@ internal fun CatalogScreen(
                     subtitle = movie.year ?: "—",
                     rating = movie.voteAverage,
                     posterUrl = movie.posterUrl,
-                    actionLabel = "Play ${movie.title}",
+                    actionLabel = "Open ${movie.title}",
                     watched = historyStore.find(vidfastMovieUrl(movie.id))?.completed == true,
-                    onClick = { onPlay(movie.toPlaybackContext()) },
+                    onClick = { onOpenMovie(movie) },
                     onDwell = { onConsidering(movie.toPlaybackContext()) },
                     modifier = gridEntryModifier(movie.id == movies.firstOrNull()?.id, gridFocusRequester),
                   )
@@ -1187,11 +1188,10 @@ internal fun CatalogScreen(
                     subtitle = item.year ?: "—",
                     rating = item.voteAverage,
                     posterUrl = item.posterUrl,
-                    actionLabel =
-                      if (item.kind == LibraryKind.SHOW) "Open ${item.title}" else "Play ${item.title}",
+                    actionLabel = "Open ${item.title}",
                     onClick = {
                       if (item.kind == LibraryKind.SHOW) onOpenShow(item.toShow())
-                      else onPlay(item.toPlaybackContext())
+                      else onOpenMovie(item.toMovie())
                     },
                     modifier =
                       gridEntryModifier(item.id == savedItems.firstOrNull()?.id, gridFocusRequester),
@@ -1232,7 +1232,7 @@ internal fun CatalogScreen(
 private fun gridEntryModifier(isFirst: Boolean, gridFocusRequester: FocusRequester): Modifier =
   if (isFirst) Modifier.focusRequester(gridFocusRequester) else Modifier
 
-private fun TmdbMovie.toPlaybackContext(): PlaybackContext =
+internal fun TmdbMovie.toPlaybackContext(): PlaybackContext =
   PlaybackContext(
     pageUrl = vidfastMovieUrl(id),
     title = title,
@@ -1241,6 +1241,17 @@ private fun TmdbMovie.toPlaybackContext(): PlaybackContext =
     year = year,
     overview = overview,
     rating = voteAverage.takeIf { it > 0.0 },
+  )
+
+internal fun TmdbMovie.toLibraryItem(): LibraryItem =
+  LibraryItem(
+    id = id,
+    kind = LibraryKind.MOVIE,
+    title = title,
+    date = releaseDate,
+    voteAverage = voteAverage,
+    overview = overview,
+    posterPath = posterPath,
   )
 
 private fun LibraryItem.toPlaybackContext(): PlaybackContext =
@@ -1259,6 +1270,16 @@ private fun LibraryItem.toShow(): TmdbShow =
     id = id,
     name = title,
     firstAirDate = date,
+    voteAverage = voteAverage,
+    overview = overview,
+    posterPath = posterPath,
+  )
+
+private fun LibraryItem.toMovie(): TmdbMovie =
+  TmdbMovie(
+    id = id,
+    title = title,
+    releaseDate = date,
     voteAverage = voteAverage,
     overview = overview,
     posterPath = posterPath,

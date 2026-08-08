@@ -15,12 +15,16 @@ internal data class TmdbMovie(
   val voteAverage: Double,
   val overview: String,
   val posterPath: String?,
+  val backdropPath: String? = null,
 ) {
   val year: String?
     get() = releaseDate?.takeIf { it.length >= 4 }?.take(4)
 
   val posterUrl: String?
     get() = posterPath?.let { "https://image.tmdb.org/t/p/w500$it" }
+
+  val backdropUrl: String?
+    get() = backdropPath?.let { "https://image.tmdb.org/t/p/w780$it" } ?: posterUrl
 }
 
 /**
@@ -362,6 +366,7 @@ internal fun parseTmdbMovies(json: String): List<TmdbMovie> {
           voteAverage = item.optDouble("vote_average", 0.0),
           overview = item.optString("overview").trim(),
           posterPath = item.optString("poster_path").trim().takeIf { it.isNotBlank() && it != "null" },
+          backdropPath = item.optString("backdrop_path").trim().takeIf { it.isNotBlank() && it != "null" },
         )
       )
     }
