@@ -6,6 +6,7 @@ import org.json.JSONObject
 
 /** One billed performer from TMDB credits, rich enough for pause trivia. */
 internal data class PlaybackCastMember(
+  val id: Int = -1,
   val name: String,
   val character: String? = null,
   val profilePath: String? = null,
@@ -20,6 +21,7 @@ internal data class PlaybackCastMember(
 
 /** Director (or co-director) from TMDB crew credits for pause tips. */
 internal data class PlaybackDirector(
+  val id: Int = -1,
   val name: String,
   val profilePath: String? = null,
 ) {
@@ -182,10 +184,12 @@ internal fun parsePlaybackCastMembers(items: JSONArray?, guest: Boolean): List<P
       if (department != null && !department.equals("Acting", ignoreCase = true) && !guest) continue
       val profile =
         person.optString("profile_path").trim().takeIf { it.isNotBlank() && it != "null" }
+      val id = person.optInt("id", -1)
       val character = person.optString("character").trim().takeIf(String::isNotBlank)
       val order = if (person.has("order")) person.optInt("order", -1).takeIf { it >= 0 } else null
       add(
         PlaybackCastMember(
+          id = id,
           name = name,
           character = character,
           profilePath = profile,
@@ -208,9 +212,10 @@ internal fun parsePlaybackDirectors(items: JSONArray?): List<PlaybackDirector> {
         if (!job.equals("Director", ignoreCase = true)) continue
         val name = person.optString("name").trim()
         if (name.isBlank()) continue
+        val id = person.optInt("id", -1)
         val profile =
           person.optString("profile_path").trim().takeIf { it.isNotBlank() && it != "null" }
-        add(PlaybackDirector(name = name, profilePath = profile))
+        add(PlaybackDirector(id = id, name = name, profilePath = profile))
       }
     }
     .distinctBy { it.name.lowercase() }

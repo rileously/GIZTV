@@ -41,6 +41,7 @@ import com.example.auroratv.ui.catalog.providerPageUrl
 import com.example.auroratv.ui.catalog.TmdbMovie
 import com.example.auroratv.ui.catalog.TmdbShow
 import com.example.auroratv.ui.catalog.MovieDetailScreen
+import com.example.auroratv.ui.catalog.PersonDetailScreen
 import com.example.auroratv.ui.catalog.TvShowDetailScreen
 import com.example.auroratv.ui.drama.ShortDrama
 import com.example.auroratv.ui.drama.ShortDramaDetailScreen
@@ -98,6 +99,7 @@ internal fun iptvPlaybackSourceAt(
 private enum class Destination {
   CATALOG,
   MOVIE_DETAIL,
+  PERSON_DETAIL,
   SHOW_DETAIL,
   SHORT_DRAMAS,
   DRAMA_DETAIL,
@@ -109,6 +111,8 @@ private enum class Destination {
   BROWSER,
   PLAYER,
 }
+
+private data class PersonSelection(val id: Int, val name: String, val isDirector: Boolean = false)
 
 /** Browse surfaces that keep the phone footer visible (YouTube-style: hide on player/detail). */
 private fun Destination.showsPhoneBottomNav(): Boolean =
@@ -171,6 +175,7 @@ fun AuroraTvRoot(
    */
   val destinationState = rememberSaveableStateHolder()
   var selectedMovie by remember { mutableStateOf<TmdbMovie?>(null) }
+  var selectedPerson by remember { mutableStateOf<PersonSelection?>(null) }
   var selectedShow by remember { mutableStateOf<TmdbShow?>(null) }
   var selectedDrama by remember { mutableStateOf<ShortDrama?>(null) }
   // Held while the browser resolves a stream, then attached to the request the player receives.
@@ -429,7 +434,28 @@ fun AuroraTvRoot(
                 movie = movie,
                 onPlay = { context -> openForPlayback(context, Destination.MOVIE_DETAIL) },
                 onOpenMovie = { nextMovie -> selectedMovie = nextMovie },
+                onOpenPerson = { id, name, isDirector ->
+                  selectedPerson = PersonSelection(id, name, isDirector)
+                  destination = Destination.PERSON_DETAIL
+                },
                 onBack = { destination = Destination.CATALOG },
+              )
+            } else {
+              Catalog()
+            }
+          }
+          Destination.PERSON_DETAIL -> {
+            val person = selectedPerson
+            if (person != null) {
+              PersonDetailScreen(
+                personId = person.id,
+                personName = person.name,
+                isDirector = person.isDirector,
+                onOpenMovie = { movie ->
+                  selectedMovie = movie
+                  destination = Destination.MOVIE_DETAIL
+                },
+                onBack = { destination = Destination.MOVIE_DETAIL },
               )
             } else {
               Catalog()

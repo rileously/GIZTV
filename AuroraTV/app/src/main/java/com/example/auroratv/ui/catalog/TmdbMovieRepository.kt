@@ -238,6 +238,23 @@ internal class TmdbMovieRepository(private val apiKey: String) {
         ),
     )
 
+  suspend fun personDetails(personId: Int): TmdbPersonDetails? =
+    tmdbRequest(
+      apiKey = apiKey,
+      path = "person/$personId",
+      parse = ::parseTmdbPersonDetails,
+    )
+
+  suspend fun personMovieCredits(
+    personId: Int,
+    isDirector: Boolean = false,
+  ): Pair<List<TmdbMovie>, List<TmdbMovie>> =
+    tmdbRequest(
+      apiKey = apiKey,
+      path = "person/$personId/movie_credits",
+      parse = { json -> parsePersonMovieCredits(json, isDirector) },
+    )
+
   private suspend fun requestMovies(
     path: String,
     query: String? = null,
@@ -267,6 +284,67 @@ internal class TmdbMovieRepository(private val apiKey: String) {
 
 /** A billed performer, kept only so the catalog can ask what else they are in. */
 internal data class TmdbActor(val id: Int, val name: String)
+
+internal data class TmdbPersonDetails(
+  val id: Int,
+  val name: String,
+  val biography: String?,
+  val birthday: String?,
+  val placeOfBirth: String?,
+  val profilePath: String?,
+  val knownForDepartment: String?,
+  val popularity: Double,
+) {
+  val photoUrl: String?
+    get() = profilePath?.let { "https://image.tmdb.org/t/p/w500$it" }
+}
+
+internal fun parseTmdbPersonDetails(json: String): TmdbPersonDetails {
+  val root = JSONObject(json)
+  return TmdbPersonDetails(
+    id = root.optInt("id", -1),
+    name = root.optString("name").trim(),
+    biography = root.optString("biography").trim().takeIf(String::isNotBlank),
+    birthday = root.optString("birthday").trim().takeIf(String::isNotBlank),
+    placeOfBirth = root.optString("place_of_birth").trim().takeIf(String::isNotBlank),
+    profilePath = root.optString("profile_path").trim().takeIf { it.isNotBlank() && it != "null" },
+    knownForDepartment = root.optString("known_for_department").trim().takeIf(String::isNotBlank),
+    popularity = root.optDouble("popularity", 0.0),
+  )
+}
+
+internal fun parsePersonMovieCredits(json: String, isDirector: Boolean): Pair<List<TmdbMovie>, List<TmdbMovie>> {
+  val root = JSONObject(json)
+  val arrayKey = if (isDirector) "crew" else "cast"
+  val items = root.optJSONArray(arrayKey) ?: return Pair(emptyList(), emptyList())
+  val movies = buildList {
+    for (i in 0 until items.length()) {
+      val item = items.optJSONObject(i) ?: continue
+      if (isDirector) {
+        val job = item.optString("job").trim()
+        if (!job.equals("Director", ignoreCase = true)) continue
+      }
+      val id = item.optInt("id", -1)
+      val title = item.optString("title").trim()
+      if (id <= 0 || title.isBlank()) continue
+      add(
+        TmdbMovie(
+          id = id,
+          title = title,
+          releaseDate = item.optString("release_date").trim().takeIf(String::isNotBlank),
+          voteAverage = item.optDouble("vote_average", 0.0),
+          overview = item.optString("overview").trim(),
+          posterPath = item.optString("poster_path").trim().takeIf { it.isNotBlank() && it != "null" },
+          backdropPath = item.optString("backdrop_path").trim().takeIf { it.isNotBlank() && it != "null" },
+        )
+      )
+    }
+  }.distinctBy { it.id }
+
+  val bestRated = movies.filter { it.voteAverage > 0.0 }.sortedByDescending { it.voteAverage }.take(12)
+  val allMovies = movies.sortedByDescending { it.releaseDate.orEmpty() }
+  return Pair(bestRated, allMovies)
+}
 
 internal fun parseTopBilledActor(json: String): TmdbActor? {
   val cast = JSONObject(json).optJSONArray("cast") ?: return null

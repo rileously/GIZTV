@@ -92,6 +92,7 @@ internal fun MovieDetailScreen(
   movie: TmdbMovie,
   onPlay: (PlaybackContext) -> Unit,
   onOpenMovie: (TmdbMovie) -> Unit,
+  onOpenPerson: (personId: Int, name: String, isDirector: Boolean) -> Unit = { _, _, _ -> },
   onBack: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -315,12 +316,26 @@ internal fun MovieDetailScreen(
 
           director?.let { d ->
             Spacer(Modifier.height(8.dp))
-            Text(
-              text = "Director: ${d.name}",
-              color = MutedBlue,
-              fontWeight = FontWeight.Medium,
-              fontSize = 13.sp
-            )
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .clickable { if (d.id > 0) onOpenPerson(d.id, d.name, true) }
+                .padding(vertical = 2.dp, horizontal = 4.dp)
+            ) {
+              Text(
+                text = "Director: ",
+                color = MutedBlue,
+                fontWeight = FontWeight.Medium,
+                fontSize = 13.sp
+              )
+              Text(
+                text = d.name,
+                color = AuroraMint,
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp
+              )
+            }
           }
         }
 
@@ -339,7 +354,10 @@ internal fun MovieDetailScreen(
               modifier = Modifier.focusGroup()
             ) {
               items(cast, key = { it.name + it.character }) { member ->
-                CastMemberCard(member = member)
+                CastMemberCard(
+                  member = member,
+                  onClick = { if (member.id > 0) onOpenPerson(member.id, member.name, false) }
+                )
               }
             }
           }
@@ -562,7 +580,10 @@ private fun MyListButton(
 }
 
 @Composable
-private fun CastMemberCard(member: PlaybackCastMember) {
+private fun CastMemberCard(
+  member: PlaybackCastMember,
+  onClick: () -> Unit = {}
+) {
   var focused by remember { mutableStateOf(false) }
   val scale by animateFloatAsState(if (focused) 1.06f else 1f, label = "cast scale")
 
@@ -574,6 +595,8 @@ private fun CastMemberCard(member: PlaybackCastMember) {
       .background(NightSurface)
       .border(if (focused) 2.dp else 0.dp, AuroraMint, RoundedCornerShape(12.dp))
       .onFocusChanged { focused = it.isFocused }
+      .clickable(onClick = onClick)
+      .semantics { role = Role.Button; contentDescription = "Open ${member.name}" }
       .padding(8.dp),
     horizontalAlignment = Alignment.CenterHorizontally
   ) {
