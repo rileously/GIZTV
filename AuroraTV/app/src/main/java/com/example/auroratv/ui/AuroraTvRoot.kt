@@ -511,14 +511,27 @@ fun AuroraTvRoot(
           Destination.IPTV ->
             IptvScreen(
               onPlay = { channel ->
-                streamFailoverAttempts = 0
-                pendingContext = null
-                browserReturnDestination = Destination.IPTV
-                iptvPlaybackSources = channel.toPlaybackRequests()
-                iptvPlaybackSourceIndex = 0
-                playerMinimized = false
-                streamRequest = iptvPlaybackSources.first()
-                destination = Destination.PLAYER
+                if (channel.resolveViaBrowser) {
+                  openForPlayback(
+                    PlaybackContext(
+                      pageUrl = channel.url,
+                      title = channel.name,
+                      subtitle = channel.group,
+                      genres = listOf("Live TV"),
+                      kindLabel = "LIVE",
+                    ),
+                    Destination.IPTV,
+                  )
+                } else {
+                  streamFailoverAttempts = 0
+                  pendingContext = null
+                  browserReturnDestination = Destination.IPTV
+                  iptvPlaybackSources = channel.toPlaybackRequests()
+                  iptvPlaybackSourceIndex = 0
+                  playerMinimized = false
+                  streamRequest = iptvPlaybackSources.first()
+                  destination = Destination.PLAYER
+                }
               },
               onBack = { destination = Destination.CATALOG },
               browseState = iptvBrowseState,

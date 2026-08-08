@@ -544,6 +544,7 @@ private fun IptvCategoryCard(
 
 private fun iptvCategoryAccent(category: String): Color =
   when (category) {
+    IPTV_CATEGORY_DADDYLIVE -> Color(0xFFFF8A65)
     IPTV_CATEGORY_SPORTS -> Color(0xFF59E6A8)
     IPTV_CATEGORY_NEWS -> Color(0xFF64B5FF)
     IPTV_CATEGORY_MOVIES -> Color(0xFFC19BFF)

@@ -1,5 +1,11 @@
 package com.example.auroratv
 
+import com.example.auroratv.ui.dlhd.DLHD_CATEGORY_ALL
+import com.example.auroratv.ui.dlhd.DLHD_CATEGORY_CLUB_FRIENDLY
+import com.example.auroratv.ui.dlhd.DLHD_CATEGORY_SOCCER
+import com.example.auroratv.ui.dlhd.dlhdCategoryFilters
+import com.example.auroratv.ui.dlhd.eventsForDlhdCategory
+import com.example.auroratv.ui.dlhd.mergeDlhdSchedules
 import com.example.auroratv.ui.dlhd.parseDlhdSoccerSchedule
 import com.example.auroratv.ui.dlhd.parseScheduleDayStartUk
 import com.example.auroratv.ui.dlhd.searchDlhdEvents
@@ -16,12 +22,19 @@ import org.junit.Test
 class DlhdSoccerScheduleTest {
   @Test
   fun parser_readsFixturesAndChannelPages() {
-    val events = parseDlhdSoccerSchedule(SAMPLE_HTML, TimeZone.getTimeZone("GMT"), NOW_MS)
+    val events =
+      parseDlhdSoccerSchedule(
+        SAMPLE_HTML,
+        TimeZone.getTimeZone("GMT"),
+        NOW_MS,
+        category = DLHD_CATEGORY_SOCCER,
+      )
 
     assertEquals(2, events.size)
     val chelsea = events.first()
     assertEquals("Chelsea vs Auckland FC", chelsea.match)
     assertEquals("Pre Season Friendly (Women) 2026", chelsea.league)
+    assertEquals(DLHD_CATEGORY_SOCCER, chelsea.category)
     assertEquals("04:00", chelsea.ukTime)
     assertEquals("https://dlhd.st/watch.php?id=712", chelsea.watchUrl)
     assertEquals(listOf("beIN Sports Malaysia"), chelsea.channels.map { it.name })
@@ -88,6 +101,60 @@ class DlhdSoccerScheduleTest {
     assertEquals(listOf("Chelsea vs Auckland FC"), searchDlhdEvents(events, "bein").map { it.match })
   }
 
+  @Test
+  fun merge_keepsClubFriendliesAndDedupesOverlaps() {
+    val soccer =
+      parseDlhdSoccerSchedule(
+        SAMPLE_HTML,
+        TimeZone.getTimeZone("GMT"),
+        NOW_MS,
+        category = DLHD_CATEGORY_SOCCER,
+      )
+    val friendlies =
+      parseDlhdSoccerSchedule(
+        CLUB_FRIENDLY_HTML,
+        TimeZone.getTimeZone("GMT"),
+        NOW_MS,
+        category = DLHD_CATEGORY_CLUB_FRIENDLY,
+      )
+    val merged = mergeDlhdSchedules(soccer, friendlies)
+
+    assertEquals(3, merged.size)
+    assertEquals(
+      listOf("Chelsea vs Auckland FC", "Chelsea vs Milan", "Chaves vs Académica"),
+      merged.map { it.match },
+    )
+    assertEquals(DLHD_CATEGORY_CLUB_FRIENDLY, merged.first { it.match == "Chelsea vs Milan" }.category)
+    // Same id already present in All Soccer wins over a Club Friendly repeat.
+    assertEquals(
+      DLHD_CATEGORY_SOCCER,
+      merged.first { it.match == "Chelsea vs Auckland FC" }.category,
+    )
+  }
+
+  @Test
+  fun filters_offerAllSoccerAndClubFriendly() {
+    val soccer =
+      parseDlhdSoccerSchedule(SAMPLE_HTML, TimeZone.getTimeZone("GMT"), NOW_MS, DLHD_CATEGORY_SOCCER)
+    val friendlies =
+      parseDlhdSoccerSchedule(
+        CLUB_FRIENDLY_HTML,
+        TimeZone.getTimeZone("GMT"),
+        NOW_MS,
+        DLHD_CATEGORY_CLUB_FRIENDLY,
+      )
+    val merged = mergeDlhdSchedules(soccer, friendlies)
+
+    assertEquals(
+      listOf(DLHD_CATEGORY_ALL, DLHD_CATEGORY_SOCCER, DLHD_CATEGORY_CLUB_FRIENDLY),
+      dlhdCategoryFilters(merged),
+    )
+    assertEquals(
+      listOf("Chelsea vs Milan"),
+      eventsForDlhdCategory(merged, DLHD_CATEGORY_CLUB_FRIENDLY).map { it.match },
+    )
+  }
+
   private companion object {
     // Midday on the schedule day so the day-start guard accepts it.
     const val NOW_MS = 1_786_190_400_000L // 2026-08-08 12:00 GMT
@@ -113,6 +180,30 @@ class DlhdSoccerScheduleTest {
           <a target="_blank" href="/watch.php?id=49" title="Sport TV1 Portugal">Sport TV1 Portugal</a>
           <a target="_blank" href="/watch.php?id=3021" title="Sport TV1 Portugal Backup">Sport TV1 Portugal Backup</a>
           <a target="_blank" href="/watch.php?id=4118" title="Backup Stream">Backup Stream</a>
+        </div>
+      </div>
+      """
+        .trimIndent()
+
+    val CLUB_FRIENDLY_HTML =
+      """
+      <div class="schedule__dayTitle">Saturday 08th Aug 2026 - Schedule Time UK GMT</div>
+      <div class="schedule__event">
+        <div class="schedule__eventHeader" data-title="milan">
+          <span class="schedule__time" data-time="06:00">11:00</span>
+          <span class="schedule__eventTitle">⚽ 🏴 Club Friendly : Chelsea 🏴 vs Milan 🇮🇹</span>
+        </div>
+        <div class="schedule__channels" style="display: none;">
+          <a target="_blank" href="/watch.php?id=801" title="Sky Sports Main Event">Sky Sports Main Event</a>
+        </div>
+      </div>
+      <div class="schedule__event">
+        <div class="schedule__eventHeader" data-title="auckland-repeat">
+          <span class="schedule__time" data-time="04:00">09:00</span>
+          <span class="schedule__eventTitle">⚽ 🇬🇧 Pre Season Friendly (Women) 2026 : Chelsea 🇬🇧 vs Auckland FC 🇳🇿</span>
+        </div>
+        <div class="schedule__channels" style="display: none;">
+          <a target="_blank" href="/watch.php?id=712" title="beIN Sports Malaysia">beIN Sports Malaysia</a>
         </div>
       </div>
       """

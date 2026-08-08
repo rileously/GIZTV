@@ -3,6 +3,8 @@ package com.example.auroratv
 import androidx.media3.common.MimeTypes
 import com.example.auroratv.ui.iptv.ALL_IPTV_CHANNELS
 import com.example.auroratv.ui.iptv.ALL_IPTV_GROUPS
+import com.example.auroratv.ui.iptv.DLHD_IPTV_GROUP
+import com.example.auroratv.ui.iptv.IPTV_CATEGORY_DADDYLIVE
 import com.example.auroratv.ui.iptv.IPTV_CATEGORY_FAITH
 import com.example.auroratv.ui.iptv.IPTV_CATEGORY_KIDS
 import com.example.auroratv.ui.iptv.IPTV_CATEGORY_KNOWLEDGE
@@ -105,6 +107,7 @@ class IptvPlaylistTest {
 
   @Test
   fun categoryRules_coverTheBundledPlaylistsProviderStyles() {
+    assertEquals(IPTV_CATEGORY_DADDYLIVE, iptvCategoryFor(DLHD_IPTV_GROUP))
     assertEquals(IPTV_CATEGORY_SPORTS, iptvCategoryFor("HilayTV | Sports"))
     assertEquals(IPTV_CATEGORY_SPORTS, iptvCategoryFor("FIFA World Cup 2026 Channels"))
     assertEquals(IPTV_CATEGORY_REGIONAL, iptvCategoryFor("Maldives (IPTV) Medianet"))

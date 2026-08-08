@@ -2,6 +2,7 @@ package com.example.auroratv.ui.iptv
 
 import android.content.Context
 import androidx.media3.common.MimeTypes
+import com.example.auroratv.ui.dlhd.DlhdChannelsRepository
 import com.example.auroratv.ui.player.HlsStreamRequest
 import com.example.auroratv.ui.player.StreamDrmConfiguration
 import com.example.auroratv.ui.player.StreamDrmScheme
@@ -16,9 +17,11 @@ import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import android.util.Log
 
 internal const val ALL_IPTV_CHANNELS = "All channels"
 internal const val ALL_IPTV_GROUPS = "All providers"
+internal const val IPTV_CATEGORY_DADDYLIVE = "DaddyLive"
 internal const val IPTV_CATEGORY_SPORTS = "Sports"
 internal const val IPTV_CATEGORY_NEWS = "News"
 internal const val IPTV_CATEGORY_MOVIES = "Movies"
@@ -29,6 +32,8 @@ internal const val IPTV_CATEGORY_KNOWLEDGE = "Knowledge"
 internal const val IPTV_CATEGORY_FAITH = "Faith"
 internal const val IPTV_CATEGORY_REGIONAL = "Regional"
 internal const val IPTV_CATEGORY_OTHER = "Other"
+/** Provider group stamped on every channel scraped from DaddyLive's 24/7 grid. */
+internal const val DLHD_IPTV_GROUP = "DaddyLive 24/7"
 private const val DEFAULT_GROUP = "Other"
 private const val BUNDLED_PLAYLIST = "iptv/play.m3u"
 private const val REMOTE_PLAYLIST = "https://iptv-org.github.io/iptv/index.category.m3u"
@@ -43,6 +48,7 @@ private const val MAX_PLAYBACK_SOURCES = 6
 
 private val IPTV_CATEGORY_ORDER =
   listOf(
+    IPTV_CATEGORY_DADDYLIVE,
     IPTV_CATEGORY_SPORTS,
     IPTV_CATEGORY_NEWS,
     IPTV_CATEGORY_MOVIES,
@@ -83,14 +89,22 @@ internal data class IptvChannel(
   val mimeType: String?,
   val drm: StreamDrmConfiguration?,
   val backupSources: List<IptvStreamSource> = emptyList(),
+  /**
+   * The address is a watch page rather than a stream.
+   *
+   * DaddyLive's 24/7 grid only publishes player pages, so IPTV has to send those through the
+   * browser resolver instead of handing them straight to Media3.
+   */
+  val resolveViaBrowser: Boolean = false,
 ) {
   val formatLabel: String
     get() =
-      when (mimeType) {
-        MimeTypes.APPLICATION_M3U8 -> "HLS"
-        MimeTypes.APPLICATION_MPD -> "DASH"
-        MimeTypes.VIDEO_MP2T -> "MPEG-TS"
-        MimeTypes.VIDEO_MP4 -> "MP4"
+      when {
+        resolveViaBrowser -> "DLHD"
+        mimeType == MimeTypes.APPLICATION_M3U8 -> "HLS"
+        mimeType == MimeTypes.APPLICATION_MPD -> "DASH"
+        mimeType == MimeTypes.VIDEO_MP2T -> "MPEG-TS"
+        mimeType == MimeTypes.VIDEO_MP4 -> "MP4"
         else -> "LIVE"
       }
 
@@ -145,9 +159,22 @@ internal object IptvRepository {
         }
       val parsed = remotePlaylist ?: staleDiskPlaylist ?: bundledPlaylist.value
       val resilient = parsed.withMatchingBackupSources()
-      cached = resilient
+      // DaddyLive's grid is optional: a failure there must not blank the rest of IPTV.
+      val daddyLive =
+        runCatching {
+            if (refresh) DlhdChannelsRepository.refresh() else DlhdChannelsRepository.channels()
+          }
+          .onFailure { Log.w("GizTvIptv", "DaddyLive 24/7 channels unavailable", it) }
+          .getOrDefault(emptyList())
+      val merged =
+        if (daddyLive.isEmpty()) {
+          resilient
+        } else {
+          resilient.copy(channels = daddyLive + resilient.channels)
+        }
+      cached = merged
       cachedAtEpochMs = now
-      resilient
+      merged
     }
 }
 
@@ -380,6 +407,7 @@ internal fun iptvCategoryFor(channel: IptvChannel): String =
   iptvCategoryFor(group = channel.group, channelName = channel.name)
 
 internal fun iptvCategoryFor(group: String, channelName: String = ""): String {
+  if (group.equals(DLHD_IPTV_GROUP, ignoreCase = true)) return IPTV_CATEGORY_DADDYLIVE
   val normalizedGroup = group.trim().lowercase(Locale.ENGLISH)
   val fallbackToName =
     normalizedGroup.isBlank() ||

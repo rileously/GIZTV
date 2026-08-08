@@ -73,8 +73,10 @@ import com.example.auroratv.theme.SoftWhite
 import com.example.auroratv.ui.catalog.CatalogButton
 import com.example.auroratv.ui.catalog.CatalogIconButton
 import com.example.auroratv.ui.catalog.CatalogSearchField
+import com.example.auroratv.ui.catalog.ChipRow
 import com.example.auroratv.ui.catalog.GizTvMark
 import com.example.auroratv.ui.catalog.StatusPanel
+import com.example.auroratv.ui.catalog.remoteFocusNavigation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -102,9 +104,11 @@ internal fun DlhdSoccerScreen(
   val refreshFocusRequester = remember { FocusRequester() }
   val searchFieldFocusRequester = remember { FocusRequester() }
   val searchButtonFocusRequester = remember { FocusRequester() }
+  val chipFocusRequester = remember { FocusRequester() }
   val gridFocusRequester = remember { FocusRequester() }
   val gridState = rememberLazyGridState()
 
+  var selectedCategory by rememberSaveable { mutableStateOf(DLHD_CATEGORY_ALL) }
   var query by rememberSaveable { mutableStateOf("") }
   var searchActive by rememberSaveable { mutableStateOf(false) }
   var searchExpanded by rememberSaveable { mutableStateOf(false) }
@@ -174,14 +178,25 @@ internal fun DlhdSoccerScreen(
     }
   }
 
+  val filters = remember(events) { dlhdCategoryFilters(events) }
+  val activeCategory = selectedCategory.takeIf(filters::contains) ?: filters.firstOrNull()
   val visible =
-    remember(events, searchActive, query) {
-      if (searchActive) searchDlhdEvents(events, query) else events
+    remember(events, activeCategory, searchActive, query) {
+      val scoped = eventsForDlhdCategory(events, activeCategory)
+      if (searchActive) searchDlhdEvents(scoped, query) else scoped
     }
 
-  LaunchedEffect(searchActive, loading) {
+  LaunchedEffect(activeCategory, searchActive, loading) {
     if (!loading && gridState.layoutInfo.totalItemsCount > 0) gridState.scrollToItem(0)
   }
+
+  val heading =
+    when {
+      searchActive -> "Results for “${query.trim()}”"
+      activeCategory == null || activeCategory == DLHD_CATEGORY_ALL -> "All soccer events"
+      activeCategory == DLHD_CATEGORY_CLUB_FRIENDLY -> "Club friendlies"
+      else -> "All soccer events"
+    }
 
   BoxWithConstraints(
     modifier =
@@ -261,7 +276,7 @@ internal fun DlhdSoccerScreen(
             modifier =
               Modifier.focusRequester(refreshFocusRequester).focusProperties {
                 right = backFocusRequester
-                down = searchFieldFocusRequester
+                down = chipFocusRequester
               },
           )
           if (!hideBackButton) {
@@ -274,13 +289,33 @@ internal fun DlhdSoccerScreen(
               modifier =
                 Modifier.focusRequester(backFocusRequester).focusProperties {
                   left = refreshFocusRequester
-                  down = searchFieldFocusRequester
+                  down = chipFocusRequester
                 },
             )
           }
         }
       }
       Spacer(Modifier.height(if (phoneDense) 6.dp else if (compact) 8.dp else 12.dp))
+
+      if (filters.size > 1) {
+        ChipRow(
+          labels = filters,
+          selectedIndex = if (searchActive) -1 else activeCategory?.let(filters::indexOf) ?: -1,
+          onSelect = { index ->
+            selectedCategory = filters.getOrNull(index) ?: DLHD_CATEGORY_ALL
+            query = ""
+            searchActive = false
+            if (phoneDense) searchExpanded = false
+          },
+          firstChipFocusRequester = chipFocusRequester,
+          up = if (hideBackButton) refreshFocusRequester else backFocusRequester,
+          down = if (showSearchRow) searchFieldFocusRequester else gridFocusRequester,
+          semanticsRole = Role.Tab,
+          compactChips = true,
+          modifier = Modifier.horizontalScroll(rememberScrollState()),
+        )
+        Spacer(Modifier.height(if (phoneDense) 6.dp else 9.dp))
+      }
 
       if (showSearchRow) {
         Row(
@@ -300,16 +335,34 @@ internal fun DlhdSoccerScreen(
             },
             ::runSearch,
             Modifier.weight(1f).focusRequester(searchFieldFocusRequester).focusProperties {
-              up = if (hideBackButton) refreshFocusRequester else backFocusRequester
+              up =
+                when {
+                  filters.size > 1 -> chipFocusRequester
+                  hideBackButton -> refreshFocusRequester
+                  else -> backFocusRequester
+                }
               down = gridFocusRequester
               right = searchButtonFocusRequester
-            },
+            }.remoteFocusNavigation(
+              up =
+                when {
+                  filters.size > 1 -> chipFocusRequester
+                  hideBackButton -> refreshFocusRequester
+                  else -> backFocusRequester
+                },
+              down = gridFocusRequester,
+            ),
           )
           CatalogButton(
             "Search",
             ::runSearch,
             Modifier.focusRequester(searchButtonFocusRequester).focusProperties {
-              up = if (hideBackButton) refreshFocusRequester else backFocusRequester
+              up =
+                when {
+                  filters.size > 1 -> chipFocusRequester
+                  hideBackButton -> refreshFocusRequester
+                  else -> backFocusRequester
+                }
               left = searchFieldFocusRequester
               down = gridFocusRequester
             },
@@ -349,7 +402,7 @@ internal fun DlhdSoccerScreen(
               Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                   Text(
-                    if (searchActive) "Results for “${query.trim()}”" else "All soccer events",
+                    heading,
                     color = SoftWhite,
                     fontWeight = FontWeight.Black,
                     fontSize = if (narrow) 17.sp else 19.sp,
@@ -445,7 +498,7 @@ private fun DlhdSoccerEventCard(
       )
       Spacer(Modifier.weight(1f))
       Text(
-        "SOCCER",
+        event.category.uppercase(),
         color = MutedBlue.copy(alpha = .75f),
         fontWeight = FontWeight.Bold,
         letterSpacing = 1.sp,

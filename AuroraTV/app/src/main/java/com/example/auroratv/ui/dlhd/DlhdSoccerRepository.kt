@@ -16,6 +16,7 @@ import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 import javax.net.ssl.SSLException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -30,6 +31,7 @@ internal data class DlhdSoccerEvent(
   val id: String,
   val match: String,
   val league: String,
+  val category: String,
   val channels: List<DlhdSoccerChannel>,
   val ukTime: String,
   val startAtMs: Long?,
@@ -71,8 +73,14 @@ internal fun DlhdSoccerEvent.toPlayback(channel: DlhdSoccerChannel = channels.fi
   )
 
 internal const val DLHD_ORIGIN = "https://dlhd.st"
-internal const val DLHD_SOCCER_SCHEDULE_URL =
+internal const val DLHD_CATEGORY_ALL = "All"
+internal const val DLHD_CATEGORY_SOCCER = "All Soccer"
+internal const val DLHD_CATEGORY_CLUB_FRIENDLY = "Club Friendly"
+
+private const val DLHD_SOCCER_SCHEDULE_URL =
   "$DLHD_ORIGIN/index.php?cat=All+Soccer+Events+%E2%9A%BD"
+private const val DLHD_CLUB_FRIENDLY_SCHEDULE_URL =
+  "$DLHD_ORIGIN/index.php?cat=Club+Friendly+%E2%9A%BD"
 
 /** How long a fetched schedule stays good before the page asks again. */
 private const val FEED_TTL_MS = 60_000L
@@ -92,24 +100,42 @@ internal object DlhdSoccerRepository {
 
 private suspend fun requestEvents(): List<DlhdSoccerEvent> =
   withContext(Dispatchers.IO) {
-    val connection = (URL(DLHD_SOCCER_SCHEDULE_URL).openConnection() as HttpURLConnection)
-    try {
-      connection.requestMethod = "GET"
-      connection.setRequestProperty("Accept", "text/html,application/xhtml+xml")
-      connection.setRequestProperty("Referer", "$DLHD_ORIGIN/")
-      connection.setRequestProperty("User-Agent", dlhdUserAgent())
-      connection.connectTimeout = 12_000
-      connection.readTimeout = 20_000
-      val status = connection.responseCode
-      if (status == HttpURLConnection.HTTP_UNAVAILABLE || status == 429) {
-        throw IOException("Soccer schedule is busy right now. Try again in a moment.")
+    // Both category pages are asked together: Club Friendly is its own listing, and All Soccer does
+    // not always carry every friendly, so one request would leave half the night off the page.
+    val soccer =
+      async {
+        fetchScheduleHtml(DLHD_SOCCER_SCHEDULE_URL).let {
+          parseDlhdSoccerSchedule(it, category = DLHD_CATEGORY_SOCCER)
+        }
       }
-      if (status !in 200..299) throw IOException("Soccer schedule returned HTTP $status")
-      parseDlhdSoccerSchedule(connection.inputStream.bufferedReader().use { it.readText() })
-    } finally {
-      connection.disconnect()
-    }
+    val friendlies =
+      async {
+        fetchScheduleHtml(DLHD_CLUB_FRIENDLY_SCHEDULE_URL).let {
+          parseDlhdSoccerSchedule(it, category = DLHD_CATEGORY_CLUB_FRIENDLY)
+        }
+      }
+    mergeDlhdSchedules(soccer.await(), friendlies.await())
   }
+
+private fun fetchScheduleHtml(url: String): String {
+  val connection = (URL(url).openConnection() as HttpURLConnection)
+  try {
+    connection.requestMethod = "GET"
+    connection.setRequestProperty("Accept", "text/html,application/xhtml+xml")
+    connection.setRequestProperty("Referer", "$DLHD_ORIGIN/")
+    connection.setRequestProperty("User-Agent", dlhdUserAgent())
+    connection.connectTimeout = 12_000
+    connection.readTimeout = 20_000
+    val status = connection.responseCode
+    if (status == HttpURLConnection.HTTP_UNAVAILABLE || status == 429) {
+      throw IOException("Soccer schedule is busy right now. Try again in a moment.")
+    }
+    if (status !in 200..299) throw IOException("Soccer schedule returned HTTP $status")
+    return connection.inputStream.bufferedReader().use { it.readText() }
+  } finally {
+    connection.disconnect()
+  }
+}
 
 internal fun dlhdUserAgent(): String =
   "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) " +
@@ -153,6 +179,7 @@ internal fun parseDlhdSoccerSchedule(
   html: String,
   zone: TimeZone = TimeZone.getDefault(),
   nowMs: Long = System.currentTimeMillis(),
+  category: String = DLHD_CATEGORY_SOCCER,
 ): List<DlhdSoccerEvent> {
   val dayStartUk = parseScheduleDayStartUk(html, nowMs)
   val events = ArrayList<DlhdSoccerEvent>()
@@ -161,21 +188,59 @@ internal fun parseDlhdSoccerSchedule(
   while (matcher.find()) {
     val header = matcher.group(1) ?: continue
     val channelHtml = matcher.group(2) ?: continue
-    val event = parseEventBlock(header, channelHtml, dayStartUk, zone) ?: continue
+    val event = parseEventBlock(header, channelHtml, dayStartUk, zone, category) ?: continue
     // One card per fixture: later duplicates (backup schedule columns) are ignored.
     if (!seen.add(event.id)) continue
     events.add(event)
   }
-  return events.sortedWith(
+  return sortDlhdEvents(events)
+}
+
+/**
+ * Combines category pages without doubling a fixture that appears on more than one.
+ *
+ * First listing wins, so All Soccer keeps its card when Club Friendly repeats the same kick-off.
+ */
+internal fun mergeDlhdSchedules(vararg lists: List<DlhdSoccerEvent>): List<DlhdSoccerEvent> {
+  val merged = LinkedHashMap<String, DlhdSoccerEvent>()
+  for (list in lists) {
+    for (event in list) {
+      merged.putIfAbsent(event.id, event)
+    }
+  }
+  return sortDlhdEvents(merged.values.toList())
+}
+
+internal fun dlhdCategoryFilters(events: List<DlhdSoccerEvent>): List<String> {
+  if (events.isEmpty()) return emptyList()
+  val filters = mutableListOf(DLHD_CATEGORY_ALL)
+  if (events.any { it.category == DLHD_CATEGORY_SOCCER }) filters.add(DLHD_CATEGORY_SOCCER)
+  if (events.any { it.category == DLHD_CATEGORY_CLUB_FRIENDLY }) {
+    filters.add(DLHD_CATEGORY_CLUB_FRIENDLY)
+  }
+  return filters
+}
+
+internal fun eventsForDlhdCategory(
+  events: List<DlhdSoccerEvent>,
+  category: String?,
+): List<DlhdSoccerEvent> =
+  when (category) {
+    null, DLHD_CATEGORY_ALL -> events
+    else -> events.filter { it.category == category }
+  }
+
+private fun sortDlhdEvents(events: List<DlhdSoccerEvent>): List<DlhdSoccerEvent> =
+  events.sortedWith(
     compareBy<DlhdSoccerEvent> { it.startAtMs ?: Long.MAX_VALUE }.thenBy { it.match },
   )
-}
 
 private fun parseEventBlock(
   header: String,
   channelHtml: String,
   dayStartUk: Long?,
   zone: TimeZone,
+  category: String,
 ): DlhdSoccerEvent? {
   val timeMatcher = EVENT_TIME.matcher(header)
   if (!timeMatcher.find()) return null
@@ -197,6 +262,7 @@ private fun parseEventBlock(
     id = id,
     match = match,
     league = league,
+    category = category,
     channels = channels,
     ukTime = ukTime,
     startAtMs = startAtMs,
@@ -245,7 +311,11 @@ internal fun stripEmojiNoise(value: String): String {
   var index = 0
   while (index < value.length) {
     val codePoint = value.codePointAt(index)
-    if (codePoint != 0x26BD && codePoint !in 0x1F1E6..0x1F1FF) {
+    if (
+      codePoint != 0x26BD &&
+        codePoint != 0x1F3F4 &&
+        codePoint !in 0x1F1E6..0x1F1FF
+    ) {
       cleaned.appendCodePoint(codePoint)
     } else {
       cleaned.append(' ')
