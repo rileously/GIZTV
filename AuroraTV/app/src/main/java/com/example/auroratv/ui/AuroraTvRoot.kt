@@ -46,6 +46,7 @@ import com.example.auroratv.ui.drama.ShortDramaScreen
 import com.example.auroratv.ui.main.AuroraTvApp
 import com.example.auroratv.ui.iptv.IptvBrowseState
 import com.example.auroratv.ui.iptv.IptvScreen
+import com.example.auroratv.ui.dlhd.DlhdSoccerScreen
 import com.example.auroratv.ui.sports.SportsScreen
 import com.example.auroratv.ui.player.HlsPlayerScreen
 import androidx.media3.common.Player
@@ -98,6 +99,7 @@ private enum class Destination {
   SHORT_DRAMAS,
   DRAMA_DETAIL,
   SPORTS,
+  DLHD_SOCCER,
   IPTV,
   REMOTE,
   WEB_HOME,
@@ -111,6 +113,7 @@ private fun Destination.showsPhoneBottomNav(): Boolean =
     Destination.CATALOG,
     Destination.SHORT_DRAMAS,
     Destination.SPORTS,
+    Destination.DLHD_SOCCER,
     Destination.IPTV,
     Destination.WEB_HOME,
     -> true
@@ -120,7 +123,9 @@ private fun Destination.showsPhoneBottomNav(): Boolean =
 private fun Destination.toPhoneBottomTab(): PhoneBottomTab? =
   when (this) {
     Destination.CATALOG -> PhoneBottomTab.MOVIES
-    Destination.SPORTS -> PhoneBottomTab.SPORTS
+    Destination.SPORTS,
+    Destination.DLHD_SOCCER,
+    -> PhoneBottomTab.SPORTS
     Destination.SHORT_DRAMAS -> PhoneBottomTab.SHORTS
     Destination.WEB_HOME -> PhoneBottomTab.WEB
     Destination.IPTV -> PhoneBottomTab.IPTV
@@ -230,11 +235,16 @@ fun AuroraTvRoot(
       destination == Destination.SHORT_DRAMAS ||
         destination == Destination.DRAMA_DETAIL ||
         destination == Destination.SPORTS ||
+        destination == Destination.DLHD_SOCCER ||
         destination == Destination.IPTV ||
         destination == Destination.REMOTE
   ) {
     destination =
-      if (destination == Destination.DRAMA_DETAIL) Destination.SHORT_DRAMAS else Destination.CATALOG
+      when (destination) {
+        Destination.DRAMA_DETAIL -> Destination.SHORT_DRAMAS
+        Destination.DLHD_SOCCER -> Destination.SPORTS
+        else -> Destination.CATALOG
+      }
   }
 
   fun openForPlayback(context: PlaybackContext, returnTo: Destination) {
@@ -326,6 +336,7 @@ fun AuroraTvRoot(
         when (destination) {
           Destination.CATALOG,
           Destination.SPORTS,
+          Destination.DLHD_SOCCER,
           Destination.SHORT_DRAMAS,
           Destination.IPTV,
           -> requestSectionSearch = true
@@ -349,6 +360,7 @@ fun AuroraTvRoot(
       onOpenWeb = { destination = Destination.WEB_HOME },
       onOpenShortDramas = { destination = Destination.SHORT_DRAMAS },
       onOpenSports = { destination = Destination.SPORTS },
+      onOpenDlhdSoccer = { destination = Destination.DLHD_SOCCER },
       onOpenIptv = { destination = Destination.IPTV },
       // Nothing to find if it is already known, and nothing worth starting over a title that is
       // already being looked for.
@@ -377,7 +389,8 @@ fun AuroraTvRoot(
         if (
           destination == Destination.PLAYER ||
             destination == Destination.CATALOG ||
-            destination == Destination.SPORTS
+            destination == Destination.SPORTS ||
+            destination == Destination.DLHD_SOCCER
         ) {
           StreamPrefetcher(
             target = prefetchTarget,
@@ -465,6 +478,7 @@ fun AuroraTvRoot(
           Destination.SPORTS ->
             SportsScreen(
               onPlay = { context -> openForPlayback(context, Destination.SPORTS) },
+              onOpenDlhdSoccer = { destination = Destination.DLHD_SOCCER },
               onConsidering = { considered ->
                 if (
                   streamCache.find(considered.pageUrl) == null &&
@@ -474,6 +488,22 @@ fun AuroraTvRoot(
                 }
               },
               onBack = { destination = Destination.CATALOG },
+              hideBackButton = showPhoneBottomNav,
+              requestSearchFocus = requestSectionSearch,
+              onSearchFocusHandled = { requestSectionSearch = false },
+            )
+          Destination.DLHD_SOCCER ->
+            DlhdSoccerScreen(
+              onPlay = { context -> openForPlayback(context, Destination.DLHD_SOCCER) },
+              onConsidering = { considered ->
+                if (
+                  streamCache.find(considered.pageUrl) == null &&
+                    prefetchTarget?.pageUrl != considered.pageUrl
+                ) {
+                  prefetchTarget = considered
+                }
+              },
+              onBack = { destination = Destination.SPORTS },
               hideBackButton = showPhoneBottomNav,
               requestSearchFocus = requestSectionSearch,
               onSearchFocusHandled = { requestSectionSearch = false },

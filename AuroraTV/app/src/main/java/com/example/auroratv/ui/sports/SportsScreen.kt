@@ -106,6 +106,7 @@ internal fun SportsScreen(
   onPlay: (PlaybackContext) -> Unit,
   /** A fixture the viewer has paused on, worth finding the stream for before they ask. */
   onConsidering: (PlaybackContext) -> Unit = {},
+  onOpenDlhdSoccer: (() -> Unit)? = null,
   onBack: () -> Unit,
   /** Phone footer already provides navigation; hide the redundant Back control. */
   hideBackButton: Boolean = false,
@@ -298,6 +299,15 @@ internal fun SportsScreen(
                 down = chipFocusRequester
               },
           )
+          if (onOpenDlhdSoccer != null) {
+            CatalogButton(
+              label = "Soccer",
+              onClick = {
+                dismissKeyboard()
+                onOpenDlhdSoccer()
+              },
+            )
+          }
           if (!hideBackButton) {
             CatalogButton(
               label = "Back",

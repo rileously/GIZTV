@@ -1,0 +1,134 @@
+package com.example.auroratv
+
+import com.example.auroratv.ui.dlhd.parseDlhdSoccerSchedule
+import com.example.auroratv.ui.dlhd.parseScheduleDayStartUk
+import com.example.auroratv.ui.dlhd.searchDlhdEvents
+import com.example.auroratv.ui.dlhd.splitLeagueAndMatch
+import com.example.auroratv.ui.dlhd.stripEmojiNoise
+import com.example.auroratv.ui.dlhd.toPlayback
+import com.example.auroratv.ui.dlhd.ukKickOffMs
+import java.util.TimeZone
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/** DaddyLive soccer schedule parsing and listing helpers. */
+class DlhdSoccerScheduleTest {
+  @Test
+  fun parser_readsFixturesAndChannelPages() {
+    val events = parseDlhdSoccerSchedule(SAMPLE_HTML, TimeZone.getTimeZone("GMT"), NOW_MS)
+
+    assertEquals(2, events.size)
+    val chelsea = events.first()
+    assertEquals("Chelsea vs Auckland FC", chelsea.match)
+    assertEquals("Pre Season Friendly (Women) 2026", chelsea.league)
+    assertEquals("04:00", chelsea.ukTime)
+    assertEquals("https://dlhd.st/watch.php?id=712", chelsea.watchUrl)
+    assertEquals(listOf("beIN Sports Malaysia"), chelsea.channels.map { it.name })
+  }
+
+  @Test
+  fun parser_keepsMultipleChannelsOnOneFixture() {
+    val portugal = parseDlhdSoccerSchedule(SAMPLE_HTML, TimeZone.getTimeZone("GMT"), NOW_MS).last()
+
+    assertEquals("Chaves vs Académica", portugal.match)
+    assertEquals(
+      listOf("Sport TV1 Portugal", "Sport TV1 Portugal Backup", "Backup Stream"),
+      portugal.channels.map { it.name },
+    )
+    assertEquals("https://dlhd.st/watch.php?id=49", portugal.watchUrl)
+  }
+
+  @Test
+  fun parser_skipsEventsWithNoChannelToOpen() {
+    assertTrue(parseDlhdSoccerSchedule(NO_CHANNEL_HTML, TimeZone.getTimeZone("GMT"), NOW_MS).isEmpty())
+  }
+
+  @Test
+  fun title_splitsLeagueFromMatchAndStripsFlags() {
+    assertEquals(
+      "Romania Liga II" to "Concordia Chiajna vs FC Bihor Oradea",
+      splitLeagueAndMatch("⚽ 🇷🇴 Romania Liga II : Concordia Chiajna 🇷🇴 vs FC Bihor Oradea 🇷🇴"),
+    )
+    assertEquals(
+      "Germany Bundesliga 2" to "Multiview",
+      splitLeagueAndMatch("⚽ 🇩🇪 Germany Bundesliga 2 : Multiview"),
+    )
+    assertEquals("ball gone", stripEmojiNoise("⚽ ball gone"))
+  }
+
+  @Test
+  fun kickOff_isReadAsUkGmt() {
+    val dayStart = parseScheduleDayStartUk(SAMPLE_HTML, NOW_MS)!!
+    assertEquals(dayStart + 4L * 60L * 60L * 1000L, ukKickOffMs(dayStart, "04:00"))
+    assertEquals(
+      "09:00",
+      parseDlhdSoccerSchedule(SAMPLE_HTML, TimeZone.getTimeZone("GMT+5"), NOW_MS).first().kickOffLabel,
+    )
+  }
+
+  @Test
+  fun playback_opensTheChosenChannelPage() {
+    val event = parseDlhdSoccerSchedule(SAMPLE_HTML, TimeZone.getTimeZone("GMT"), NOW_MS).last()
+    val backup = event.channels.last()
+    val playback = event.toPlayback(backup)
+
+    assertEquals("https://dlhd.st/watch.php?id=4118", playback.pageUrl)
+    assertEquals("Chaves vs Académica", playback.title)
+    assertTrue(playback.subtitle!!.contains("Backup Stream"))
+    assertEquals("Soccer", playback.genres.single())
+  }
+
+  @Test
+  fun search_matchesTeamLeagueOrChannel() {
+    val events = parseDlhdSoccerSchedule(SAMPLE_HTML, TimeZone.getTimeZone("GMT"), NOW_MS)
+
+    assertEquals(listOf("Chelsea vs Auckland FC"), searchDlhdEvents(events, "chelsea").map { it.match })
+    assertEquals(listOf("Chaves vs Académica"), searchDlhdEvents(events, "segunda").map { it.match })
+    assertEquals(listOf("Chelsea vs Auckland FC"), searchDlhdEvents(events, "bein").map { it.match })
+  }
+
+  private companion object {
+    // Midday on the schedule day so the day-start guard accepts it.
+    const val NOW_MS = 1_786_190_400_000L // 2026-08-08 12:00 GMT
+
+    val SAMPLE_HTML =
+      """
+      <div class="schedule__dayTitle">Saturday 08th Aug 2026 - Schedule Time UK GMT</div>
+      <div class="schedule__event">
+        <div class="schedule__eventHeader" data-title="chelsea">
+          <span class="schedule__time" data-time="04:00">09:00</span>
+          <span class="schedule__eventTitle">⚽ 🇬🇧 Pre Season Friendly (Women) 2026 : Chelsea 🇬🇧 vs Auckland FC 🇳🇿</span>
+        </div>
+        <div class="schedule__channels" style="display: none;">
+          <a target="_blank" href="/watch.php?id=712" title="beIN Sports Malaysia">beIN Sports Malaysia</a>
+        </div>
+      </div>
+      <div class="schedule__event">
+        <div class="schedule__eventHeader" data-title="chaves">
+          <span class="schedule__time" data-time="10:00">15:00</span>
+          <span class="schedule__eventTitle">⚽ 🇵🇹 Portugal Segunda Liga : Chaves 🇵🇹 vs Académica 🇵🇹</span>
+        </div>
+        <div class="schedule__channels" style="display: none;">
+          <a target="_blank" href="/watch.php?id=49" title="Sport TV1 Portugal">Sport TV1 Portugal</a>
+          <a target="_blank" href="/watch.php?id=3021" title="Sport TV1 Portugal Backup">Sport TV1 Portugal Backup</a>
+          <a target="_blank" href="/watch.php?id=4118" title="Backup Stream">Backup Stream</a>
+        </div>
+      </div>
+      """
+        .trimIndent()
+
+    val NO_CHANNEL_HTML =
+      """
+      <div class="schedule__dayTitle">Saturday 08th Aug 2026 - Schedule Time UK GMT</div>
+      <div class="schedule__event">
+        <div class="schedule__eventHeader">
+          <span class="schedule__time" data-time="12:00">17:00</span>
+          <span class="schedule__eventTitle">⚽ Ghost Match : Nowhere vs Nobody</span>
+        </div>
+        <div class="schedule__channels" style="display: none;"></div>
+      </div>
+      """
+        .trimIndent()
+  }
+}
