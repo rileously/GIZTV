@@ -1,6 +1,7 @@
 package com.example.auroratv
 
 import androidx.media3.common.MimeTypes
+import com.example.auroratv.ui.player.castCanCastFetchDirect
 import com.example.auroratv.ui.player.castRequiresPhoneProxy
 import com.example.auroratv.ui.player.castSensitiveHeaders
 import com.example.auroratv.ui.player.isCastContainerSupported
@@ -96,6 +97,47 @@ class CastPlaybackSupportTest {
     assertTrue(looksLikeHlsPlaylist("application/vnd.apple.mpegurl", ""))
     assertTrue(looksLikeHlsPlaylist(null, "#EXTM3U\n#EXTINF"))
     assertFalse(looksLikeHlsPlaylist("video/mp4", "ftyp"))
+  }
+
+  @Test
+  fun castCanCastFetchDirect_sendsMediaSegmentsStraightToCdn() {
+    val refererOnly = mapOf("Referer" to "https://skyflix.to/")
+    assertTrue(castCanCastFetchDirect("https://cdn.example/live/seg001.ts", refererOnly))
+    assertTrue(castCanCastFetchDirect("https://cdn.example/live/seg001.m4s", refererOnly))
+    assertFalse(castCanCastFetchDirect("https://cdn.example/live/index.m3u8", refererOnly))
+    assertFalse(castCanCastFetchDirect("https://cdn.example/live/keys/1.key", refererOnly))
+    assertFalse(castCanCastFetchDirect("https://cdn.example/live/init.mp4", refererOnly))
+    assertFalse(
+      castCanCastFetchDirect(
+        "https://cdn.example/live/seg001.ts",
+        mapOf("Cookie" to "sid=1", "Referer" to "https://skyflix.to/"),
+      ),
+    )
+  }
+
+  @Test
+  fun rewriteHlsPlaylistForCastProxy_canLeaveSegmentsOnCdn() {
+    val playlist =
+      """
+      #EXTM3U
+      #EXT-X-KEY:METHOD=AES-128,URI="keys/1.key"
+      #EXTINF:4,
+      segment0.ts
+      variant.m3u8
+      """.trimIndent()
+    val headers = mapOf("Referer" to "https://example/")
+    val rewritten =
+      rewriteHlsPlaylistForCastProxy(
+        body = playlist,
+        playlistUrl = "https://cdn.example/live/master.m3u8",
+        proxyUriFor = { absolute ->
+          if (castCanCastFetchDirect(absolute, headers)) absolute
+          else "http://phone/cast/${absolute.substringAfterLast('/')}"
+        },
+      )
+    assertTrue(rewritten.contains("""URI="http://phone/cast/1.key""""))
+    assertTrue(rewritten.contains("https://cdn.example/live/segment0.ts"))
+    assertTrue(rewritten.contains("http://phone/cast/variant.m3u8"))
   }
 
   @Test

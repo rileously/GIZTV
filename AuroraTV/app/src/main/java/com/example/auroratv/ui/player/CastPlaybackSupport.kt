@@ -77,6 +77,38 @@ internal fun castRequiresPhoneProxy(headers: Map<String, String>): Boolean {
   }
 }
 
+/**
+ * Whether Chromecast can fetch this playlist URI itself instead of bouncing through the phone.
+ *
+ * Media segments are the bulk of Cast traffic. Sending every `.ts` / `.m4s` through the phone
+ * doubles Wi-Fi hops and feels like constant buffering. Playlists and keys still need the proxy
+ * (rewrite + Referer), but bare segment URLs usually work once Cast has the absolute CDN address.
+ * Cookie / Authorization streams stay fully proxied — those CDNs reject headerless segment GETs.
+ */
+internal fun castCanCastFetchDirect(absoluteUrl: String, headers: Map<String, String>): Boolean {
+  val sensitive = castSensitiveHeaders(headers)
+  val needsAuthHeaders =
+    sensitive.keys.any { key ->
+      val name = key.lowercase(Locale.US)
+      name == "cookie" || name == "authorization"
+    }
+  if (needsAuthHeaders) return false
+  return isHlsMediaSegmentUrl(absoluteUrl)
+}
+
+/** True for typical HLS media segment paths (not playlists, keys, or init maps). */
+internal fun isHlsMediaSegmentUrl(url: String): Boolean {
+  val path = url.substringBefore('#').substringBefore('?').lowercase(Locale.US)
+  return path.endsWith(".ts") ||
+    path.endsWith(".m4s") ||
+    path.endsWith(".cmfv") ||
+    path.endsWith(".cmfa") ||
+    path.endsWith(".aac") ||
+    path.endsWith(".mp3") ||
+    path.endsWith(".vtt") ||
+    path.endsWith(".webvtt")
+}
+
 internal fun castHeadersBundle(headers: Map<String, String>): Bundle {
   val filtered = castSensitiveHeaders(headers)
   val keys = filtered.keys.toTypedArray()
