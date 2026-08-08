@@ -93,6 +93,7 @@ internal fun MovieDetailScreen(
   onPlay: (PlaybackContext) -> Unit,
   onOpenMovie: (TmdbMovie) -> Unit,
   onOpenPerson: (personId: Int, name: String, isDirector: Boolean) -> Unit = { _, _, _ -> },
+  onConsidering: (PlaybackContext) -> Unit = {},
   onBack: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -112,6 +113,7 @@ internal fun MovieDetailScreen(
   var selectedReview by remember { mutableStateOf<PlaybackReview?>(null) }
 
   LaunchedEffect(movie.id) {
+    onConsidering(movie.toPlaybackContext())
     loadingDetails = true
     scope.launch {
       runCatching { detailsRepository.movieDetails(movie.id) }

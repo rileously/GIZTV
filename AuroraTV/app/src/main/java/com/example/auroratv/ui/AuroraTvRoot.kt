@@ -265,14 +265,19 @@ fun AuroraTvRoot(
     // actually reorders who gets asked.
     browserUrl = nextProviderPageUrl(context.pageUrl, 0) ?: context.pageUrl
     browserReturnDestination = returnTo
-    // Already found while the last episode was finishing, so the loading page is skipped entirely.
+    // Already found while preloading or watching, so the loading page is skipped entirely.
     val ready = prefetched?.takeIf { (pageUrl, _) -> pageUrl == context.pageUrl }?.second
-    prefetchTarget = null
-    prefetched = null
     if (ready != null) {
+      prefetchTarget = null
+      prefetched = null
       streamRequest = ready.copy(context = context)
       destination = Destination.PLAYER
       return
+    }
+    val isPrefetching = prefetchTarget?.pageUrl == context.pageUrl
+    if (!isPrefetching) {
+      prefetchTarget = null
+      prefetched = null
     }
     // Stop any floating session while a new title is resolved.
     streamRequest = null
@@ -402,6 +407,9 @@ fun AuroraTvRoot(
         if (
           destination == Destination.PLAYER ||
             destination == Destination.CATALOG ||
+            destination == Destination.MOVIE_DETAIL ||
+            destination == Destination.SHOW_DETAIL ||
+            destination == Destination.PERSON_DETAIL ||
             destination == Destination.SPORTS ||
             destination == Destination.DLHD_SOCCER
         ) {
@@ -420,6 +428,12 @@ fun AuroraTvRoot(
                   },
                 sourcePageUrl = stream.sourcePageUrl,
               )
+              if (destination == Destination.BROWSER && pendingContext?.pageUrl == context.pageUrl) {
+                prefetchTarget = null
+                prefetched = null
+                streamRequest = stream.copy(context = context)
+                destination = Destination.PLAYER
+              }
             },
           )
         }
@@ -437,6 +451,11 @@ fun AuroraTvRoot(
                 onOpenPerson = { id, name, isDirector ->
                   selectedPerson = PersonSelection(id, name, isDirector)
                   destination = Destination.PERSON_DETAIL
+                },
+                onConsidering = { considered ->
+                  if (streamCache.find(considered.pageUrl) == null && prefetchTarget?.pageUrl != considered.pageUrl) {
+                    prefetchTarget = considered
+                  }
                 },
                 onBack = { destination = Destination.CATALOG },
               )
@@ -467,6 +486,11 @@ fun AuroraTvRoot(
               TvShowDetailScreen(
                 show = show,
                 onPlayEpisode = { context -> openForPlayback(context, Destination.SHOW_DETAIL) },
+                onConsidering = { considered ->
+                  if (streamCache.find(considered.pageUrl) == null && prefetchTarget?.pageUrl != considered.pageUrl) {
+                    prefetchTarget = considered
+                  }
+                },
                 onBack = { destination = Destination.CATALOG },
               )
             } else {

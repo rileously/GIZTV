@@ -87,6 +87,7 @@ import kotlinx.coroutines.launch
 internal fun TvShowDetailScreen(
   show: TmdbShow,
   onPlayEpisode: (PlaybackContext) -> Unit,
+  onConsidering: (PlaybackContext) -> Unit = {},
   onBack: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -125,6 +126,13 @@ internal fun TvShowDetailScreen(
   }
 
   LaunchedEffect(show.id) {
+    onConsidering(
+      PlaybackContext(
+        title = show.name,
+        pageUrl = vidfastEpisodeUrl(show.id, 1, 1),
+        posterUrl = show.posterUrl,
+      )
+    )
     loadingSeasons = true
     errorMessage = null
     runCatching { repository.seasons(show.id) }

@@ -256,7 +256,7 @@ internal fun CatalogScreen(
   var errorMessage by remember { mutableStateOf<String?>(null) }
   var confirmingHistoryClear by rememberSaveable { mutableStateOf(false) }
   /** How far down the listings have been asked for; grows as the viewer scrolls towards them. */
-  var railsRequested by remember { mutableStateOf(EAGER_RAILS) }
+  var railsRequested by rememberSaveable { mutableStateOf(EAGER_RAILS) }
   /**
    * Rails already asked for, keyed by tab.
    *
@@ -607,7 +607,7 @@ internal fun CatalogScreen(
   // the screen is not switching, though — and every return from a title arrives, because opening one
   // tears this screen down. Sending the viewer back to the top of the page they had scrolled through
   // is most of what made coming back feel like a reload.
-  var arrived by remember { mutableStateOf(false) }
+  var arrived by rememberSaveable { mutableStateOf(false) }
   LaunchedEffect(tab, searchActive) {
     if (!arrived) {
       arrived = true
