@@ -389,6 +389,7 @@ private fun Modifier.remoteFocusNavigation(
   right: FocusRequester? = null,
 ): Modifier =
   onPreviewKeyEvent { event ->
+    if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
     val destination =
       when (event.key) {
         Key.DirectionUp -> up
@@ -396,13 +397,8 @@ private fun Modifier.remoteFocusNavigation(
         Key.DirectionLeft -> left
         Key.DirectionRight -> right
         else -> null
-      }
-    if (destination == null) {
-      false
-    } else {
-      if (event.type == KeyEventType.KeyDown) destination.requestFocus()
-      true
-    }
+      } ?: return@onPreviewKeyEvent false
+    runCatching { destination.requestFocus() }.getOrDefault(false)
   }
 
 @Composable

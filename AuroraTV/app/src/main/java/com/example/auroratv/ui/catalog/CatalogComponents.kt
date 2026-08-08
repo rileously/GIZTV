@@ -632,6 +632,11 @@ internal fun PosterCard(
  *
  * Compose's own focus search struggles across the lazy lists and grids used by the catalog, so
  * screens hand it the exact neighbour for each direction.
+ *
+ * A press is only consumed when the neighbour actually takes focus. An unattached FocusRequester
+ * (a LazyColumn rail that has not been composed yet, a placeholder with no card) used to return
+ * false from [FocusRequester.requestFocus] while this still ate the key — which left the pad dead
+ * on Search with no way down into the movies list.
  */
 internal fun Modifier.remoteFocusNavigation(
   up: FocusRequester? = null,
@@ -640,6 +645,7 @@ internal fun Modifier.remoteFocusNavigation(
   right: FocusRequester? = null,
 ): Modifier =
   onPreviewKeyEvent { event ->
+    if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
     val destination =
       when (event.key) {
         Key.DirectionUp -> up
@@ -647,13 +653,8 @@ internal fun Modifier.remoteFocusNavigation(
         Key.DirectionLeft -> left
         Key.DirectionRight -> right
         else -> null
-      }
-    if (destination == null) {
-      false
-    } else {
-      if (event.type == KeyEventType.KeyDown) destination.requestFocus()
-      true
-    }
+      } ?: return@onPreviewKeyEvent false
+    runCatching { destination.requestFocus() }.getOrDefault(false)
   }
 @Composable
 internal fun ContinueWatchingSection(

@@ -700,9 +700,14 @@ internal fun CatalogScreen(
   // personalised rails aim here rather than at position zero, which may still be shimmering.
   val firstLoadedRail = sections.indexOfFirst { !it.pending }.coerceAtLeast(0)
   val firstRailFocusRequester = railFocusRequesters[firstLoadedRail]
+  // Down from Search must land on something that is on screen (and therefore composed). Jumping
+  // straight to a genre rail while Continue / Recommended / Cast fill the fold left the requester
+  // unattached, and the pad stopped on Search.
   val firstBodyFocusRequester =
     when {
       showContinueRow -> continueRowFocusRequester
+      showRecommendedRail -> recommendedFocusRequester
+      showActorRail -> actorFocusRequester
       showRails -> firstRailFocusRequester
       else -> gridFocusRequester
     }
@@ -1058,7 +1063,9 @@ internal fun CatalogScreen(
                     up = up,
                     down = down,
                     onMoveDown = if (index + 1 < sections.size) { { moveToRail(index + 1) } } else null,
-                    onMoveUp = if (index > 0) { { moveToRail(index - 1) } } else null,
+                    // Above the first loaded rail, Up is named via [up] (cast / recommended /
+                    // continue / search). Intercepting it here would send the pad at a placeholder.
+                    onMoveUp = if (index > firstLoadedRail) { { moveToRail(index - 1) } } else null,
                   ) { movie, cardModifier ->
                     PosterCard(
                       title = movie.title,
@@ -1083,7 +1090,7 @@ internal fun CatalogScreen(
                     up = up,
                     down = down,
                     onMoveDown = if (index + 1 < sections.size) { { moveToRail(index + 1) } } else null,
-                    onMoveUp = if (index > 0) { { moveToRail(index - 1) } } else null,
+                    onMoveUp = if (index > firstLoadedRail) { { moveToRail(index - 1) } } else null,
                   ) { show, cardModifier ->
                     PosterCard(
                       title = show.name,
@@ -1494,6 +1501,9 @@ private fun <T> CatalogRail(
   Column(
     modifier =
       Modifier.onPreviewKeyEvent { event ->
+        // Own up/down so a LazyRow card does not lose the press to spatial search (which readily
+        // climbs into the chrome). The move itself scrolls an off-screen neighbour into view
+        // before asking it for focus — see [moveToRail].
         if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
         when (event.key) {
           Key.DirectionDown -> onMoveDown?.let { it(); true } ?: false
