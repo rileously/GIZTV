@@ -2740,7 +2740,7 @@ private fun TitleProgressSeekBar(
 ) {
   val progress = if (durationMs > 0L) (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f
   val displayTitle = remember(title, subtitle) {
-    if (!subtitle.isNullOrBlank()) "$title — $subtitle" else title
+    if (!subtitle.isNullOrBlank()) "$title  ·  $subtitle" else title
   }
 
   val textBrush = remember(progress) {
@@ -2762,7 +2762,7 @@ private fun TitleProgressSeekBar(
   Column(
     modifier = modifier
       .fillMaxWidth()
-      .height(42.dp)
+      .height(if (compact) 48.dp else 58.dp)
       .clickable { onInteraction() }
       .onPreviewKeyEvent { event ->
         if (event.key == Key.DirectionLeft || event.key == Key.DirectionRight || event.key == Key.DirectionCenter || event.key == Key.Enter) {
@@ -2783,18 +2783,30 @@ private fun TitleProgressSeekBar(
       .focusable(),
     verticalArrangement = Arrangement.Center,
   ) {
-    Text(
-      text = "PAUSED · WATCHED PROGRESS",
-      color = AuroraMint,
-      fontWeight = FontWeight.Black,
-      fontSize = 10.sp,
-      letterSpacing = 1.4.sp,
-      modifier = Modifier.padding(bottom = 2.dp),
-    )
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Text(
+        text = "PAUSED",
+        color = AuroraMint,
+        fontWeight = FontWeight.Black,
+        fontSize = 11.sp,
+        letterSpacing = 1.6.sp,
+      )
+      Text(
+        text = "${(progress * 100).toInt()}% WATCHED",
+        color = AuroraMint.copy(alpha = 0.85f),
+        fontWeight = FontWeight.Bold,
+        fontSize = 11.sp,
+        letterSpacing = 1.2.sp,
+      )
+    }
     Text(
       text = displayTitle,
       style = TextStyle(
-        fontSize = if (compact) 20.sp else 24.sp,
+        fontSize = if (compact) 26.sp else 34.sp,
         fontWeight = FontWeight.Black,
         brush = textBrush,
       ),
