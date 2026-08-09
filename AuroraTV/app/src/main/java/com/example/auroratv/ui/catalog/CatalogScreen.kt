@@ -2,8 +2,15 @@ package com.example.auroratv.ui.catalog
 
 import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -864,25 +871,34 @@ internal fun CatalogScreen(
         )
       )
 
-      when {
-        // Nothing at all came back, on any rail: the network is the problem, and a page of
-        // placeholders that will never fill would be a lie about it.
-        showRails && errorMessage != null && itemCount == 0 ->
-          StatusPanel(
-            message = errorMessage ?: "Content could not be loaded",
-            modifier = edgeOnly.weight(1f),
-            actionLabel = "Try again",
-            onAction = { retryRails(tab) },
-          )
-        // Otherwise the rails go up straight away, each waiting for itself. There is no screen-wide
-        // loading panel here any more: it was one wait as long as the slowest of eighteen requests,
-        // with nothing to look at meanwhile.
-        showRails ->
-          LazyColumn(
-            state = railState,
-            // The focus group is what lets a press of down reach a rail that has not been composed
-            // yet: focus search asks the list to bring it into view first.
-            modifier = Modifier.weight(1f).fillMaxWidth().focusGroup(),
+      AnimatedContent(
+        targetState = tab,
+        transitionSpec = {
+          (fadeIn(animationSpec = tween(220)) + scaleIn(initialScale = 0.97f)) togetherWith
+            (fadeOut(animationSpec = tween(160)) + scaleOut(targetScale = 1.01f))
+        },
+        label = "TabContentMorphTransition",
+        modifier = Modifier.weight(1f).fillMaxWidth(),
+      ) { _ ->
+        when {
+          // Nothing at all came back, on any rail: the network is the problem, and a page of
+          // placeholders that will never fill would be a lie about it.
+          showRails && errorMessage != null && itemCount == 0 ->
+            StatusPanel(
+              message = errorMessage ?: "Content could not be loaded",
+              modifier = edgeOnly.fillMaxSize(),
+              actionLabel = "Try again",
+              onAction = { retryRails(tab) },
+            )
+          // Otherwise the rails go up straight away, each waiting for itself. There is no screen-wide
+          // loading panel here any more: it was one wait as long as the slowest of eighteen requests,
+          // with nothing to look at meanwhile.
+          showRails ->
+            LazyColumn(
+              state = railState,
+              // The focus group is what lets a press of down reach a rail that has not been composed
+              // yet: focus search asks the list to bring it into view first.
+              modifier = Modifier.fillMaxSize().focusGroup(),
             contentPadding = PaddingValues(bottom = if (phoneDense) 8.dp else 22.dp),
             verticalArrangement =
               Arrangement.spacedBy(
@@ -1123,11 +1139,11 @@ internal fun CatalogScreen(
           }
         // Only when there is nothing to show. Typing would otherwise replace the results with a
         // loading panel on every letter, which flickers and loses the viewer's place.
-        loading && itemCount == 0 -> StatusPanel("Loading…", edgeOnly.weight(1f), loading = true)
+        loading && itemCount == 0 -> StatusPanel("Loading…", edgeOnly.fillMaxSize(), loading = true)
         errorMessage != null && itemCount == 0 ->
           StatusPanel(
             message = errorMessage ?: "Content could not be loaded",
-            modifier = edgeOnly.weight(1f),
+            modifier = edgeOnly.fillMaxSize(),
             actionLabel = "Try again",
             onAction = { load(tab, query.trim().takeIf(String::isNotBlank)) },
           )
@@ -1135,13 +1151,13 @@ internal fun CatalogScreen(
           StatusPanel(
             if (tab == CatalogTab.MY_LIST) "Nothing saved yet. Open a title and choose Save to add it here."
             else "Nothing found. Try another title.",
-            edgeOnly.weight(1f),
+            edgeOnly.fillMaxSize(),
           )
         else ->
           LazyVerticalGrid(
             state = gridState,
             columns = GridCells.Adaptive(minSize = if (narrow) 132.dp else 158.dp),
-            modifier = Modifier.weight(1f).fillMaxWidth(),
+            modifier = Modifier.fillMaxSize(),
             // Inset as content rather than as a border, so a focused card at the edge is not
             // clipped by the boundary it sits against.
             contentPadding =
@@ -1248,6 +1264,7 @@ internal fun CatalogScreen(
               }
             }
           }
+      }
       }
     }
 

@@ -16,6 +16,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.focusProperties
@@ -485,205 +493,228 @@ fun AuroraTvRoot(
           }
         }
 
-        when (destination) {
-          Destination.CATALOG -> Unit
-          Destination.MOVIE_DETAIL -> {
-            val movie = selectedMovie
-            if (movie != null) {
-              MovieDetailScreen(
-                movie = movie,
-                onPlay = { context -> openForPlayback(context, Destination.MOVIE_DETAIL) },
-                onOpenMovie = { nextMovie -> selectedMovie = nextMovie },
-                onOpenPerson = { id, name, isDirector ->
-                  selectedPerson = PersonSelection(id, name, isDirector)
-                  destination = Destination.PERSON_DETAIL
-                },
-                onConsidering = { considered ->
-                  if (streamCache.find(considered.pageUrl) == null && prefetchTarget?.pageUrl != considered.pageUrl) {
-                    prefetchTarget = considered
-                  }
-                },
-                onBack = { destination = Destination.CATALOG },
-              )
-            } else {
-              Catalog()
-            }
-          }
-          Destination.PERSON_DETAIL -> {
-            val person = selectedPerson
-            if (person != null) {
-              PersonDetailScreen(
-                personId = person.id,
-                personName = person.name,
-                isDirector = person.isDirector,
-                onOpenMovie = { movie ->
-                  selectedMovie = movie
-                  destination = Destination.MOVIE_DETAIL
-                },
-                onBack = { destination = Destination.MOVIE_DETAIL },
-              )
-            } else {
-              Catalog()
-            }
-          }
-          Destination.SHOW_DETAIL -> {
-            val show = selectedShow
-            if (show != null) {
-              TvShowDetailScreen(
-                show = show,
-                onPlayEpisode = { context -> openForPlayback(context, Destination.SHOW_DETAIL) },
-                onConsidering = { considered ->
-                  if (streamCache.find(considered.pageUrl) == null && prefetchTarget?.pageUrl != considered.pageUrl) {
-                    prefetchTarget = considered
-                  }
-                },
-                onBack = { destination = Destination.CATALOG },
-              )
-            } else {
-              Catalog()
-            }
-          }
-          Destination.SHORT_DRAMAS ->
-            ShortDramaScreen(
-              onOpenDrama = { drama ->
-                selectedDrama = drama
-                destination = Destination.DRAMA_DETAIL
-              },
-              onResume = { context -> openForPlayback(context, Destination.SHORT_DRAMAS) },
-              onBack = { destination = Destination.CATALOG },
-              hideBackButton = showPhoneBottomNav,
-              requestSearchFocus = requestSectionSearch,
-              onSearchFocusHandled = { requestSectionSearch = false },
-            )
-          Destination.DRAMA_DETAIL -> {
-            val drama = selectedDrama
-            if (drama != null) {
-              ShortDramaDetailScreen(
-                drama = drama,
-                onPlayEpisode = { context -> openForPlayback(context, Destination.DRAMA_DETAIL) },
-                onBack = { destination = Destination.SHORT_DRAMAS },
-              )
-            } else {
-              Catalog()
-            }
-          }
-          Destination.REMOTE ->
-            RemoteScreen(
-              onBack = { destination = Destination.CATALOG },
-              onPlayHere = { pageUrl, title, subtitle, posterUrl, positionMs ->
-                // The position comes from the television, so the phone's player has to be told it
-                // before the title opens: it resumes from what this device has stored, and this device
-                // has been in another room.
-                PlaybackProgressStore(appContext)
-                  .update(
-                    key = playbackProgressKeyForPage(pageUrl),
-                    positionMs = positionMs,
-                    durationMs = 0L,
-                    playbackState = Player.STATE_READY,
-                  )
-                openForPlayback(
-                  PlaybackContext(
-                    pageUrl = pageUrl,
-                    title = title,
-                    subtitle = subtitle,
-                    posterUrl = posterUrl,
-                  ),
-                  Destination.CATALOG,
+        AnimatedContent(
+          targetState = destination,
+          transitionSpec = {
+            val isEnteringDetail =
+              targetState in
+                listOf(
+                  Destination.MOVIE_DETAIL,
+                  Destination.SHOW_DETAIL,
+                  Destination.PERSON_DETAIL,
+                  Destination.DRAMA_DETAIL,
+                  Destination.PLAYER,
+                  Destination.BROWSER,
                 )
-              },
-            )
-          Destination.SPORTS ->
-            SportsScreen(
-              onPlay = { context -> openForPlayback(context, Destination.SPORTS) },
-              onOpenDlhdSoccer = { destination = Destination.DLHD_SOCCER },
-              onConsidering = { considered ->
-                if (
-                  streamCache.find(considered.pageUrl) == null &&
-                    prefetchTarget?.pageUrl != considered.pageUrl
-                ) {
-                  prefetchTarget = considered
-                }
-              },
-              onBack = { destination = Destination.CATALOG },
-              hideBackButton = showPhoneBottomNav,
-              requestSearchFocus = requestSectionSearch,
-              onSearchFocusHandled = { requestSectionSearch = false },
-            )
-          Destination.DLHD_SOCCER ->
-            DlhdSoccerScreen(
-              onPlay = { context -> openForPlayback(context, Destination.DLHD_SOCCER) },
-              onConsidering = { considered ->
-                if (
-                  streamCache.find(considered.pageUrl) == null &&
-                    prefetchTarget?.pageUrl != considered.pageUrl
-                ) {
-                  prefetchTarget = considered
-                }
-              },
-              onBack = { destination = Destination.SPORTS },
-              hideBackButton = showPhoneBottomNav,
-              requestSearchFocus = requestSectionSearch,
-              onSearchFocusHandled = { requestSectionSearch = false },
-            )
-          Destination.IPTV ->
-            IptvScreen(
-              onPlay = { channel ->
-                if (channel.resolveViaBrowser) {
+            if (isEnteringDetail) {
+              (fadeIn(animationSpec = tween(280, easing = FastOutSlowInEasing)) +
+                scaleIn(initialScale = 0.95f, animationSpec = tween(280, easing = FastOutSlowInEasing))) togetherWith
+                (fadeOut(animationSpec = tween(180)) +
+                  scaleOut(targetScale = 0.98f, animationSpec = tween(180)))
+            } else {
+              (fadeIn(animationSpec = tween(240)) +
+                scaleIn(initialScale = 1.03f, animationSpec = tween(240))) togetherWith
+                (fadeOut(animationSpec = tween(180)) +
+                  scaleOut(targetScale = 0.96f, animationSpec = tween(180)))
+            }
+          },
+          label = "PageMorphTransition",
+        ) { targetDestination ->
+          when (targetDestination) {
+            Destination.CATALOG -> Unit
+            Destination.MOVIE_DETAIL -> {
+              val movie = selectedMovie
+              if (movie != null) {
+                MovieDetailScreen(
+                  movie = movie,
+                  onPlay = { context -> openForPlayback(context, Destination.MOVIE_DETAIL) },
+                  onOpenMovie = { nextMovie -> selectedMovie = nextMovie },
+                  onOpenPerson = { id, name, isDirector ->
+                    selectedPerson = PersonSelection(id, name, isDirector)
+                    destination = Destination.PERSON_DETAIL
+                  },
+                  onConsidering = { considered ->
+                    if (streamCache.find(considered.pageUrl) == null && prefetchTarget?.pageUrl != considered.pageUrl) {
+                      prefetchTarget = considered
+                    }
+                  },
+                  onBack = { destination = Destination.CATALOG },
+                )
+              } else {
+                Catalog()
+              }
+            }
+            Destination.PERSON_DETAIL -> {
+              val person = selectedPerson
+              if (person != null) {
+                PersonDetailScreen(
+                  personId = person.id,
+                  personName = person.name,
+                  isDirector = person.isDirector,
+                  onOpenMovie = { movie ->
+                    selectedMovie = movie
+                    destination = Destination.MOVIE_DETAIL
+                  },
+                  onBack = { destination = Destination.MOVIE_DETAIL },
+                )
+              } else {
+                Catalog()
+              }
+            }
+            Destination.SHOW_DETAIL -> {
+              val show = selectedShow
+              if (show != null) {
+                TvShowDetailScreen(
+                  show = show,
+                  onPlayEpisode = { context -> openForPlayback(context, Destination.SHOW_DETAIL) },
+                  onConsidering = { considered ->
+                    if (streamCache.find(considered.pageUrl) == null && prefetchTarget?.pageUrl != considered.pageUrl) {
+                      prefetchTarget = considered
+                    }
+                  },
+                  onBack = { destination = Destination.CATALOG },
+                )
+              } else {
+                Catalog()
+              }
+            }
+            Destination.SHORT_DRAMAS ->
+              ShortDramaScreen(
+                onOpenDrama = { drama ->
+                  selectedDrama = drama
+                  destination = Destination.DRAMA_DETAIL
+                },
+                onResume = { context -> openForPlayback(context, Destination.SHORT_DRAMAS) },
+                onBack = { destination = Destination.CATALOG },
+                hideBackButton = showPhoneBottomNav,
+                requestSearchFocus = requestSectionSearch,
+                onSearchFocusHandled = { requestSectionSearch = false },
+              )
+            Destination.DRAMA_DETAIL -> {
+              val drama = selectedDrama
+              if (drama != null) {
+                ShortDramaDetailScreen(
+                  drama = drama,
+                  onPlayEpisode = { context -> openForPlayback(context, Destination.DRAMA_DETAIL) },
+                  onBack = { destination = Destination.SHORT_DRAMAS },
+                )
+              } else {
+                Catalog()
+              }
+            }
+            Destination.REMOTE ->
+              RemoteScreen(
+                onBack = { destination = Destination.CATALOG },
+                onPlayHere = { pageUrl, title, subtitle, posterUrl, positionMs ->
+                  PlaybackProgressStore(appContext)
+                    .update(
+                      key = playbackProgressKeyForPage(pageUrl),
+                      positionMs = positionMs,
+                      durationMs = 0L,
+                      playbackState = Player.STATE_READY,
+                    )
                   openForPlayback(
                     PlaybackContext(
-                      pageUrl = channel.url,
-                      title = channel.name,
-                      subtitle = channel.group,
-                      genres = listOf("Live TV"),
-                      kindLabel = "LIVE",
+                      pageUrl = pageUrl,
+                      title = title,
+                      subtitle = subtitle,
+                      posterUrl = posterUrl,
                     ),
-                    Destination.IPTV,
+                    Destination.CATALOG,
                   )
-                } else {
-                  streamFailoverAttempts = 0
+                },
+              )
+            Destination.SPORTS ->
+              SportsScreen(
+                onPlay = { context -> openForPlayback(context, Destination.SPORTS) },
+                onOpenDlhdSoccer = { destination = Destination.DLHD_SOCCER },
+                onConsidering = { considered ->
+                  if (
+                    streamCache.find(considered.pageUrl) == null &&
+                      prefetchTarget?.pageUrl != considered.pageUrl
+                  ) {
+                    prefetchTarget = considered
+                  }
+                },
+                onBack = { destination = Destination.CATALOG },
+                hideBackButton = showPhoneBottomNav,
+                requestSearchFocus = requestSectionSearch,
+                onSearchFocusHandled = { requestSectionSearch = false },
+              )
+            Destination.DLHD_SOCCER ->
+              DlhdSoccerScreen(
+                onPlay = { context -> openForPlayback(context, Destination.DLHD_SOCCER) },
+                onConsidering = { considered ->
+                  if (
+                    streamCache.find(considered.pageUrl) == null &&
+                      prefetchTarget?.pageUrl != considered.pageUrl
+                  ) {
+                    prefetchTarget = considered
+                  }
+                },
+                onBack = { destination = Destination.SPORTS },
+                hideBackButton = showPhoneBottomNav,
+                requestSearchFocus = requestSectionSearch,
+                onSearchFocusHandled = { requestSectionSearch = false },
+              )
+            Destination.IPTV ->
+              IptvScreen(
+                onPlay = { channel ->
+                  if (channel.resolveViaBrowser) {
+                    openForPlayback(
+                      PlaybackContext(
+                        pageUrl = channel.url,
+                        title = channel.name,
+                        subtitle = channel.group,
+                        genres = listOf("Live TV"),
+                        kindLabel = "LIVE",
+                      ),
+                      Destination.IPTV,
+                    )
+                  } else {
+                    streamFailoverAttempts = 0
+                    pendingContext = null
+                    browserReturnDestination = Destination.IPTV
+                    iptvPlaybackSources = channel.toPlaybackRequests()
+                    iptvPlaybackSourceIndex = 0
+                    playerMinimized = false
+                    streamRequest = iptvPlaybackSources.first()
+                    destination = Destination.PLAYER
+                  }
+                },
+                onBack = { destination = Destination.CATALOG },
+                browseState = iptvBrowseState,
+                onBrowseStateChanged = { iptvBrowseState = it },
+                hideBackButton = showPhoneBottomNav,
+                requestSearchFocus = requestSectionSearch,
+                onSearchFocusHandled = { requestSectionSearch = false },
+              )
+            Destination.WEB_HOME ->
+              AuroraTvApp(
+                onOpenBrowser = { url ->
                   pendingContext = null
-                  browserReturnDestination = Destination.IPTV
-                  iptvPlaybackSources = channel.toPlaybackRequests()
-                  iptvPlaybackSourceIndex = 0
+                  browserUrl = url
+                  browserReturnDestination = Destination.WEB_HOME
+                  destination = Destination.BROWSER
+                },
+                onOpenMovies = { destination = Destination.CATALOG },
+              )
+            Destination.BROWSER ->
+              BrowserScreen(
+                initialUrl = browserUrl,
+                onUrlChanged = { browserUrl = it },
+                playback = pendingContext,
+                onExit = { destination = browserReturnDestination },
+                onStreamDetected = { request ->
                   playerMinimized = false
-                  streamRequest = iptvPlaybackSources.first()
+                  streamRequest = request.copy(context = pendingContext)
                   destination = Destination.PLAYER
-                }
-              },
-              onBack = { destination = Destination.CATALOG },
-              browseState = iptvBrowseState,
-              onBrowseStateChanged = { iptvBrowseState = it },
-              hideBackButton = showPhoneBottomNav,
-              requestSearchFocus = requestSectionSearch,
-              onSearchFocusHandled = { requestSectionSearch = false },
-            )
-          Destination.WEB_HOME ->
-            AuroraTvApp(
-              onOpenBrowser = { url ->
-                pendingContext = null
-                browserUrl = url
-                browserReturnDestination = Destination.WEB_HOME
-                destination = Destination.BROWSER
-              },
-              onOpenMovies = { destination = Destination.CATALOG },
-            )
-          Destination.BROWSER ->
-            BrowserScreen(
-              initialUrl = browserUrl,
-              onUrlChanged = { browserUrl = it },
-              playback = pendingContext,
-              onExit = { destination = browserReturnDestination },
-              onStreamDetected = { request ->
-                playerMinimized = false
-                streamRequest = request.copy(context = pendingContext)
-                destination = Destination.PLAYER
-              },
-            )
-          Destination.PLAYER -> {
-            // Full-screen player is drawn above this when-block so a minimized session can keep the
-            // same ExoPlayer alive over the catalog. An empty request falls back to the home row.
-            if (streamRequest == null) {
-              destinationState.SaveableStateProvider(Destination.CATALOG) { Catalog() }
+                },
+              )
+            Destination.PLAYER -> {
+              if (streamRequest == null) {
+                destinationState.SaveableStateProvider(Destination.CATALOG) { Catalog() }
+              }
             }
           }
         }
