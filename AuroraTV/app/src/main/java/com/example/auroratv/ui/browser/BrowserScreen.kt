@@ -125,10 +125,11 @@ private const val HOME_URL = "https://skyflix.to/"
 /** Nothing waits longer than this for a subtitle, however busy the page still looks. */
 private const val SUBTITLE_DISCOVERY_DELAY_MS = 2_500L
 /**
- * The least a found stream waits when subtitles are in the picture at all.
+ * The least a found stream waits after a new subtitle arrives behind it.
  *
  * Measured: a page hands over its own subtitle track about a second after the video address, well
- * after the dispatch grace has passed. Short of this and that track is simply lost.
+ * after the dispatch grace has passed. A catalog already quiet before the video was found does not
+ * need this wait because every track it can contribute is already in hand.
  */
 private const val SUBTITLE_SETTLE_FLOOR_MS = 1_200L
 /**
@@ -1508,11 +1509,9 @@ internal fun streamDispatchGraceMs(url: String): Long =
 /**
  * Whether a found stream should keep waiting for another subtitle before it is handed over.
  *
- * Waits at least [SUBTITLE_SETTLE_FLOOR_MS] whenever there are subtitles at all, because a page's
- * own track routinely lands about a second behind the video address. Past that it follows the
- * traffic: while tracks are still arriving inside [SUBTITLE_QUIET_MS] of each other it keeps
- * waiting, and [SUBTITLE_DISCOVERY_DELAY_MS] is the hard end of it either way. A title whose
- * subtitles were all in hand before the video no longer waits out a window it cannot use.
+ * Waits at least [SUBTITLE_SETTLE_FLOOR_MS] when a subtitle arrived after the video address, because
+ * a page can emit sibling tracks in the same burst. A catalog that was already quiet before the
+ * video goes straight through. [SUBTITLE_DISCOVERY_DELAY_MS] remains the hard end either way.
  */
 internal fun shouldWaitForMoreSubtitles(
   hasSubtitles: Boolean,
@@ -1521,6 +1520,9 @@ internal fun shouldWaitForMoreSubtitles(
 ): Boolean {
   if (!hasSubtitles) return false
   if (elapsedMs >= SUBTITLE_DISCOVERY_DELAY_MS) return false
+  // The last subtitle predates the stream when its age is greater than the stream's own age. That
+  // catalog is already complete; waiting the fixed floor here caused a reproducible handoff delay.
+  if (sinceLastSubtitleMs > elapsedMs) return false
   if (elapsedMs < SUBTITLE_SETTLE_FLOOR_MS) return true
   return sinceLastSubtitleMs < SUBTITLE_QUIET_MS
 }

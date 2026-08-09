@@ -31,7 +31,7 @@ import uk.co.caprica.vlcj.player.embedded.videosurface.callback.format.RV32Buffe
 internal class VlcVideoEngine {
 
   /** The most recent frame, or null before the first one arrives. */
-  @Volatile var frame: ImageBitmap? = null
+  @Volatile private var frame: ImageBitmap? = null
     private set
 
   /** Bumped on every frame, so a reader can tell a repaint is due. */
@@ -41,6 +41,7 @@ internal class VlcVideoEngine {
   @Volatile private var pixels: ByteArray = ByteArray(0)
   @Volatile private var bitmap: Bitmap? = null
   @Volatile private var imageInfo: ImageInfo? = null
+  private val frameLock = Any()
 
   private var factory: MediaPlayerFactory? = null
   private var player: EmbeddedMediaPlayer? = null
@@ -118,6 +119,20 @@ internal class VlcVideoEngine {
     seekTo(now + deltaMs)
   }
 
+  /**
+   * Draw access to the current frame.
+   *
+   * Compose converts the backing bitmap to a Skia image during [block]. VLC replaces that same
+   * bitmap's pixels from its callback thread, so those operations must be mutually exclusive. A
+   * race here used to surface as `Failed to Image.makeFromBitmap` as soon as video arrived.
+   */
+  fun withFrame(block: (ImageBitmap) -> Unit): Boolean =
+    synchronized(frameLock) {
+      val current = frame ?: return@synchronized false
+      block(current)
+      true
+    }
+
   /** 0f..1f, mapped onto the 0..100 libVLC works in. */
   fun setVolume(level: Float) {
     player?.audio()?.setVolume((level.coerceIn(0f, 1f) * 100f).toInt())
@@ -129,8 +144,12 @@ internal class VlcVideoEngine {
     runCatching { factory?.release() }
     player = null
     factory = null
-    frame = null
-    bitmap = null
+    synchronized(frameLock) {
+      frame = null
+      bitmap = null
+      imageInfo = null
+      pixels = ByteArray(0)
+    }
   }
 
   /**
@@ -143,9 +162,12 @@ internal class VlcVideoEngine {
     override fun getBufferFormat(sourceWidth: Int, sourceHeight: Int): BufferFormat {
       val info =
         ImageInfo(sourceWidth, sourceHeight, ColorType.BGRA_8888, ColorAlphaType.PREMUL)
-      imageInfo = info
-      pixels = ByteArray(sourceWidth * sourceHeight * BYTES_PER_PIXEL)
-      bitmap = Bitmap().apply { allocPixels(info) }
+      synchronized(frameLock) {
+        imageInfo = info
+        pixels = ByteArray(sourceWidth * sourceHeight * BYTES_PER_PIXEL)
+        bitmap = Bitmap().apply { allocPixels(info) }
+        frame = bitmap?.asComposeImageBitmap()
+      }
       return RV32BufferFormat(sourceWidth, sourceHeight)
     }
 
@@ -159,18 +181,18 @@ internal class VlcVideoEngine {
       nativeBuffers: Array<ByteBuffer>,
       bufferFormat: BufferFormat,
     ) {
-      val info = imageInfo ?: return
-      val target = bitmap ?: return
-      val buffer = nativeBuffers.firstOrNull() ?: return
-      val scratch = pixels
-      if (scratch.size < info.width * info.height * BYTES_PER_PIXEL) return
-      buffer.rewind()
-      buffer.get(scratch, 0, scratch.size)
-      target.installPixels(info, scratch, info.width * BYTES_PER_PIXEL)
-      // A fresh wrapper each frame so Compose is handed a value it has not drawn before; the
-      // pixels behind it are the same reused bitmap, so this allocates almost nothing.
-      frame = target.asComposeImageBitmap()
-      frameCount++
+      synchronized(frameLock) {
+        val info = imageInfo ?: return
+        val target = bitmap ?: return
+        val buffer = nativeBuffers.firstOrNull() ?: return
+        val scratch = pixels
+        if (scratch.size < info.width * info.height * BYTES_PER_PIXEL) return
+        buffer.rewind()
+        buffer.get(scratch, 0, scratch.size)
+        if (!target.installPixels(info, scratch, info.width * BYTES_PER_PIXEL)) return
+        target.notifyPixelsChanged()
+        frameCount++
+      }
     }
   }
 }
@@ -184,6 +206,10 @@ private const val BYTES_PER_PIXEL = 4
  * source that signs on one will refuse the stream however well the address was resolved.
  */
 internal fun mediaOptionsFor(headers: Map<String, String>): List<String> = buildList {
+  // Starting at the lowest HLS rendition avoids downloading a multi-megabyte 1080p fragment before
+  // the first frame. VLC may promote later; the important part is that playback becomes visible.
+  add(":adaptive-logic=lowest")
+  add(":network-caching=3000")
   headers.entries
     .firstOrNull { it.key.equals("referer", ignoreCase = true) }
     ?.let { add(":http-referrer=${it.value}") }

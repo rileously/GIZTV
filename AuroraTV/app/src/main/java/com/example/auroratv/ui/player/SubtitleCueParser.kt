@@ -18,6 +18,14 @@ internal data class SubtitleCue(
 
 internal const val NEARBY_SUBTITLE_CUE_WINDOW_MS = 120_000L
 
+/**
+ * The furthest a viewer may drag subtitles out of step, either way.
+ *
+ * Declared here rather than beside the renderer that enforces it, because the desktop build
+ * leaves that renderer out of its sources and still needs the limit.
+ */
+internal const val MAX_SUBTITLE_SYNC_MS = 60_000L
+
 /** Cues whose start falls inside [positionMs] ± [windowMs], in timeline order. */
 internal fun nearbySubtitleCues(
   cues: List<SubtitleCue>,

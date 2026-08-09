@@ -51,14 +51,20 @@ import com.example.auroratv.ui.catalog.STREAM_PROVIDERS
 import com.example.auroratv.ui.catalog.catalogTargetOf
 import com.example.auroratv.ui.catalog.providerPageUrl
 import com.example.auroratv.ui.catalog.serverLabel
+import com.example.auroratv.ui.player.ExternalSubtitleTrack
 import com.example.auroratv.ui.player.HlsStreamRequest
+import com.example.auroratv.ui.player.isEnglishSubtitleLabel
+import com.example.auroratv.ui.player.isHearingImpairedSubtitleLabel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import org.json.JSONArray
 import org.json.JSONObject
+import org.json.JSONTokener
 import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 
@@ -113,10 +119,16 @@ internal fun BrowserScreen(
     val season = target?.seasonNumber ?: 1
     val episode = target?.episodeNumber ?: 1
 
-    var selectedProviderIndex by remember { mutableStateOf(0) }
+    // Start with the provider that usually resolves fastest. VidRock's disguised transport-stream
+    // segments are unwrapped by StreamHeaderProxy, so every server in the shared picker is now a
+    // valid desktop choice.
+    var selectedProviderIndex by remember {
+      mutableStateOf(STREAM_PROVIDERS.indexOfFirst { it.id == "cinesrc" }.coerceAtLeast(0))
+    }
     var stageMessage by remember { mutableStateOf("Extracting stream…") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var attemptKey by remember { mutableStateOf(0) }
+    var attemptedProviderIndices by remember(target) { mutableStateOf(emptySet<Int>()) }
 
     LaunchedEffect(selectedProviderIndex, attemptKey) {
         if (tmdbId == null) { errorMessage = "Could not identify title."; return@LaunchedEffect }
@@ -134,7 +146,14 @@ internal fun BrowserScreen(
                     stageMessage = "Stream found! Starting playback…"
                     onStreamDetected(result)
                 } else {
-                    errorMessage = "Couldn't extract stream from $serverLabel. Try another server."
+                    val attempted = attemptedProviderIndices + selectedProviderIndex
+                    attemptedProviderIndices = attempted
+                    val nextProvider = nextDesktopProviderIndex(attempted)
+                    if (nextProvider != null) {
+                        selectedProviderIndex = nextProvider
+                    } else {
+                        errorMessage = "Couldn't extract this title from any server."
+                    }
                 }
             }
         }
@@ -231,7 +250,11 @@ internal fun BrowserScreen(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
                         .background(AuroraMint)
-                        .clickable { errorMessage = null; attemptKey++ }
+                        .clickable {
+                            attemptedProviderIndices = emptySet()
+                            errorMessage = null
+                            attemptKey++
+                        }
                         .padding(vertical = 14.dp),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -261,7 +284,12 @@ internal fun BrowserScreen(
                         modifier = Modifier
                             .clip(RoundedCornerShape(10.dp))
                             .background(if (isSelected) AuroraMint.copy(alpha = 0.2f) else DeepSpace)
-                            .clickable { selectedProviderIndex = index; errorMessage = null; attemptKey++ }
+                            .clickable {
+                                attemptedProviderIndices = emptySet()
+                                selectedProviderIndex = index
+                                errorMessage = null
+                                attemptKey++
+                            }
                             .padding(horizontal = 14.dp, vertical = 10.dp),
                     ) {
                         Text(server.label,
@@ -276,6 +304,13 @@ internal fun BrowserScreen(
 
 // ── Extractor dispatcher ──────────────────────────────────────────────────
 
+private val DESKTOP_PROVIDER_ORDER = listOf("cinesrc", "vidfast", "vidrock")
+
+private fun nextDesktopProviderIndex(attempted: Set<Int>): Int? =
+    DESKTOP_PROVIDER_ORDER.asSequence()
+        .map { id -> STREAM_PROVIDERS.indexOfFirst { it.id == id } }
+        .firstOrNull { it >= 0 && it !in attempted }
+
 private suspend fun extractStream(
     serverId: String,
     tmdbId: Int,
@@ -289,25 +324,151 @@ private suspend fun extractStream(
     val pageUrl = providerPageUrl(target, index) ?: return null
 
     // Cheap first: some pages really do carry the address in their markup.
-    extractHtmlPage(url = pageUrl, onStatus = onStatus)?.let { return it }
+    // Do not take MP4s from the markup: these providers place advertising there before their
+    // JavaScript asks for the actual title. The browser path below waits specifically for HLS.
 
     // Then the browser. All three of these sites assemble the address in JavaScript, so the fetch
     // above can never see it — this is the whole reason the television build drives a browser rather than an HTTP client.
     onStatus("Running browser to extract stream…")
-    val media = ChromeStreamExtractor.extract(pageUrl, WEBVIEW_TIMEOUT_MS, onStatus) ?: return null
+    var media =
+        ChromeStreamExtractor.extract(
+            pageUrl,
+            if (serverId == "vidfast") VIDFAST_PRIMARY_TIMEOUT_MS else WEBVIEW_TIMEOUT_MS,
+            onStatus,
+        )
+    // Keep trying VidFast's real page first so recovery is automatic. Its published proxy is
+    // currently offline and redirects media to a placeholder; use the now desktop-compatible
+    // VidRock route as continuity until the primary service recovers.
+    if (media == null && serverId == "vidfast") {
+        onStatus("VidFast is unavailable; connecting through its backup…")
+        media =
+            ChromeStreamExtractor.extract(
+                vidFastBackupPageUrl(tmdbId, isEpisode, season, episode),
+                WEBVIEW_TIMEOUT_MS,
+                onStatus,
+            )
+    }
+    media ?: return null
+    onStatus("Adding English subtitles…")
+    val subtitles = downloadEnglishSubtitles(tmdbId, isEpisode, season, episode)
     return HlsStreamRequest(
-        url = media,
-        headers = mapOf(
-            "Referer" to pageUrl,
-            "Origin" to pageUrl.toOrigin(),
-            "User-Agent" to UA,
-        ),
+        url = media.url,
+        // CDNs distinguish the actual player page from this catalog URL. Keep the request identity
+        // Chrome really used instead of rebuilding it from the catalog address.
+        headers = media.headers,
+        subtitles = subtitles,
         sourcePageUrl = pageUrl,
     )
 }
 
+/**
+ * Fetches the same subtitle catalog used by the television player.
+ *
+ * The catalog is keyed by TMDB id, so it remains correct when desktop playback falls through to a
+ * different stream provider. Only English tracks are offered, with ordinary dialogue subtitles
+ * before hearing-impaired variants.
+ */
+private fun downloadEnglishSubtitles(
+    tmdbId: Int,
+    isEpisode: Boolean,
+    season: Int,
+    episode: Int,
+): List<ExternalSubtitleTrack> {
+    val catalogUrl =
+        if (isEpisode) {
+            "https://sub.vdrk.site/v1/tv/$tmdbId/$season/$episode"
+        } else {
+            "https://sub.vdrk.site/v1/movie/$tmdbId"
+        }
+    val json = fetchStr(catalogUrl, referer = "https://sub.vdrk.site/") ?: return emptyList()
+    return parseDesktopSubtitleCatalog(json)
+}
+
+internal fun parseDesktopSubtitleCatalog(json: String): List<ExternalSubtitleTrack> {
+    val root = runCatching { JSONTokener(json).nextValue() }.getOrNull()
+    val entries = findDesktopSubtitleEntries(root)
+    return buildList {
+        for (index in 0 until entries.length()) {
+            val item = entries.optJSONObject(index) ?: continue
+            val label =
+                listOf("label", "name", "language")
+                    .firstNotNullOfOrNull { key -> item.optString(key).trim().takeIf(String::isNotBlank) }
+            val language =
+                listOf("lang", "language", "srclang", "languageCode")
+                    .firstNotNullOfOrNull { key -> item.optString(key).trim().takeIf(String::isNotBlank) }
+            if (!isEnglishSubtitleLabel(label, language)) continue
+            val rawUrl =
+                listOf("file", "url", "src")
+                    .firstNotNullOfOrNull { key -> item.optString(key).trim().takeIf(String::isNotBlank) }
+                    ?: continue
+            val url = rawUrl.toHttpUrlOrNull()?.toString() ?: continue
+            val mimeType = desktopSubtitleMimeType(url) ?: continue
+            add(
+                ExternalSubtitleTrack(
+                    url = url,
+                    label = label?.take(48) ?: "English",
+                    language = language ?: "en",
+                    mimeType = mimeType,
+                )
+            )
+        }
+    }
+        .distinctBy { it.url }
+        .sortedWith(
+            compareBy<ExternalSubtitleTrack>(
+                { if (it.label.equals("English", ignoreCase = true)) 0 else 1 },
+                { if (isHearingImpairedSubtitleLabel(it.label)) 1 else 0 },
+                { it.label.lowercase() },
+            )
+        )
+}
+
+private fun findDesktopSubtitleEntries(value: Any?, depth: Int = 0): JSONArray {
+    if (depth > 2) return JSONArray()
+    if (value is JSONArray) return value
+    if (value !is JSONObject) return JSONArray()
+    listOf("subtitles", "captions", "tracks", "results", "items", "data").forEach { key ->
+        value.optJSONArray(key)?.let { return it }
+    }
+    listOf("data", "result", "payload").forEach { key ->
+        value.optJSONObject(key)?.let { nested ->
+            findDesktopSubtitleEntries(nested, depth + 1).takeIf { it.length() > 0 }?.let { return it }
+        }
+    }
+    return JSONArray()
+}
+
+private fun desktopSubtitleMimeType(url: String): String? {
+    val normalized = url.substringBefore('#').lowercase()
+    return when {
+        normalized.substringBefore('?').endsWith(".vtt") || normalized.contains("format=vtt") -> "text/vtt"
+        normalized.substringBefore('?').endsWith(".srt") || normalized.contains("format=srt") -> "application/x-subrip"
+        normalized.substringBefore('?').endsWith(".ass") || normalized.substringBefore('?').endsWith(".ssa") -> "text/x-ssa"
+        normalized.substringBefore('?').endsWith(".ttml") || normalized.substringBefore('?').endsWith(".dfxp") -> "application/ttml+xml"
+        else -> null
+    }
+}
+
+private fun vidFastBackupPageUrl(
+    tmdbId: Int,
+    isEpisode: Boolean,
+    season: Int,
+    episode: Int,
+): String {
+    val vidRockIndex = STREAM_PROVIDERS.indexOfFirst { it.id == "vidrock" }
+    return providerPageUrl(
+        CatalogTarget(
+            tmdbId,
+            if (isEpisode) season else null,
+            if (isEpisode) episode else null,
+        ),
+        vidRockIndex,
+    ) ?: "https://vidrock.ru/movie/$tmdbId"
+}
+
 /** Long enough for a page that works slowly; short enough that a dead one moves on. */
 private const val WEBVIEW_TIMEOUT_MS = 30_000L
+private const val VIDFAST_PRIMARY_TIMEOUT_MS = 10_000L
 
 private fun provider(id: String) = STREAM_PROVIDERS.firstOrNull { it.id == id }
 
@@ -547,5 +708,3 @@ private fun String.toOrigin(): String {
     val host  = substringAfter("://").substringBefore('/')
     return if (host.isNotEmpty()) "$proto://$host" else this
 }
-
-

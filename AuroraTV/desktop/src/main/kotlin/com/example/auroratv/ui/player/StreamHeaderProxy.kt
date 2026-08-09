@@ -119,19 +119,46 @@ internal object StreamHeaderProxy {
     val (url, headers) = target
     val builder = Request.Builder().url(url)
     headers.forEach { (name, value) -> builder.header(name, value) }
-    // A player asking for part of a file must have that passed on, or seeking breaks.
-    exchange.requestHeaders.getFirst("Range")?.let { builder.header("Range", it) }
+    // A player asking for part of a file must have that passed on, or seeking breaks — but never
+    // for a playlist. VLC asks for playlists by range too, and forwarding that returned a 206
+    // holding a fragment of the text, which was then rewritten and handed back as though it were
+    // the whole thing. A truncated playlist is precisely what "failed to create demuxer" looks
+    // like from the outside.
+    if (!looksLikePlaylist(url)) {
+      exchange.requestHeaders.getFirst("Range")?.let { builder.header("Range", it) }
+    }
 
     http.newCall(builder.build()).execute().use { response ->
       val body = response.body
       val contentType = response.header("Content-Type").orEmpty()
       val token = exchange.requestURI.path.removePrefix("/").split("/").getOrNull(1).orEmpty()
+      // The status, not just the address. Forwarding upstream's code straight through means a
+      // refusal reaches the player looking exactly like our own, and a 403 passed through here
+      // unseen for several rounds of guessing at which request was being turned away.
+      if (response.isSuccessful) {
+        println("[proxy] ${response.code} ${url.take(110)}")
+      } else {
+        println("[proxy] !! ${response.code} ${url.take(110)}")
+      }
 
       if (isPlaylist(url, contentType)) {
         val rewritten = rewritePlaylist(body?.string().orEmpty(), token, url).toByteArray()
-        exchange.responseHeaders.add("Content-Type", contentType.ifBlank { "application/vnd.apple.mpegurl" })
-        exchange.sendResponseHeaders(response.code, rewritten.size.toLong())
+        // Some providers deliberately label HLS text as image/jpeg. Once identified and rewritten,
+        // advertise what it actually is so VLC does not select an image demuxer for a child list.
+        exchange.responseHeaders.add("Content-Type", "application/vnd.apple.mpegurl")
+        // Always whole, and always 200: what goes back is the rewritten playlist in full, so any
+        // partial-content status upstream returned no longer describes it.
+        exchange.sendResponseHeaders(200, rewritten.size.toLong())
         exchange.responseBody.use { it.write(rewritten) }
+        return
+      }
+
+      // VidRock's first source prefixes each MPEG-TS segment with a complete 1x1 PNG, while another
+      // source sends raw TS bytes under image/gif. Browsers remove/ignore that disguise before
+      // MediaSource sees the data; VLC needs this proxy to do it explicitly and advertise the
+      // payload as video rather than as an image.
+      if (contentType.startsWith("image/", ignoreCase = true) && body != null) {
+        forwardPotentiallyWrappedTransportStream(exchange, response.code, body, contentType)
         return
       }
 
@@ -148,9 +175,49 @@ internal object StreamHeaderProxy {
     }
   }
 
+  private fun forwardPotentiallyWrappedTransportStream(
+    exchange: HttpExchange,
+    responseCode: Int,
+    body: okhttp3.ResponseBody,
+    originalContentType: String,
+  ) {
+    body.byteStream().use { upstream ->
+      val head = upstream.readNBytes(TRANSPORT_STREAM_PROBE_BYTES)
+      val payloadOffset = transportStreamPayloadOffset(head)
+      val drop = payloadOffset ?: 0
+      exchange.responseHeaders.add(
+        "Content-Type",
+        if (payloadOffset != null) "video/mp2t" else originalContentType,
+      )
+      val upstreamLength = body.contentLength()
+      val forwardedLength =
+        if (upstreamLength > 0L) (upstreamLength - drop).coerceAtLeast(0L) else 0L
+      // A stripped response no longer matches an upstream byte range. Segments are immutable and
+      // requested whole, so a complete 200 response is the accurate description after unwrapping.
+      val forwardedCode = if (payloadOffset != null) 200 else responseCode
+      exchange.sendResponseHeaders(forwardedCode, forwardedLength)
+      exchange.responseBody.use { downstream ->
+        if (drop < head.size) downstream.write(head, drop, head.size - drop)
+        upstream.copyTo(downstream, DEFAULT_BUFFER_SIZE)
+      }
+      if (payloadOffset != null) {
+        println("[proxy] MPEG-TS image wrapper removed: $drop byte(s)")
+      }
+    }
+  }
+
+  /** Judged by address alone, because it has to be known before the request is made. */
+  private fun looksLikePlaylist(url: String): Boolean {
+    val filename = url.substringBefore('?').substringAfterLast('/')
+    return filename.endsWith(".m3u8", ignoreCase = true) ||
+      filename.equals("playlist.jpg", ignoreCase = true) ||
+      filename.equals("playlist.png", ignoreCase = true) ||
+      filename.equals("index.jpg", ignoreCase = true) ||
+      filename.equals("index.png", ignoreCase = true)
+  }
+
   private fun isPlaylist(url: String, contentType: String): Boolean =
-    url.substringBefore('?').endsWith(".m3u8", ignoreCase = true) ||
-      contentType.contains("mpegurl", ignoreCase = true)
+    looksLikePlaylist(url) || contentType.contains("mpegurl", ignoreCase = true)
 
   /**
    * Sends every address a playlist names back through this server, as a whole address.
@@ -188,3 +255,28 @@ internal object StreamHeaderProxy {
   private fun decodeAbsolute(encoded: String): String? =
     runCatching { String(Base64.getUrlDecoder().decode(encoded.substringBefore('/'))) }.getOrNull()
 }
+
+/**
+ * Offset of a real MPEG transport stream inside [bytes], including zero for an undisguised stream.
+ * Four 188-byte packet syncs avoid mistaking the `G` in a PNG/GIF header for video.
+ */
+internal fun transportStreamPayloadOffset(bytes: ByteArray): Int? {
+  val packetSpan = TRANSPORT_STREAM_PACKET_BYTES * (TRANSPORT_STREAM_SYNC_COUNT - 1)
+  if (bytes.size <= packetSpan) return null
+  val lastStart = bytes.size - packetSpan - 1
+  for (start in 0..lastStart) {
+    if (
+      (0 until TRANSPORT_STREAM_SYNC_COUNT).all { packet ->
+        bytes[start + packet * TRANSPORT_STREAM_PACKET_BYTES] == TRANSPORT_STREAM_SYNC
+      }
+    ) {
+      return start
+    }
+  }
+  return null
+}
+
+private const val TRANSPORT_STREAM_PACKET_BYTES = 188
+private const val TRANSPORT_STREAM_SYNC_COUNT = 4
+private const val TRANSPORT_STREAM_PROBE_BYTES = 4_096
+private const val TRANSPORT_STREAM_SYNC: Byte = 0x47

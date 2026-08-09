@@ -12,6 +12,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
+import com.example.auroratv.ui.player.transportStreamPayloadOffset
 
 /**
  * Finds a stream by watching a real browser fetch it.
@@ -28,6 +29,9 @@ import org.json.JSONObject
  * providers it produced an address in two to five seconds each.
  */
 internal object ChromeStreamExtractor {
+
+  /** A media address together with the request identity that made the CDN serve real bytes. */
+  data class CapturedStream(val url: String, val headers: Map<String, String>)
 
   private val http =
     OkHttpClient.Builder()
@@ -51,11 +55,17 @@ internal object ChromeStreamExtractor {
     pageUrl: String,
     timeoutMs: Long,
     onStatus: suspend (String) -> Unit,
-  ): String? {
+  ): CapturedStream? {
     val endpoint = ensureBrowser() ?: return null
     onStatus("Opening ${originOf(pageUrl)} in a browser…")
 
-    val seen = ConcurrentLinkedQueue<String>()
+    val fallbackHeaders =
+      mapOf(
+        "Referer" to pageOrigin(pageUrl) + "/",
+        "Origin" to "https://" + originOf(pageUrl),
+        "User-Agent" to EXTRACTOR_USER_AGENT,
+      )
+    val seen = ConcurrentLinkedQueue<CapturedStream>()
     val socket =
       runCatching { openSocket(endpoint, seen) }
         .getOrElse {
@@ -65,23 +75,43 @@ internal object ChromeStreamExtractor {
 
     return try {
       socket.send(command(1, "Network.enable"))
-      socket.send(command(2, "Page.navigate", JSONObject().put("url", pageUrl)))
+      // This Chrome process is deliberately reused, but signed HLS addresses are not reusable.
+      // Disable its HTTP cache before every navigation or replaying the same title can emit an
+      // expired master URL from memory and hand VLC the provider's decoy response.
+      socket.send(
+        command(2, "Network.setCacheDisabled", JSONObject().put("cacheDisabled", true))
+      )
+      socket.send(command(3, "Network.clearBrowserCache"))
+      val freshPageUrl =
+        pageUrl + (if ('?' in pageUrl) "&" else "?") + "aurora_refresh=${System.nanoTime()}"
+      socket.send(command(4, "Page.navigate", JSONObject().put("url", freshPageUrl)))
 
       val deadline = System.currentTimeMillis() + timeoutMs
       var announced = 0L
+      val rejected = mutableSetOf<String>()
       while (System.currentTimeMillis() < deadline) {
         currentCoroutineContext().ensureActive()
         delay(POLL_MS)
-        // A playlist is the film; take the first good one and stop.
-        seen.firstOrNull { isPlaylist(it) && isUsableMedia(it) }?.let { return it }
+        // A playlist is the film; take the first good one and stop — but only if what it points at
+        // is actually video. See carriesRealMedia.
+        seen.firstOrNull {
+          isPlaylist(it.url) && isUsableMedia(it.url) && it.url !in rejected
+        }?.let { candidate ->
+          val playable = candidate.withFallbackHeaders(fallbackHeaders)
+          if (carriesRealMedia(playable.url, playable.headers)) return playable
+          println("[extractor] rejected, not decodable video: ${candidate.url.take(110)}")
+          rejected.add(candidate.url)
+          onStatus("That stream cannot be decoded; trying elsewhere…")
+        }
         val waited = timeoutMs - (deadline - System.currentTimeMillis())
         if (waited - announced >= 4_000L) {
           announced = waited
           onStatus("Waiting for stream… (${waited / 1000}s)")
         }
       }
-      // No playlist arrived, so a plain file is better than nothing.
-      seen.firstOrNull { isUsableMedia(it) }
+      // These pages load advertising MP4s before the title. Without an HLS playlist there is no
+      // trustworthy movie candidate, so let the next provider try instead of playing an advert.
+      null
     } finally {
       runCatching { socket.close(1000, null) }
     }
@@ -153,16 +183,18 @@ internal object ChromeStreamExtractor {
       }
       .getOrNull()
 
-  private fun openSocket(endpoint: String, seen: ConcurrentLinkedQueue<String>): WebSocket =
+  private fun openSocket(endpoint: String, seen: ConcurrentLinkedQueue<CapturedStream>): WebSocket =
     http.newWebSocket(
       Request.Builder().url(endpoint).build(),
       object : WebSocketListener() {
         override fun onMessage(webSocket: WebSocket, text: String) {
           val event = runCatching { JSONObject(text) }.getOrNull() ?: return
           if (event.optString("method") != "Network.requestWillBeSent") return
-          val requested =
-            event.optJSONObject("params")?.optJSONObject("request")?.optString("url").orEmpty()
-          if (requested.contains(".m3u8") || requested.contains(".mp4")) seen.add(requested)
+          val request = event.optJSONObject("params")?.optJSONObject("request") ?: return
+          val requested = request.optString("url").orEmpty()
+          if (requested.contains(".m3u8") || requested.contains(".mp4")) {
+            seen.add(CapturedStream(requested, playbackHeaders(request.optJSONObject("headers"))))
+          }
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
@@ -178,7 +210,111 @@ internal object ChromeStreamExtractor {
       .put("params", params ?: JSONObject())
       .toString()
 
-  private fun isPlaylist(url: String) = url.substringBefore('?').contains(".m3u8")
+  // Signed proxy endpoints often carry the real playlist address inside `?url=...`; the extension
+  // is therefore in the query rather than the visible path.
+  private fun isPlaylist(url: String) = url.contains(".m3u8", ignoreCase = true)
+
+  /**
+   * Whether a playlist leads to bytes a player can actually decode.
+   *
+   * Some sites disguise their segments so only their own page can play them: VidRock prefixes real
+   * MPEG-TS packets with a tiny PNG and labels the response as an image. Accept that only when four
+   * transport-stream sync packets prove there is video underneath; StreamHeaderProxy removes the
+   * wrapper before VLC sees it.
+   *
+   * Judged from the first thing the playlist names, by what the bytes are rather than what they are
+   * called: the transport-stream sync byte, or one of the box types an MP4 fragment opens with.
+   * When it fails, the address is discarded and the search carries on somewhere else, which is what
+   * turns "pick a different server yourself" into something the app does on the viewer's behalf.
+   */
+  private fun carriesRealMedia(playlistUrl: String, headers: Map<String, String>): Boolean =
+    runCatching {
+        val playlistResponse = fetch(playlistUrl, headers) ?: return true
+        if (isJunkRedirect(playlistResponse.finalUrl)) return false
+        val playlist = playlistResponse.string()
+        var isInitializationSegment = false
+        val firstEntry =
+          playlist.lineSequence()
+            .map(String::trim)
+            .firstNotNullOfOrNull { line ->
+              when {
+                line.startsWith("#EXT-X-MAP") -> {
+                  isInitializationSegment = true
+                  Regex("URI=\"([^\"]+)\"").find(line)?.groupValues?.get(1)
+                }
+                line.isNotEmpty() && !line.startsWith("#") -> line
+                else -> null
+              }
+            } ?: return true // Nothing named yet; let the player decide rather than refuse here.
+        // A playlist of playlists: follow one level down to reach real segments.
+        val target = absoluteAgainst(playlistUrl, firstEntry)
+        if (isPlaylist(target)) return carriesRealMedia(target, headers)
+        val headResponse = fetch(target, headers, firstBytes = true) ?: return true
+        if (isJunkRedirect(headResponse.finalUrl)) return false
+        val head = headResponse.bytes()
+        // CineSrc deliberately names both child playlists and media fragments as images. Follow
+        // the bytes, not the suffix: a child beginning with EXTM3U is still a playlist.
+        if (String(head, Charsets.UTF_8).trimStart().startsWith("#EXTM3U")) {
+          return carriesRealMedia(target, headers)
+        }
+        if (isInitializationSegment) looksLikeMp4Initialization(head) else looksLikeMedia(head)
+      }
+      .getOrDefault(true)
+
+  private fun looksLikeMedia(head: ByteArray): Boolean {
+    if (head.size < 8) return true
+    // VidRock puts a valid MPEG-TS payload after a tiny, valid 1x1 PNG. Its browser player drops
+    // that wrapper before appending the bytes to MediaSource. Accept it here; StreamHeaderProxy
+    // performs the same unwrap for VLC. Raw TS mislabeled as GIF is accepted by the same test.
+    if (transportStreamPayloadOffset(head) != null) return true
+    val boxType = String(head, 4, 4, Charsets.ISO_8859_1)
+    return boxType in setOf("ftyp", "styp", "moof", "mdat", "sidx", "free")
+  }
+
+  /**
+   * A fragmented-MP4 init segment must describe its tracks in a `moov` box somewhere in the file.
+   * Redirects to known placeholder hosts are rejected before this structural fallback is reached.
+   */
+  private fun looksLikeMp4Initialization(head: ByteArray): Boolean {
+    val moov = head.indexOfAscii("moov")
+    return moov >= 4
+  }
+
+  private fun ByteArray.indexOfAscii(value: String): Int {
+    val needle = value.toByteArray(Charsets.ISO_8859_1)
+    return indices.firstOrNull { start ->
+      start + needle.size <= size && needle.indices.all { offset -> this[start + offset] == needle[offset] }
+    } ?: -1
+  }
+
+  private fun fetch(url: String, headers: Map<String, String>, firstBytes: Boolean = false) =
+    runCatching {
+        val builder = Request.Builder().url(url)
+        headers.forEach { (name, value) -> builder.header(name, value) }
+        if (firstBytes) builder.header("Range", "bytes=0-4095")
+        http.newCall(builder.build()).execute().use { response ->
+          if (response.isSuccessful) {
+            response.body?.let { PeekedBody(it.bytes(), response.request.url.toString()) }
+          } else {
+            null
+          }
+        }
+      }
+      .getOrNull()
+
+  /** The bytes, already read, so the response can be closed before they are looked at. */
+  private class PeekedBody(private val bytes: ByteArray, val finalUrl: String) {
+    fun bytes() = bytes
+
+    fun string() = String(bytes, Charsets.UTF_8)
+  }
+
+  private fun isJunkRedirect(url: String): Boolean =
+    JUNK_HOST_MARKERS.any { marker -> url.contains(marker, ignoreCase = true) }
+
+  private fun absoluteAgainst(base: String, entry: String): String =
+    if (entry.startsWith("http")) entry
+    else runCatching { java.net.URI(base).resolve(entry).toString() }.getOrDefault(entry)
 
   /** A real delivery address, rather than a placeholder, an advert, or a strip of scrub images. */
   private fun isUsableMedia(url: String): Boolean {
@@ -186,7 +322,13 @@ internal object ChromeStreamExtractor {
     val path = url.substringBefore('#').substringBefore('?').lowercase()
     if (JUNK_HOST_MARKERS.any { url.lowercase().contains(it) }) return false
     if (DECORATIVE_MARKERS.any(path::contains)) return false
-    val stem = path.substringAfterLast('/').substringBeforeLast('.')
+    val filename = path.substringAfterLast('/')
+    val stem = filename.substringBeforeLast('.')
+    // An init segment describes tracks but is not a standalone movie. It is visible to the browser
+    // alongside the HLS playlist, so the plain-file fallback must not mistake it for the title.
+    if (filename.endsWith(".mp4") && (stem.startsWith("init-") || stem.startsWith("seg-"))) {
+      return false
+    }
     // vidrock serves a demo-video.mp4 before it has resolved anything; taking it hands the player a
     // file with no moov atom while the real playlist is still on its way.
     return DECOY_STEMS.none { stem == it || stem.startsWith("$it-") || stem.startsWith("${it}_") }
@@ -196,6 +338,33 @@ internal object ChromeStreamExtractor {
     val host = url.substringAfter("://", "").substringBefore('/')
     return host.ifEmpty { url }
   }
+
+  private fun pageOrigin(url: String): String =
+    runCatching {
+        val parsed = java.net.URI(url)
+        "${parsed.scheme}://${parsed.authority}"
+      }
+      .getOrElse { "https://${originOf(url)}" }
+
+  /**
+   * Only replay identity headers. Hop-by-hop and representation headers belong to each individual
+   * proxy request; replaying a captured Range or compressed Accept-Encoding would corrupt later
+   * playlist and segment responses.
+   */
+  private fun playbackHeaders(raw: JSONObject?): Map<String, String> {
+    if (raw == null) return emptyMap()
+    val allowed = setOf("referer", "origin", "user-agent", "cookie", "authorization")
+    return buildMap {
+      raw.keys().forEach { name ->
+        if (name.lowercase() in allowed) {
+          raw.optString(name).takeIf(String::isNotBlank)?.let { put(name, it) }
+        }
+      }
+    }
+  }
+
+  private fun CapturedStream.withFallbackHeaders(fallback: Map<String, String>): CapturedStream =
+    copy(headers = fallback + headers)
 
   private val DECOY_STEMS =
     listOf("demo-video", "demo", "sample", "placeholder", "intro", "trailer")

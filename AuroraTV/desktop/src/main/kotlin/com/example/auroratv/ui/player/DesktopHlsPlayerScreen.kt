@@ -1,6 +1,6 @@
 package com.example.auroratv.ui.player
 
-import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Forward10
@@ -29,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -46,7 +48,8 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
@@ -110,7 +113,28 @@ internal fun HlsPlayerScreen(
   onPlaybackStable: () -> Unit = {},
 ) {
   val engine = remember(request.url) { VlcVideoEngine() }
-  var frame by remember(request.url) { mutableStateOf<ImageBitmap?>(null) }
+  val preferredSubtitleIndex =
+    remember(request.url, request.subtitles) {
+      preferredEnglishSubtitleIndex(
+        count = request.subtitles.size,
+        isEnglish = { index ->
+          request.subtitles[index].let { isEnglishSubtitleLabel(it.label, it.language) }
+        },
+        isHearingImpaired = { index -> isHearingImpairedSubtitleLabel(request.subtitles[index].label) },
+      ) ?: request.subtitles.indices.firstOrNull()
+    }
+  var selectedSubtitleIndex by remember(request.url, request.subtitles) {
+    mutableStateOf(preferredSubtitleIndex)
+  }
+  var subtitleCues by remember(request.url) { mutableStateOf(emptyList<SubtitleCue>()) }
+  var subtitleLoading by remember(request.url) { mutableStateOf(false) }
+  var subtitleLoadError by remember(request.url) { mutableStateOf<String?>(null) }
+  var subtitleSize by remember(request.url) { mutableStateOf(SubtitleSizeOption.NORMAL) }
+  var subtitlePosition by remember(request.url) { mutableStateOf(SubtitlePositionOption.BOTTOM) }
+  var subtitleStyle by remember(request.url) { mutableStateOf(SubtitleStyleOption.OUTLINE) }
+  var subtitleOffsetMs by remember(request.url) { mutableLongStateOf(0L) }
+  var subtitleSettingsVisible by remember(request.url) { mutableStateOf(false) }
+  var displayedFrameCount by remember(request.url) { mutableLongStateOf(0L) }
   var isPlaying by remember(request.url) { mutableStateOf(true) }
   var positionMs by remember(request.url) { mutableStateOf(-1L) }
   var durationMs by remember(request.url) { mutableStateOf(-1L) }
@@ -130,20 +154,51 @@ internal fun HlsPlayerScreen(
     onDispose { engine.release() }
   }
 
-  // The engine publishes frames from VLC's own thread; this is the pump that carries them, and the
-  // clock, back into composition.
+  LaunchedEffect(request.url, selectedSubtitleIndex) {
+    val track = selectedSubtitleIndex?.let(request.subtitles::getOrNull)
+    subtitleLoadError = null
+    if (track == null) {
+      subtitleCues = emptyList()
+      subtitleLoading = false
+      return@LaunchedEffect
+    }
+    subtitleLoading = true
+    runCatching {
+        val body = downloadSubtitleCueBody(track.url, request.headers)
+        parseSubtitleCues(body, track.mimeType).also { cues ->
+          check(cues.isNotEmpty()) { "This subtitle file contains no readable captions." }
+        }
+      }
+      .onSuccess { cues -> subtitleCues = cues }
+      .onFailure { error ->
+        subtitleCues = emptyList()
+        subtitleLoadError = error.message ?: "Could not load this subtitle track."
+      }
+    subtitleLoading = false
+  }
+
+  // VLC publishes frames from its own thread. Poll the generation counter at display cadence so
+  // Compose redraws smoothly, while the slower player status values are sampled only four times a
+  // second. The bitmap itself stays behind VlcVideoEngine's lock: Skia must never try to turn it
+  // into an Image while VLC is replacing its pixels.
   LaunchedEffect(request.url) {
     focusRequester.requestFocus()
     val startedAt = System.currentTimeMillis()
     var stableReported = false
+    var nextStatusPollAt = 0L
     while (true) {
-      frame = engine.frame
-      if (scrubbingTo == null) positionMs = engine.timeMs()
-      durationMs = engine.durationMs()
-      isPlaying = engine.isPlaying()
+      val now = System.currentTimeMillis()
+      val latestFrameCount = engine.frameCount
+      if (latestFrameCount != displayedFrameCount) displayedFrameCount = latestFrameCount
+      if (now >= nextStatusPollAt) {
+        if (scrubbingTo == null) positionMs = engine.timeMs()
+        durationMs = engine.durationMs()
+        isPlaying = engine.isPlaying()
+        nextStatusPollAt = now + STATUS_POLL_INTERVAL_MS
+      }
       // A stream that has produced pictures has proved itself, so the failover chain can forget it
       // was ever in doubt.
-      if (!stableReported && engine.frameCount > 0L) {
+      if (!stableReported && latestFrameCount > 0L) {
         stableReported = true
         onPlaybackStable()
       }
@@ -153,15 +208,20 @@ internal fun HlsPlayerScreen(
       if (
         !stableReported &&
           engine.isAvailable &&
-          System.currentTimeMillis() - startedAt > STARTUP_GIVE_UP_MS
+          now - startedAt > STARTUP_GIVE_UP_MS
       ) {
         if (!onPlaybackFailed()) deadStream = true
         return@LaunchedEffect
       }
-      if (controlsVisible && isPlaying && System.currentTimeMillis() - lastInteraction > CONTROLS_IDLE_MS) {
+      if (
+        controlsVisible &&
+          !subtitleSettingsVisible &&
+          isPlaying &&
+          now - lastInteraction > CONTROLS_IDLE_MS
+      ) {
         controlsVisible = false
       }
-      delay(POLL_INTERVAL_MS)
+      delay(FRAME_POLL_INTERVAL_MS)
     }
   }
 
@@ -189,7 +249,7 @@ internal fun HlsPlayerScreen(
               true
             }
             Key.Escape, Key.Backspace -> {
-              onExit()
+              if (subtitleSettingsVisible) subtitleSettingsVisible = false else onExit()
               true
             }
             else -> false
@@ -215,22 +275,43 @@ internal fun HlsPlayerScreen(
           detail = "This stream did not start. Every server has been tried.",
           onExit = onExit,
         )
-      frame != null ->
-        Image(
-          bitmap = frame!!,
-          contentDescription = request.title,
-          modifier = Modifier.fillMaxSize(),
-          contentScale = ContentScale.Fit,
-        )
+      displayedFrameCount > 0L ->
+        Canvas(modifier = Modifier.fillMaxSize()) {
+          // Reading this state invalidates the draw block for every newly decoded frame.
+          displayedFrameCount
+          engine.withFrame { image ->
+            val scale = minOf(size.width / image.width, size.height / image.height)
+            val width = (image.width * scale).toInt().coerceAtLeast(1)
+            val height = (image.height * scale).toInt().coerceAtLeast(1)
+            drawImage(
+              image = image,
+              dstOffset = IntOffset((size.width.toInt() - width) / 2, (size.height.toInt() - height) / 2),
+              dstSize = IntSize(width, height),
+            )
+          }
+        }
       else ->
         PlayerMessage(
           title = request.title ?: "Aurora Player",
           detail = "Opening the stream…",
-          onExit = onExit,
+         onExit = onExit,
         )
     }
 
-    if (startupError == null && controlsVisible) {
+    desktopSubtitleTextAt(
+      cues = subtitleCues,
+      playbackPositionMs = positionMs,
+      offsetMs = subtitleOffsetMs,
+    )?.let { text ->
+      DesktopSubtitleCueOverlay(
+        text = text,
+        size = subtitleSize,
+        position = subtitlePosition,
+        style = subtitleStyle,
+      )
+    }
+
+    if (startupError == null && controlsVisible && !subtitleSettingsVisible) {
       PlayerControlsOverlay(
         title = request.title,
         subtitle = request.subtitle,
@@ -253,7 +334,35 @@ internal fun HlsPlayerScreen(
           scrubbingTo?.let(engine::seekTo)
           scrubbingTo = null
         },
+        subtitleAvailable = request.subtitles.isNotEmpty(),
+        subtitleEnabled = selectedSubtitleIndex != null,
+        onOpenSubtitleSettings = {
+          noteInteraction()
+          subtitleSettingsVisible = true
+        },
         onExit = onExit,
+      )
+    }
+
+    if (startupError == null && subtitleSettingsVisible) {
+      DesktopSubtitleSettingsPanel(
+        tracks = request.subtitles,
+        selectedTrackIndex = selectedSubtitleIndex,
+        size = subtitleSize,
+        position = subtitlePosition,
+        style = subtitleStyle,
+        offsetMs = subtitleOffsetMs,
+        loading = subtitleLoading,
+        loadError = subtitleLoadError,
+        onTrackSelected = { selectedSubtitleIndex = it },
+        onSizeSelected = { subtitleSize = it },
+        onPositionSelected = { subtitlePosition = it },
+        onStyleSelected = { subtitleStyle = it },
+        onOffsetSelected = { subtitleOffsetMs = it },
+        onClose = {
+          subtitleSettingsVisible = false
+          noteInteraction()
+        },
       )
     }
   }
@@ -289,6 +398,9 @@ private fun PlayerControlsOverlay(
   onSkip: (Long) -> Unit,
   onScrub: (Float) -> Unit,
   onScrubFinished: () -> Unit,
+  subtitleAvailable: Boolean,
+  subtitleEnabled: Boolean,
+  onOpenSubtitleSettings: () -> Unit,
   onExit: () -> Unit,
 ) {
   Box(modifier = Modifier.fillMaxSize()) {
@@ -356,16 +468,46 @@ private fun PlayerControlsOverlay(
           label = "Forward 10 seconds",
           onClick = { onSkip(SKIP_STEP_MS) },
         )
+        if (subtitleAvailable) {
+          Spacer(modifier = Modifier.width(10.dp))
+          SubtitleToggle(
+            enabled = subtitleEnabled,
+            onClick = onOpenSubtitleSettings,
+          )
+        }
       }
     }
+  }
+}
+
+@Composable
+private fun SubtitleToggle(enabled: Boolean, onClick: () -> Unit) {
+  Box(
+    modifier =
+      Modifier
+        .height(40.dp)
+        .clip(RoundedCornerShape(9.dp))
+        .background(if (enabled) AuroraMint else NightSurface.copy(alpha = 0.8f))
+        .clickable(onClick = onClick)
+        .padding(horizontal = 11.dp),
+    contentAlignment = Alignment.Center,
+  ) {
+    Text(
+      text = "CC",
+      color = if (enabled) Color.Black else SoftWhite,
+      fontSize = 13.sp,
+      fontWeight = FontWeight.Black,
+    )
   }
 }
 
 /** Long enough that a viewer reaching for the seek bar does not lose it mid-reach. */
 private const val CONTROLS_IDLE_MS = 3_000L
 private const val SKIP_STEP_MS = 10_000L
-/** Fast enough for a seek bar that does not visibly step, slow enough to cost nothing. */
-private const val POLL_INTERVAL_MS = 250L
+/** Roughly one display refresh; unchanged frame counters do not invalidate Compose. */
+private const val FRAME_POLL_INTERVAL_MS = 16L
+/** Player clocks do not need frame-rate polling. */
+private const val STATUS_POLL_INTERVAL_MS = 250L
 /**
  * How long an address gets to become a picture before the next site is asked for the title.
  *

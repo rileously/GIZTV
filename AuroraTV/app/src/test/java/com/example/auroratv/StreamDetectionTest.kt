@@ -83,10 +83,16 @@ class StreamDetectionTest {
     // Nothing found means nothing to wait for, however early it is.
     assertFalse(shouldWaitForMoreSubtitles(hasSubtitles = false, elapsedMs = 0, sinceLastSubtitleMs = 0))
 
-    // A page hands over its own track about a second after the video address, so the floor is held
-    // even when everything found so far arrived long ago.
-    assertTrue(
+    // A subtitle catalog already quiet before the video was found is complete, so it does not add a
+    // fixed 1.2-second delay to the player handoff.
+    assertFalse(
       shouldWaitForMoreSubtitles(hasSubtitles = true, elapsedMs = 700, sinceLastSubtitleMs = 5_000)
+    )
+
+    // A track that arrived after the video may have siblings behind it, so that burst keeps the
+    // original settle floor.
+    assertTrue(
+      shouldWaitForMoreSubtitles(hasSubtitles = true, elapsedMs = 700, sinceLastSubtitleMs = 100)
     )
 
     // Past the floor with nothing new arriving, the film goes to the player. This is the case that

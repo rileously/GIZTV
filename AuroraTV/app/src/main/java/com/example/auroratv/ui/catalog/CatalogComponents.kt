@@ -661,7 +661,8 @@ internal fun Modifier.remoteFocusNavigation(
         Key.DirectionRight -> right
         else -> null
       } ?: return@onPreviewKeyEvent false
-    runCatching { destination.requestFocus() }.getOrDefault(false)
+    val handled: Boolean = runCatching { destination.requestFocus(); true }.getOrElse { false }
+    handled
   }
 @Composable
 internal fun ContinueWatchingSection(

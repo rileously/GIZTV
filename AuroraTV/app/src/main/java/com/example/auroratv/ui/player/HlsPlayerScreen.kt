@@ -273,21 +273,15 @@ private const val AUTO_QUALITY_INCREASE_BUFFER_MS = 10_000
 private const val AUTO_QUALITY_DECREASE_BUFFER_MS = 25_000
 private const val AUTO_QUALITY_RETAIN_BUFFER_MS = 25_000
 private const val AUTO_QUALITY_BANDWIDTH_FRACTION = .7f
-/**
- * Measured link speeds at which the startup ladder stops paying for itself.
- *
- * The ladder exists so a weak connection reaches a first frame quickly and builds a cushion before
- * it commits to anything expensive. A link already known to carry several times the highest
- * rendition gains nothing from it and loses the opening minute of every film to 360p.
- */
+/** A genuinely fast measured link may eventually use the wider phone ceiling and lean file start. */
 private const val FAST_LINK_BITRATE_BPS = 8_000_000L
-private const val MODERATE_LINK_BITRATE_BPS = 3_000_000L
 private const val RELIABLE_MIN_BUFFER_MS = 30_000
 private const val RELIABLE_MAX_BUFFER_MS = 75_000
-private const val RELIABLE_START_BUFFER_MS = 5_000
-private const val RELIABLE_REBUFFER_MS = 12_000
-private const val PHONE_START_BUFFER_MS = 2_500
-private const val PHONE_REBUFFER_MS = 5_000
+/** Start and seek should feel like desktop VLC; the deeper min/max cushion still fills afterwards. */
+private const val RELIABLE_START_BUFFER_MS = 2_000
+private const val RELIABLE_REBUFFER_MS = 4_000
+private const val PHONE_START_BUFFER_MS = 1_500
+private const val PHONE_REBUFFER_MS = 3_000
 /**
  * Progressive MP4/MKV files (typical of SR2/SR3) have no ladder, so a deep HLS cushion just means
  * more megabytes to fill before start and after every stall. Keep a useful safety net without
@@ -295,10 +289,12 @@ private const val PHONE_REBUFFER_MS = 5_000
  */
 private const val PROGRESSIVE_MIN_BUFFER_MS = 20_000
 private const val PROGRESSIVE_MAX_BUFFER_MS = 60_000
-private const val PROGRESSIVE_TV_START_BUFFER_MS = 4_000
-private const val PROGRESSIVE_PHONE_START_BUFFER_MS = 3_000
-private const val PROGRESSIVE_TV_REBUFFER_MS = 8_000
-private const val PROGRESSIVE_PHONE_REBUFFER_MS = 5_000
+private const val PROGRESSIVE_TV_START_BUFFER_MS = 2_000
+private const val PROGRESSIVE_PHONE_START_BUFFER_MS = 1_500
+private const val PROGRESSIVE_TV_REBUFFER_MS = 4_000
+private const val PROGRESSIVE_PHONE_REBUFFER_MS = 3_000
+/** Retains the common 10-second rewind locally instead of asking the CDN for it again. */
+private const val SEEK_BACK_BUFFER_MS = 15_000
 /**
  * What a link that is plainly not the problem has to fill before the first frame.
  *
@@ -614,18 +610,13 @@ internal fun automaticQualityPromotion(phase: AutomaticQualityPhase): AutomaticQ
   }
 
 /**
- * Where Auto should begin, given what is already known about the link.
+ * Where Auto should begin.
  *
- * The ladder is a way of finding out how much a connection can carry without risking a stall to do
- * it. When the bandwidth meter has already answered that question there is nothing left to find
- * out, so the film opens at the quality it is going to settle at anyway.
+ * A process-wide bandwidth estimate can be stale or can have been measured against a faster CDN.
+ * Starting every new HLS address at the small rendition gets a first frame and post-seek segment on
+ * screen quickly. The existing buffer-aware ladder promotes it after playback is stable.
  */
-internal fun initialAutomaticQualityPhase(linkBitrateBps: Long): AutomaticQualityPhase =
-  when {
-    linkBitrateBps >= FAST_LINK_BITRATE_BPS -> AutomaticQualityPhase.UNRESTRICTED
-    linkBitrateBps >= MODERATE_LINK_BITRATE_BPS -> AutomaticQualityPhase.BALANCED
-    else -> AutomaticQualityPhase.LOW_STARTUP
-  }
+internal fun initialAutomaticQualityPhase(): AutomaticQualityPhase = AutomaticQualityPhase.LOW_STARTUP
 
 /**
  * Whether a buffering event is evidence that the link cannot keep up.
@@ -935,13 +926,12 @@ internal fun HlsPlayerScreen(
   var subtitlesRendering by remember(request) { mutableStateOf(false) }
   var seekBurst by remember(request) { mutableStateOf<PlayerSeekBurst?>(null) }
   var playbackFinished by remember(request) { mutableStateOf(false) }
-  // What the bandwidth meter already knows decides where Auto opens. It is a process-wide singleton
-  // fed by every segment this app has fetched, so only the very first stream after a cold start
-  // begins on an estimate rather than a measurement.
+  // The estimate still controls the eventual phone ceiling, but a new address always opens on the
+  // inexpensive first rung so one stale measurement cannot make its first segment unnecessarily big.
   val linkBitrate = remember(player) { measuredLinkBitrate(context) }
   val fastLink = linkBitrate >= FAST_LINK_BITRATE_BPS
   var automaticQualityPhase by
-    remember(player) { mutableStateOf(initialAutomaticQualityPhase(linkBitrate)) }
+    remember(player) { mutableStateOf(initialAutomaticQualityPhase()) }
   var automaticQualityRecoveryLock by remember(player) { mutableStateOf(false) }
   // A seek buffers exactly like a stall does, and so does the first segment of a rendition the ramp
   // has just unlocked. Neither says anything about the connection, so both are held apart from it
@@ -1522,7 +1512,7 @@ internal fun HlsPlayerScreen(
     automaticQualityRecoveryLock = false
     dataSaverFallbackRank = 0
     automaticQualityPhase =
-      if (selectedQuality.isAuto) initialAutomaticQualityPhase(measuredLinkBitrate(context))
+      if (selectedQuality.isAuto) initialAutomaticQualityPhase()
       else AutomaticQualityPhase.UNRESTRICTED
     // A manual fixed rendition is explicit permission to exceed the phone Auto ceiling.
     applyQualityPhase(automaticQualityPhase, allowFixedQualityHeadroom = !selectedQuality.isAuto)
@@ -2828,9 +2818,12 @@ private fun ModernTvSeekBar(
 ) {
   var focused by remember { mutableStateOf(false) }
   var remoteSeekTargetMs by remember { mutableLongStateOf(positionMs) }
+  var remoteSeekPending by remember { mutableStateOf(false) }
   var touchSeekTargetMs by remember { mutableStateOf<Long?>(null) }
   var trackWidthPx by remember { mutableIntStateOf(0) }
-  LaunchedEffect(positionMs) { remoteSeekTargetMs = positionMs }
+  LaunchedEffect(positionMs, remoteSeekPending) {
+    if (!remoteSeekPending) remoteSeekTargetMs = positionMs
+  }
   // Touch gestures outlive individual duration updates, so read the latest value inside them.
   val latestDurationMs by rememberUpdatedState(durationMs)
   val scrubbing = touchSeekTargetMs != null
@@ -2849,17 +2842,26 @@ private fun ModernTvSeekBar(
           focused = it.isFocused
           onFocusChanged(it.isFocused)
           if (it.isFocused) {
-            remoteSeekTargetMs = positionMs
+            if (!remoteSeekPending) remoteSeekTargetMs = positionMs
             onInteraction()
           }
         }
         .onPreviewKeyEvent { event ->
           if (event.key == Key.DirectionLeft || event.key == Key.DirectionRight) {
-            if (event.type == KeyEventType.KeyDown) {
-              val direction = if (event.key == Key.DirectionLeft) -1 else 1
-              val deltaMs = remoteSeekDeltaMs(direction, event.nativeKeyEvent.repeatCount)
-              remoteSeekTargetMs = seekTargetPosition(remoteSeekTargetMs, deltaMs, durationMs)
-              onSeek(remoteSeekTargetMs)
+            when (event.type) {
+              KeyEventType.KeyDown -> {
+                val direction = if (event.key == Key.DirectionLeft) -1 else 1
+                val deltaMs = remoteSeekDeltaMs(direction, event.nativeKeyEvent.repeatCount)
+                remoteSeekTargetMs = seekTargetPosition(remoteSeekTargetMs, deltaMs, durationMs)
+                remoteSeekPending = true
+                onInteraction()
+              }
+              KeyEventType.KeyUp -> {
+                if (remoteSeekPending) {
+                  remoteSeekPending = false
+                  onSeek(remoteSeekTargetMs)
+                }
+              }
             }
             true
           } else {
@@ -4745,6 +4747,7 @@ internal fun createHlsPlayer(
         bufferProfile.startBufferMs,
         bufferProfile.rebufferMs,
       )
+      .setBackBuffer(SEEK_BACK_BUFFER_MS, true)
       .setPrioritizeTimeOverSizeThresholdsForStreaming(true)
       .build()
   val renderersFactory =
@@ -4783,11 +4786,11 @@ internal fun createHlsPlayer(
       } else if (!progressive) {
         // Ceilings only matter when the source publishes multiple renditions. A single progressive
         // file has nowhere to step down to; capping tracks would not change the bytes on the wire.
-        // The opening ceiling is the one the measured link has already earned, so a fast connection
-        // renders the first segment at the quality it would have reached a minute later anyway.
+        // Every address starts cheaply. The measured link still controls the eventual phone ceiling
+        // after the buffer-aware quality ladder has proven this particular CDN can sustain it.
         applyAutomaticQualityCeiling(
           selectionBuilder,
-          initialAutomaticQualityPhase(bandwidthMeter.bitrateEstimate),
+          initialAutomaticQualityPhase(),
           isTelevision = isTelevision,
           fastLink = fastLink,
         )

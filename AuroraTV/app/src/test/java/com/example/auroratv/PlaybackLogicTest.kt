@@ -347,14 +347,8 @@ class PlaybackLogicTest {
   }
 
   @Test
-  fun automaticQuality_opensAtWhateverTheMeasuredLinkHasAlreadyEarned() {
-    // A fast link has nothing left to discover, so the film starts where the ladder would end.
-    assertEquals(AutomaticQualityPhase.UNRESTRICTED, initialAutomaticQualityPhase(40_000_000L))
-    assertEquals(AutomaticQualityPhase.UNRESTRICTED, initialAutomaticQualityPhase(8_000_000L))
-    assertEquals(AutomaticQualityPhase.BALANCED, initialAutomaticQualityPhase(5_000_000L))
-    assertEquals(AutomaticQualityPhase.LOW_STARTUP, initialAutomaticQualityPhase(1_200_000L))
-    // No measurement yet reads as zero, which is the one case that has to earn its way up.
-    assertEquals(AutomaticQualityPhase.LOW_STARTUP, initialAutomaticQualityPhase(0L))
+  fun automaticQuality_opensLowSoTheFirstSegmentIsCheap() {
+    assertEquals(AutomaticQualityPhase.LOW_STARTUP, initialAutomaticQualityPhase())
   }
 
   @Test
@@ -578,16 +572,16 @@ class PlaybackLogicTest {
   }
 
   @Test
-  fun phone_restartsSoonerWhileTvKeepsItsDeepRebufferTarget() {
+  fun phoneAndTv_useFastDesktopStyleStartAndSeekTargets() {
     val phone = playbackBufferProfile(isTelevision = false)
     val television = playbackBufferProfile(isTelevision = true)
 
     assertEquals(30_000, phone.minBufferMs)
     assertEquals(75_000, phone.maxBufferMs)
-    assertEquals(2_500, phone.startBufferMs)
-    assertEquals(5_000, phone.rebufferMs)
-    assertEquals(5_000, television.startBufferMs)
-    assertEquals(12_000, television.rebufferMs)
+    assertEquals(1_500, phone.startBufferMs)
+    assertEquals(3_000, phone.rebufferMs)
+    assertEquals(2_000, television.startBufferMs)
+    assertEquals(4_000, television.rebufferMs)
   }
 
   @Test
@@ -598,10 +592,10 @@ class PlaybackLogicTest {
 
     assertEquals(20_000, progressivePhone.minBufferMs)
     assertEquals(60_000, progressivePhone.maxBufferMs)
-    assertEquals(3_000, progressivePhone.startBufferMs)
-    assertEquals(5_000, progressivePhone.rebufferMs)
-    assertEquals(4_000, progressiveTv.startBufferMs)
-    assertEquals(8_000, progressiveTv.rebufferMs)
+    assertEquals(1_500, progressivePhone.startBufferMs)
+    assertEquals(3_000, progressivePhone.rebufferMs)
+    assertEquals(2_000, progressiveTv.startBufferMs)
+    assertEquals(4_000, progressiveTv.rebufferMs)
     // HLS keeps the deeper cushion; progressive must not inherit it.
     assertTrue(progressivePhone.minBufferMs < hlsPhone.minBufferMs)
     assertTrue(progressivePhone.maxBufferMs < hlsPhone.maxBufferMs)
