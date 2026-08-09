@@ -75,6 +75,8 @@ import com.example.auroratv.ui.update.AppUpdateController
 import kotlinx.coroutines.launch
 
 private const val SKYFLIX_URL = "https://skyflix.to/"
+/** Saved-state key for the catalog shown behind a player that has lost its stream. */
+private const val PLAYER_FALLBACK_STATE_KEY = "catalog-behind-player"
 /** One attempt per provider after the first: every site gets asked before the viewer is told no. */
 private val MAX_AUTOMATIC_STREAM_FAILOVERS = STREAM_PROVIDER_COUNT - 1
 
@@ -713,7 +715,12 @@ fun AuroraTvRoot(
               )
             Destination.PLAYER -> {
               if (streamRequest == null) {
-                destinationState.SaveableStateProvider(Destination.CATALOG) { Catalog() }
+                // Its own key, deliberately. The catalog above is provided under
+                // Destination.CATALOG, and a transition that composes both at once — which is what
+                // AnimatedContent does, and what a player left without a stream lands in — handed
+                // SaveableStateHolder the same key twice and brought the whole interface down with
+                // "Key CATALOG was used multiple times".
+                destinationState.SaveableStateProvider(PLAYER_FALLBACK_STATE_KEY) { Catalog() }
               }
             }
           }

@@ -22,3 +22,6 @@ update-normal-layout.json
 !/browser-screen.png
 !/giztv-pixel-home-v12.png
 /*-layout.json
+/desktop/build
+hs_err_pid*.log
+replay_pid*.log
