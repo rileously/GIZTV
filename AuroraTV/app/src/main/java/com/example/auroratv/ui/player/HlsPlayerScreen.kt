@@ -3313,16 +3313,29 @@ private fun SubtitleSyncMiniOverlay(
   var matchedCueStartMs by remember { mutableStateOf<Long?>(null) }
   val listState = rememberLazyListState()
 
+  var showLineList by remember { mutableStateOf(true) }
+  var selectedCueText by remember { mutableStateOf<String?>(null) }
+  var isPlayingState by remember { mutableStateOf(player.isPlaying || player.playWhenReady) }
+
   // Pause so the spoken line stays under the cue the viewer is about to pick; resume on close.
   DisposableEffect(isCasting) {
     if (!isCasting) {
       positionMs = player.currentPosition.coerceAtLeast(0L)
       player.pause()
+      isPlayingState = false
     }
     onDispose {
       if (!isCasting && wasPlaying) {
         player.playWhenReady = true
       }
+    }
+  }
+
+  LaunchedEffect(player.isPlaying) {
+    isPlayingState = player.isPlaying
+    while (player.isPlaying) {
+      positionMs = player.currentPosition.coerceAtLeast(0L)
+      delay(200L)
     }
   }
 
@@ -3405,12 +3418,30 @@ private fun SubtitleSyncMiniOverlay(
             if (isCasting) {
               "The receiver owns the timing while casting"
             } else {
-              "Pause on speech, pick the matching line · ${subtitleSyncHeadline(offsetMs)}"
+              "Pick matching line or fine-tune timing · ${subtitleSyncHeadline(offsetMs)}"
             },
             color = MutedBlue,
             fontSize = 11.sp,
             maxLines = 2,
           )
+        }
+        if (!isCasting) {
+          ModernTransportControl(
+            icon = if (isPlayingState) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+            label = if (isPlayingState) "Pause video" else "Play video to test subtitles",
+            size = 34.dp,
+            onClick = {
+              if (isPlayingState) {
+                player.pause()
+                isPlayingState = false
+              } else {
+                player.play()
+                isPlayingState = true
+              }
+            },
+            onInteraction = {},
+          )
+          Spacer(modifier = Modifier.width(6.dp))
         }
         ModernTransportControl(
           icon = Icons.Filled.Close,
@@ -3423,69 +3454,110 @@ private fun SubtitleSyncMiniOverlay(
 
       if (!isCasting) {
         Spacer(modifier = Modifier.height(10.dp))
-        when {
-          cueLoadState == SubtitleCueLoadState.LOADING -> {
-            Text("Loading subtitle lines…", color = MutedBlue, fontSize = 12.sp)
-          }
-          nearbyCues.isNotEmpty() -> {
-            LazyColumn(
-              state = listState,
-              modifier =
-                Modifier
-                  .fillMaxWidth()
-                  .heightIn(max = 300.dp)
-                  .clip(RoundedCornerShape(12.dp))
-                  .background(DeepSpace.copy(alpha = .72f)),
-              verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-              itemsIndexed(nearbyCues, key = { _, cue -> "${cue.startMs}:${cue.text}" }) { index, cue ->
-                SubtitleCuePickRow(
-                  cue = cue,
-                  selected = matchedCueStartMs == cue.startMs,
-                  onClick = {
-                    matchedCueStartMs = cue.startMs
-                    onOffsetSelected(subtitleOffsetForCueMatch(initialPositionMs, cue.startMs))
-                    player.seekTo(initialPositionMs)
-                  },
-                  modifier = if (index == 0) Modifier.focusRequester(firstChoiceFocus) else Modifier,
-                )
-              }
+
+        if (selectedCueText != null && !showLineList) {
+          Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+          ) {
+            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+              Text(
+                "SELECTED LINE",
+                color = AuroraMint,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Black,
+                letterSpacing = 1.2.sp,
+              )
+              Text(
+                selectedCueText.orEmpty(),
+                color = SoftWhite,
+                fontSize = 12.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+              )
             }
-          }
-          else -> {
-            Text(
-              "No nearby lines from the subtitle file. Use the on-screen line or the fine-tune buttons.",
-              color = MutedBlue,
-              fontSize = 12.sp,
+            SettingsChoiceChip(
+              label = "Change Line",
+              selected = false,
+              onClick = { showLineList = true },
             )
           }
         }
 
-        if (onScreenCue != null) {
-          Spacer(modifier = Modifier.height(8.dp))
-          SettingsChoiceChip(
-            label = "This on-screen line starts now",
-            selected = matchedCueStartMs == onScreenCue.startMs,
-            onClick = {
-              matchedCueStartMs = onScreenCue.startMs
-              onOffsetSelected(subtitleOffsetForCueMatch(initialPositionMs, onScreenCue.startMs))
-              player.seekTo(initialPositionMs)
-            },
-            modifier =
-              if (nearbyCues.isEmpty() && cueLoadState != SubtitleCueLoadState.LOADING) {
-                Modifier.focusRequester(firstChoiceFocus)
-              } else {
-                Modifier
+        if (showLineList) {
+          when {
+            cueLoadState == SubtitleCueLoadState.LOADING -> {
+              Text("Loading subtitle lines…", color = MutedBlue, fontSize = 12.sp)
+            }
+            nearbyCues.isNotEmpty() -> {
+              LazyColumn(
+                state = listState,
+                modifier =
+                  Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 240.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(DeepSpace.copy(alpha = .72f)),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+              ) {
+                itemsIndexed(nearbyCues, key = { _, cue -> "${cue.startMs}:${cue.text}" }) { index, cue ->
+                  SubtitleCuePickRow(
+                    cue = cue,
+                    selected = matchedCueStartMs == cue.startMs,
+                    onClick = {
+                      matchedCueStartMs = cue.startMs
+                      selectedCueText = cue.text
+                      onOffsetSelected(subtitleOffsetForCueMatch(initialPositionMs, cue.startMs))
+                      if (!player.isPlaying) {
+                        player.seekTo(initialPositionMs)
+                      }
+                      showLineList = false
+                    },
+                    modifier = if (index == 0) Modifier.focusRequester(firstChoiceFocus) else Modifier,
+                  )
+                }
+              }
+            }
+            else -> {
+              Text(
+                "No nearby lines from the subtitle file. Use the fine-tune buttons below.",
+                color = MutedBlue,
+                fontSize = 12.sp,
+              )
+            }
+          }
+
+          if (onScreenCue != null) {
+            Spacer(modifier = Modifier.height(8.dp))
+            SettingsChoiceChip(
+              label = "This on-screen line starts now",
+              selected = matchedCueStartMs == onScreenCue.startMs,
+              onClick = {
+                matchedCueStartMs = onScreenCue.startMs
+                selectedCueText = onScreenCue.text
+                onOffsetSelected(subtitleOffsetForCueMatch(initialPositionMs, onScreenCue.startMs))
+                if (!player.isPlaying) {
+                  player.seekTo(initialPositionMs)
+                }
+                showLineList = false
               },
-          )
-          Text(
-            onScreenCue.text,
-            color = SoftWhite.copy(alpha = .85f),
-            fontSize = 11.sp,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 4.dp, start = 4.dp, end = 4.dp),
-          )
+              modifier =
+                if (nearbyCues.isEmpty() && cueLoadState != SubtitleCueLoadState.LOADING) {
+                  Modifier.focusRequester(firstChoiceFocus)
+                } else {
+                  Modifier
+                },
+            )
+            Text(
+              onScreenCue.text,
+              color = SoftWhite.copy(alpha = .85f),
+              fontSize = 11.sp,
+              maxLines = 2,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.padding(top = 4.dp, start = 4.dp, end = 4.dp),
+            )
+          }
         }
 
         Spacer(modifier = Modifier.height(10.dp))
@@ -3499,13 +3571,14 @@ private fun SubtitleSyncMiniOverlay(
             selected = false,
             onClick = {
               onOffsetSelected(adjustSubtitleSync(offsetMs, -500L))
-              player.seekTo(initialPositionMs)
+              if (!player.isPlaying) player.seekTo(player.currentPosition)
             },
             modifier =
               if (
-                nearbyCues.isEmpty() &&
-                  onScreenCue == null &&
-                  cueLoadState != SubtitleCueLoadState.LOADING
+                !showLineList ||
+                  (nearbyCues.isEmpty() &&
+                    onScreenCue == null &&
+                    cueLoadState != SubtitleCueLoadState.LOADING)
               ) {
                 Modifier.focusRequester(firstChoiceFocus)
               } else {
@@ -3517,7 +3590,7 @@ private fun SubtitleSyncMiniOverlay(
             selected = false,
             onClick = {
               onOffsetSelected(adjustSubtitleSync(offsetMs, -100L))
-              player.seekTo(initialPositionMs)
+              if (!player.isPlaying) player.seekTo(player.currentPosition)
             },
           )
           SettingsChoiceChip(
@@ -3525,8 +3598,10 @@ private fun SubtitleSyncMiniOverlay(
             selected = offsetMs == 0L,
             onClick = {
               matchedCueStartMs = null
+              selectedCueText = null
+              showLineList = true
               onOffsetSelected(0L)
-              player.seekTo(initialPositionMs)
+              if (!player.isPlaying) player.seekTo(initialPositionMs)
             },
           )
           SettingsChoiceChip(
@@ -3534,7 +3609,7 @@ private fun SubtitleSyncMiniOverlay(
             selected = false,
             onClick = {
               onOffsetSelected(adjustSubtitleSync(offsetMs, 100L))
-              player.seekTo(initialPositionMs)
+              if (!player.isPlaying) player.seekTo(player.currentPosition)
             },
           )
           SettingsChoiceChip(
@@ -3542,7 +3617,7 @@ private fun SubtitleSyncMiniOverlay(
             selected = false,
             onClick = {
               onOffsetSelected(adjustSubtitleSync(offsetMs, 500L))
-              player.seekTo(initialPositionMs)
+              if (!player.isPlaying) player.seekTo(player.currentPosition)
             },
           )
         }
