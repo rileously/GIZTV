@@ -237,6 +237,23 @@ fun AuroraTvRoot(
     }
   }
 
+  /**
+   * Stops looking for the title that is already playing.
+   *
+   * The prefetcher exists to have the *next* thing ready, but it is pointed at a title by the
+   * catalog before that title is opened, and nothing used to unpoint it once the player had what it
+   * needed. The player destination composes it again, so a fresh WebView opened the same page a
+   * second time and ground out the whole resolution again — ads, subtitle catalogs and all —
+   * directly behind a film that was still filling its first buffer, competing for the connection it
+   * was supposed to be saving. Measured on both a playlist server and a file server: every title
+   * resolved exactly twice.
+   */
+  LaunchedEffect(destination, streamRequest?.context?.pageUrl) {
+    if (destination != Destination.PLAYER) return@LaunchedEffect
+    val playing = streamRequest?.context?.pageUrl ?: return@LaunchedEffect
+    if (prefetchTarget?.pageUrl == playing) prefetchTarget = null
+  }
+
   // One stable handler for the drama destinations and the sports page. Registering a BackHandler
   // inside each screen instead would hand the press that leaves the detail page to the listing page
   // as well, dropping the viewer two levels at once.

@@ -84,7 +84,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.net.toUri
 import androidx.media3.common.MimeTypes
 import com.example.auroratv.ui.catalog.STREAM_PROVIDER_HOSTS
-import com.example.auroratv.ui.catalog.isProgressiveOnlyProviderPage
 import com.example.auroratv.ui.catalog.providerIdOf
 import com.example.auroratv.ui.catalog.providerIndexOf
 import com.example.auroratv.ui.catalog.serverLabelFor
@@ -123,7 +122,24 @@ import org.json.JSONObject
 import org.json.JSONTokener
 
 private const val HOME_URL = "https://skyflix.to/"
+/** Nothing waits longer than this for a subtitle, however busy the page still looks. */
 private const val SUBTITLE_DISCOVERY_DELAY_MS = 2_500L
+/**
+ * The least a found stream waits when subtitles are in the picture at all.
+ *
+ * Measured: a page hands over its own subtitle track about a second after the video address, well
+ * after the dispatch grace has passed. Short of this and that track is simply lost.
+ */
+private const val SUBTITLE_SETTLE_FLOOR_MS = 1_200L
+/**
+ * How long after the last subtitle to keep waiting for another.
+ *
+ * The window used to be a flat [SUBTITLE_DISCOVERY_DELAY_MS] whenever any subtitle existed, so a
+ * title whose subtitles had all arrived five seconds before the video still sat there for the full
+ * two and a half — the single largest wait between finding a film and playing it. Following the
+ * traffic instead ends the window when the traffic ends.
+ */
+private const val SUBTITLE_QUIET_MS = 600L
 
 /**
  * How long a page gets to produce a first subtitle before the video is opened without one.
@@ -937,6 +953,8 @@ internal class AdBlockingWebViewClient(
     }
   @Volatile private var pendingStream: HlsStreamRequest? = null
   @Volatile private var streamQueuedAtMs = 0L
+  /** When a subtitle was last seen, so the wait for stragglers can end when they stop coming. */
+  @Volatile private var lastSubtitleAtMs = 0L
   @Volatile private var currentPageUrl = HOME_URL
   @Volatile private var currentPageTitle = ""
   private val dispatchPendingStream =
@@ -950,9 +968,16 @@ internal class AdBlockingWebViewClient(
           mainHandler.postDelayed(this, SUBTITLE_CATALOG_POLL_MS)
           return
         }
-        // Something has turned up, so the rest of the window is worth giving to its stragglers.
-        // Nothing has, and nothing is being fetched, so there is nothing left to wait for.
-        if (subtitles.isNotEmpty() && elapsedMs < SUBTITLE_DISCOVERY_DELAY_MS) {
+        // Something has turned up, so a straggler is worth a moment — but only while they are
+        // actually still arriving. Nothing has, and nothing is being fetched, so there is nothing
+        // left to wait for.
+        if (
+          shouldWaitForMoreSubtitles(
+            hasSubtitles = subtitles.isNotEmpty(),
+            elapsedMs = elapsedMs,
+            sinceLastSubtitleMs = SystemClock.elapsedRealtime() - lastSubtitleAtMs,
+          )
+        ) {
           mainHandler.postDelayed(this, SUBTITLE_CATALOG_POLL_MS)
           return
         }
@@ -1099,7 +1124,7 @@ internal class AdBlockingWebViewClient(
       onStatus("Video found · collecting separate subtitles…")
       collectPageSubtitles(view)
       mainHandler.removeCallbacks(dispatchPendingStream)
-      mainHandler.postDelayed(dispatchPendingStream, streamDispatchGraceMs(url, currentPageUrl))
+      mainHandler.postDelayed(dispatchPendingStream, streamDispatchGraceMs(url))
     }
   }
 
@@ -1107,6 +1132,7 @@ internal class AdBlockingWebViewClient(
     if (closed.get()) return
     val track = createExternalSubtitleTrack(url, label, language) ?: return
     if (subtitles.putIfAbsent(track.url, track) == null) {
+      lastSubtitleAtMs = SystemClock.elapsedRealtime()
       Log.i("AuroraHls", "Detected external subtitle: ${track.label} ${track.url}")
       mainHandler.post {
         if (pendingStream != null) onStatus("Video found · ${subtitles.size} separate subtitle(s)")
@@ -1475,17 +1501,29 @@ internal fun shouldReplacePendingStream(pendingUrl: String?, candidateUrl: Strin
  * A playlist is almost certainly the film, so it only waits for its subtitles. A plain file is
  * held a little longer, since that is exactly the window in which a page that loaded a placeholder
  * reveals the real playlist.
- *
- * Unless the page it came from has no playlists to reveal. vidfast serves complete files and
- * nothing else, so every one of its titles was spending that window waiting to be overtaken by
- * something that was never going to arrive.
  */
-internal fun streamDispatchGraceMs(url: String, pageUrl: String? = null): Long =
-  if (isHlsUrl(url) || isProgressiveOnlyProviderPage(pageUrl)) {
-    SUBTITLE_GRACE_MS
-  } else {
-    PROGRESSIVE_STREAM_GRACE_MS
-  }
+internal fun streamDispatchGraceMs(url: String): Long =
+  if (isHlsUrl(url)) SUBTITLE_GRACE_MS else PROGRESSIVE_STREAM_GRACE_MS
+
+/**
+ * Whether a found stream should keep waiting for another subtitle before it is handed over.
+ *
+ * Waits at least [SUBTITLE_SETTLE_FLOOR_MS] whenever there are subtitles at all, because a page's
+ * own track routinely lands about a second behind the video address. Past that it follows the
+ * traffic: while tracks are still arriving inside [SUBTITLE_QUIET_MS] of each other it keeps
+ * waiting, and [SUBTITLE_DISCOVERY_DELAY_MS] is the hard end of it either way. A title whose
+ * subtitles were all in hand before the video no longer waits out a window it cannot use.
+ */
+internal fun shouldWaitForMoreSubtitles(
+  hasSubtitles: Boolean,
+  elapsedMs: Long,
+  sinceLastSubtitleMs: Long,
+): Boolean {
+  if (!hasSubtitles) return false
+  if (elapsedMs >= SUBTITLE_DISCOVERY_DELAY_MS) return false
+  if (elapsedMs < SUBTITLE_SETTLE_FLOOR_MS) return true
+  return sinceLastSubtitleMs < SUBTITLE_QUIET_MS
+}
 
 /** Anything the player can be handed directly, whichever shape the source chose to serve it in. */
 internal fun isPlayableStreamUrl(url: String): Boolean =

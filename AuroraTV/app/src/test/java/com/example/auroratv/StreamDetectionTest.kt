@@ -4,6 +4,7 @@ import com.example.auroratv.ui.browser.isDecoyMediaUrl
 import com.example.auroratv.ui.browser.isPlayableStreamUrl
 import com.example.auroratv.ui.browser.isProgressiveMediaUrl
 import com.example.auroratv.ui.browser.shouldReplacePendingStream
+import com.example.auroratv.ui.browser.shouldWaitForMoreSubtitles
 import com.example.auroratv.ui.browser.streamDispatchGraceMs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -74,14 +75,34 @@ class StreamDetectionTest {
     assertTrue(streamDispatchGraceMs(file) > streamDispatchGraceMs(film))
     assertEquals(700L, streamDispatchGraceMs(film))
     assertEquals(2_500L, streamDispatchGraceMs(file))
-    // Unless the page it came from has no playlist to reveal, in which case the window is dead
-    // time in front of a film that is ready to play.
-    assertEquals(700L, streamDispatchGraceMs(file, "https://vidfast.vc/movie/1156593"))
-    assertEquals(700L, streamDispatchGraceMs(file, "https://vidfast.vc/tv/1399/1/1"))
-    // Sites that do serve playlists keep the window, as does a page from outside the list.
-    assertEquals(2_500L, streamDispatchGraceMs(file, "https://vidrock.ru/movie/1156593"))
-    assertEquals(2_500L, streamDispatchGraceMs(file, "https://vidlink.pro/movie/1156593"))
-    assertEquals(2_500L, streamDispatchGraceMs(file, "https://example.net/watch/1"))
+  }
+
+  @Test
+  fun subtitlesAreWaitedForWhileTheyAreArriving_andNotAMomentLonger() {
+    // Nothing found means nothing to wait for, however early it is.
+    assertFalse(shouldWaitForMoreSubtitles(hasSubtitles = false, elapsedMs = 0, sinceLastSubtitleMs = 0))
+
+    // A page hands over its own track about a second after the video address, so the floor is held
+    // even when everything found so far arrived long ago.
+    assertTrue(
+      shouldWaitForMoreSubtitles(hasSubtitles = true, elapsedMs = 700, sinceLastSubtitleMs = 5_000)
+    )
+
+    // Past the floor with nothing new arriving, the film goes to the player. This is the case that
+    // used to sit out the full two and a half seconds for nothing.
+    assertFalse(
+      shouldWaitForMoreSubtitles(hasSubtitles = true, elapsedMs = 1_300, sinceLastSubtitleMs = 5_000)
+    )
+
+    // Past the floor but tracks are still landing, so the window follows them.
+    assertTrue(
+      shouldWaitForMoreSubtitles(hasSubtitles = true, elapsedMs = 1_300, sinceLastSubtitleMs = 100)
+    )
+
+    // And a page that never stops producing them still has to let go.
+    assertFalse(
+      shouldWaitForMoreSubtitles(hasSubtitles = true, elapsedMs = 2_500, sinceLastSubtitleMs = 0)
+    )
   }
 
   @Test
