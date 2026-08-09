@@ -27,8 +27,15 @@ class StreamProviderTest {
 
       assertTrue("${provider.id} movie url: $movie", movie.contains("786892"))
       assertTrue("${provider.id} movie url: $movie", movie.contains(provider.host))
-      assertTrue("${provider.id} episode url: $episode", episode.contains("94997/1/1"))
       assertTrue("${provider.id} episode url: $episode", episode.contains(provider.host))
+      // Asserted by reading the address back rather than by looking for a path, because the shape
+      // is the site's business: cinesrc names the episode in the query string.
+      assertEquals("${provider.id} movie url: $movie", CatalogTarget(786892), catalogTargetOf(movie))
+      assertEquals(
+        "${provider.id} episode url: $episode",
+        CatalogTarget(94997, 1, 1),
+        catalogTargetOf(episode),
+      )
     }
   }
 
@@ -39,8 +46,13 @@ class StreamProviderTest {
     assertTrue(byId.getValue("vidrock").movieUrl(786892).startsWith("https://vidrock.ru/movie/786892"))
     assertEquals("https://vidrock.ru/tv/94997/1/1", byId.getValue("vidrock").episodeUrl(94997, 1, 1))
 
-    assertTrue(byId.getValue("vidlink").movieUrl(786892).startsWith("https://vidlink.pro/movie/786892"))
-    assertTrue(byId.getValue("vidlink").episodeUrl(94997, 1, 1).startsWith("https://vidlink.pro/tv/94997/1/1"))
+    // Measured against the site: the movie form takes a bare TMDB id under /embed/, and the
+    // three-segment episode form every other provider uses answers 404 here.
+    assertEquals("https://cinesrc.st/embed/movie/786892", byId.getValue("cinesrc").movieUrl(786892))
+    assertEquals(
+      "https://cinesrc.st/embed/tv/94997?season=1&episode=1",
+      byId.getValue("cinesrc").episodeUrl(94997, 1, 1),
+    )
 
     assertTrue(byId.getValue("vidfast").movieUrl(786892).startsWith("https://vidfast.vc/movie/786892"))
     assertTrue(byId.getValue("vidfast").episodeUrl(94997, 1, 1).startsWith("https://vidfast.vc/tv/94997/1/1"))
@@ -51,7 +63,7 @@ class StreamProviderTest {
     // VidSrc assembles its address inside the page behind an anti-inspection script, so the
     // resolver never sees one. Carrying it would only add a dead attempt to every failover.
     assertTrue(STREAM_PROVIDERS.none { it.host.contains("vsembed") })
-    assertEquals(listOf("vidrock", "vidlink", "vidfast"), STREAM_PROVIDERS.map { it.id })
+    assertEquals(listOf("vidrock", "cinesrc", "vidfast"), STREAM_PROVIDERS.map { it.id })
   }
 
   @Test
@@ -73,8 +85,14 @@ class StreamProviderTest {
     assertEquals(CatalogTarget(94997, 1, 1), catalogTargetOf(vidfastEpisodeUrl(94997, 1, 1)))
     // Whichever provider served it, including the one that nests its player under /embed.
     assertEquals(CatalogTarget(786892), catalogTargetOf("https://vsembed.ru/embed/movie/786892?autoplay=1"))
-    assertEquals(CatalogTarget(94997, 2, 5), catalogTargetOf("https://vidlink.pro/tv/94997/2/5?title=false"))
+    assertEquals(CatalogTarget(94997, 2, 5), catalogTargetOf("https://vidrock.ru/tv/94997/2/5"))
     assertEquals(CatalogTarget(786892), catalogTargetOf("https://vidrock.ru/movie/786892"))
+    // And the one that names the episode beside the address rather than inside it.
+    assertEquals(CatalogTarget(94997, 2, 5), catalogTargetOf(STREAM_PROVIDERS.first { it.id == "cinesrc" }.episodeUrl(94997, 2, 5)))
+    assertEquals(CatalogTarget(786892), catalogTargetOf("https://cinesrc.st/embed/movie/786892"))
+    // A show with no episode named is not something that can be played, so it is not a target.
+    assertNull(catalogTargetOf("https://cinesrc.st/embed/tv/94997"))
+    assertNull(catalogTargetOf("https://cinesrc.st/embed/tv/94997?season=2"))
   }
 
   @Test
@@ -128,7 +146,7 @@ class StreamProviderTest {
   @Test
   fun theServingSite_isNamedByItsPlaceInTheRunningOrder() {
     assertEquals("SR1", serverLabelFor("https://vidrock.ru/movie/786892"))
-    assertEquals("SR2", serverLabelFor("https://vidlink.pro/tv/94997/1/1?title=false"))
+    assertEquals("SR2", serverLabelFor("https://cinesrc.st/embed/tv/94997?season=1&episode=1"))
     assertEquals("SR3", serverLabelFor(vidfastMovieUrl(786892)))
     // Subdomains still belong to their provider.
     assertEquals("SR1", serverLabelFor("https://cdn.vidrock.ru/movie/786892"))
@@ -183,7 +201,7 @@ class StreamProviderTest {
     assertEquals(
       1,
       selectedPlaybackServerIndex(
-        sourcePageUrl = "https://vidlink.pro/movie/1?title=false",
+        sourcePageUrl = "https://cinesrc.st/embed/movie/1",
         sourceIndex = 0,
         sourceCount = 1,
       ),

@@ -1525,9 +1525,31 @@ internal fun shouldWaitForMoreSubtitles(
   return sinceLastSubtitleMs < SUBTITLE_QUIET_MS
 }
 
-/** Anything the player can be handed directly, whichever shape the source chose to serve it in. */
-internal fun isPlayableStreamUrl(url: String): Boolean =
-  isHlsUrl(url) || isProgressiveMediaUrl(url)
+private val STORYBOARD_PATH_MARKERS = listOf("thumbnail", "storyboard", "sprite")
+
+/**
+ * The strip of preview images behind a scrub bar: neither the film nor a subtitle for it.
+ *
+ * Judged by path rather than extension, because these are served in whatever shape suits the CDN.
+ */
+internal fun isStoryboardTrackUrl(url: String): Boolean {
+  val path = url.substringBefore('#').substringBefore('?').lowercase()
+  return STORYBOARD_PATH_MARKERS.any(path::contains)
+}
+
+/**
+ * Anything the player can be handed directly, whichever shape the source chose to serve it in.
+ *
+ * A text track is never the video however much its address looks like one, and a storyboard is
+ * never the film even when it is served as a playlist. cinesrc keeps its scrub-bar previews at
+ * `/hls/<id>/thumbnails/thumbnails.vtt`, and the `/hls/` in that path was enough for the resolver
+ * to call it a playlist and hand a subtitle file over as the film — so the film itself was never
+ * waited for, and every one of its titles failed over to the next site.
+ */
+internal fun isPlayableStreamUrl(url: String): Boolean {
+  if (subtitleMimeType(url) != null || isStoryboardTrackUrl(url)) return false
+  return isHlsUrl(url) || isProgressiveMediaUrl(url)
+}
 
 /**
  * A playlist is announced, because interception sees the address before the content type. A plain
@@ -1548,7 +1570,10 @@ internal fun isYoutubeWebPlaybackUrl(url: String): Boolean {
   return youtubeHost && path.startsWith("/embed/") && path.length > "/embed/".length
 }
 
-private fun isExternalSubtitleUrl(url: String): Boolean = subtitleMimeType(url) != null
+// A storyboard is a .vtt too, and offering it in the subtitle picker put a track of image
+// coordinates where the viewer expects dialogue.
+private fun isExternalSubtitleUrl(url: String): Boolean =
+  subtitleMimeType(url) != null && !isStoryboardTrackUrl(url)
 
 private fun isSupportedSubtitleCatalogUrl(url: String): Boolean {
   val parsed = runCatching { url.toUri() }.getOrNull() ?: return false
@@ -1604,8 +1629,21 @@ internal fun subtitleCatalogUrlsForEmbeddedPlayer(playerUrl: String): List<Strin
     val (_, showId, seasonNumber, episodeNumber) = match.groupValues
     return listOf("https://sub.vdrk.site/v1/tv/$showId/$seasonNumber/$episodeNumber")
   }
+  // cinesrc names the episode beside the address rather than inside it. The catalog is keyed on the
+  // same three numbers either way, so reading them from the query keeps its episodes subtitled.
+  Regex("^(?:/embed)?/tv/(\\d+)(?:/|$)", RegexOption.IGNORE_CASE).find(path)?.let { match ->
+    val showId = match.groupValues[1]
+    val seasonNumber = player.queryParameterOrNull("season") ?: return emptyList()
+    val episodeNumber =
+      player.queryParameterOrNull("episode") ?: player.queryParameterOrNull("ep") ?: return emptyList()
+    return listOf("https://sub.vdrk.site/v1/tv/$showId/$seasonNumber/$episodeNumber")
+  }
   return emptyList()
 }
+
+/** A whole number from the query string, or null when it is absent or not one. */
+private fun android.net.Uri.queryParameterOrNull(name: String): String? =
+  runCatching { getQueryParameter(name) }.getOrNull()?.trim()?.takeIf { it.toIntOrNull() != null }
 
 internal fun parseSubtitleCatalog(json: String): List<ExternalSubtitleTrack> {
   val root = runCatching { JSONTokener(json).nextValue() }.getOrNull()

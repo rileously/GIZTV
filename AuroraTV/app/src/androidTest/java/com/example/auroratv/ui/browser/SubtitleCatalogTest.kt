@@ -99,8 +99,33 @@ class SubtitleCatalogTest {
   }
 
   @Test
+  fun anEpisodeNamedBesideItsAddress_producesTheSameSubtitleCatalogUrl() {
+    // cinesrc is the one provider whose episode address carries the season and episode as query
+    // parameters. The catalog is keyed on the same three numbers, so its episodes stay subtitled.
+    val expected = listOf("https://sub.vdrk.site/v1/tv/94997/1/3")
+
+    assertEquals(
+      expected,
+      subtitleCatalogUrlsForEmbeddedPlayer("https://cinesrc.st/embed/tv/94997?season=1&episode=3"),
+    )
+    assertEquals(
+      expected,
+      subtitleCatalogUrlsForPage("https://cinesrc.st/embed/tv/94997?season=1&episode=3"),
+    )
+    assertEquals(
+      listOf("https://sub.vdrk.site/v1/movie/1481343"),
+      subtitleCatalogUrlsForEmbeddedPlayer("https://cinesrc.st/embed/movie/1481343"),
+    )
+  }
+
+  @Test
   fun incompleteTvEpisodePath_doesNotRequestTheWrongSubtitleCatalog() {
     assertTrue(subtitleCatalogUrlsForEmbeddedPlayer("https://vidfast.vc/tv/94997/1").isEmpty())
+    // A show with no episode named has nothing to ask for, whichever shape it is written in.
+    assertTrue(subtitleCatalogUrlsForEmbeddedPlayer("https://cinesrc.st/embed/tv/94997").isEmpty())
+    assertTrue(
+      subtitleCatalogUrlsForEmbeddedPlayer("https://cinesrc.st/embed/tv/94997?season=1").isEmpty()
+    )
   }
 
   @Test

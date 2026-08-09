@@ -3,6 +3,7 @@ package com.example.auroratv
 import com.example.auroratv.ui.browser.isDecoyMediaUrl
 import com.example.auroratv.ui.browser.isPlayableStreamUrl
 import com.example.auroratv.ui.browser.isProgressiveMediaUrl
+import com.example.auroratv.ui.browser.isStoryboardTrackUrl
 import com.example.auroratv.ui.browser.shouldReplacePendingStream
 import com.example.auroratv.ui.browser.shouldWaitForMoreSubtitles
 import com.example.auroratv.ui.browser.streamDispatchGraceMs
@@ -102,6 +103,29 @@ class StreamDetectionTest {
     // And a page that never stops producing them still has to let go.
     assertFalse(
       shouldWaitForMoreSubtitles(hasSubtitles = true, elapsedMs = 2_500, sinceLastSubtitleMs = 0)
+    )
+  }
+
+  @Test
+  fun aScrubBarStoryboard_isNotMistakenForTheFilm() {
+    // Measured on cinesrc: the `/hls/` in this path was enough for the resolver to call a subtitle
+    // file the playlist, hand it to the player, and stop waiting for the film that never came.
+    val storyboard =
+      "https://nebula.bright67.online/hls/e54477ca-315f-481b-adfd-81571ca97033/thumbnails/thumbnails.vtt"
+    assertTrue(isStoryboardTrackUrl(storyboard))
+    assertFalse(isPlayableStreamUrl(storyboard))
+
+    // A text track is never the video, whatever the rest of the address suggests.
+    assertFalse(isPlayableStreamUrl("https://cdn.example.net/hls/abc/English.vtt"))
+    assertFalse(isPlayableStreamUrl("https://cdn.example.net/playlist/subs.srt"))
+
+    // A storyboard is not the film even when it is served as a playlist or a file.
+    assertFalse(isPlayableStreamUrl("https://cdn.example.net/storyboard/index.m3u8"))
+    assertFalse(isPlayableStreamUrl("https://cdn.example.net/sprites/preview.mp4"))
+
+    // And the real thing is still recognised on the same host and the same /hls/ prefix.
+    assertTrue(
+      isPlayableStreamUrl("https://nebula.bright67.online/hls/e54477ca-315f-481b-adfd-81571ca97033/master.m3u8")
     )
   }
 

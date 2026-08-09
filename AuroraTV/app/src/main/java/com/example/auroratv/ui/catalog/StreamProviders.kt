@@ -25,6 +25,10 @@ internal data class StreamProvider(
  * title; it was not failing, the resolver was taking the placeholder its player loads before it
  * has resolved anything and discarding the real playlist that followed. See `isDecoyMediaUrl`.
  *
+ * cinesrc sits second, in the slot vidlink held. It is the only one whose episode address carries
+ * the season and episode as query parameters rather than path segments, which is why the readers
+ * below accept both shapes.
+ *
  * vidfast trails on measured resolution time, not reliability. It serves either shape depending on
  * the title — a `master.m3u8` from moon.ironwallnet.net for some, a single progressive file for
  * others, sometimes 2160p with no ladder to adapt down — so neither shape can be assumed of it. The
@@ -48,13 +52,17 @@ internal val STREAM_PROVIDERS: List<StreamProvider> =
       episodeUrl = { show, season, episode -> "https://vidrock.ru/tv/$show/$season/$episode" },
     ),
     StreamProvider(
-      id = "vidlink",
-      label = "VidLink",
-      host = "vidlink.pro",
-      // title=false keeps the site's own overlay off a picture this app draws its own controls on.
-      movieUrl = { "https://vidlink.pro/movie/$it?autoplay=true&title=false" },
+      id = "cinesrc",
+      label = "CineSrc",
+      host = "cinesrc.st",
+      // Its own page documents the movie form as an /embed/ path taking a bare TMDB id, and nothing
+      // else: no autoplay or overlay parameters are offered, and inventing some only risks a 404.
+      movieUrl = { "https://cinesrc.st/embed/movie/$it" },
+      // Episodes are the one shape here that does not spell the season and episode into the path.
+      // Measured: the three-segment form every other provider uses 404s, `/embed/tv/{id}` alone
+      // answers, and the two parameters below come back rendered into the page.
       episodeUrl = { show, season, episode ->
-        "https://vidlink.pro/tv/$show/$season/$episode?autoplay=true&title=false"
+        "https://cinesrc.st/embed/tv/$show?season=$season&episode=$episode"
       },
     ),
     StreamProvider(
@@ -107,6 +115,12 @@ internal data class CatalogTarget(
 
 private val MOVIE_PATH = Regex("/(?:embed/)?movie/(\\d+)", RegexOption.IGNORE_CASE)
 private val EPISODE_PATH = Regex("/(?:embed/)?tv/(\\d+)/(\\d+)/(\\d+)", RegexOption.IGNORE_CASE)
+private val SHOW_PATH = Regex("/(?:embed/)?tv/(\\d+)", RegexOption.IGNORE_CASE)
+// Anchored on a parameter boundary rather than a bare name, so `season=` is not found inside
+// something like `preseason=`. The query has already had its leading `?` removed, so the start of
+// the string counts as one.
+private val SEASON_QUERY = Regex("(?:^|[?&])season=(\\d+)", RegexOption.IGNORE_CASE)
+private val EPISODE_QUERY = Regex("(?:^|[?&])episode=(\\d+)", RegexOption.IGNORE_CASE)
 
 /**
  * Reads a provider address back into the title it stands for.
@@ -115,9 +129,14 @@ private val EPISODE_PATH = Regex("/(?:embed/)?tv/(\\d+)/(\\d+)/(\\d+)", RegexOpt
  * title was first opened from. Rotating providers must therefore not rotate that address: the
  * catalog keeps handing out the same canonical one, and this turns it back into a title whenever a
  * different provider needs to be asked the same question.
+ *
+ * Both episode shapes are read, because cinesrc puts the season and episode in the query string
+ * where the others put them in the path. Only the path form is ever the canonical address, so this
+ * matters for reading a provider's own address rather than for anything keyed on one.
  */
 internal fun catalogTargetOf(pageUrl: String): CatalogTarget? {
-  val path = pageUrl.substringBefore('#').substringBefore('?')
+  val withoutFragment = pageUrl.substringBefore('#')
+  val path = withoutFragment.substringBefore('?')
   EPISODE_PATH.find(path)?.let { match ->
     val (show, season, episode) = match.destructured
     val showId = show.toIntOrNull() ?: return null
@@ -125,6 +144,15 @@ internal fun catalogTargetOf(pageUrl: String): CatalogTarget? {
   }
   MOVIE_PATH.find(path)?.let { match ->
     return CatalogTarget(match.groupValues[1].toIntOrNull() ?: return null)
+  }
+  // A show address with its season and episode alongside rather than inside it. A bare show address
+  // with neither is not an episode and cannot be played, so it is not a target.
+  SHOW_PATH.find(path)?.let { match ->
+    val showId = match.groupValues[1].toIntOrNull() ?: return null
+    val query = withoutFragment.substringAfter('?', "")
+    val season = SEASON_QUERY.find(query)?.groupValues?.get(1)?.toIntOrNull() ?: return null
+    val episode = EPISODE_QUERY.find(query)?.groupValues?.get(1)?.toIntOrNull() ?: return null
+    return CatalogTarget(showId, season, episode)
   }
   return null
 }
