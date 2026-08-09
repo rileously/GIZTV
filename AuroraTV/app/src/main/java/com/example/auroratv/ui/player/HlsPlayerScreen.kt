@@ -998,7 +998,7 @@ internal fun HlsPlayerScreen(
   fun applySubtitleOffset(offsetMs: Long) {
     // Casting hands the subtitles to the receiver, which owns their timing from then on.
     val safeOffsetMs = offsetMs.coerceIn(-MAX_SUBTITLE_SYNC_MS, MAX_SUBTITLE_SYNC_MS)
-    if (isCasting || safeOffsetMs == subtitleOffsetMs) return
+    if (isCasting) return
     subtitleOffsetMs = safeOffsetMs
     subtitleOffset.set(safeOffsetMs)
     subtitleSyncStore.save(subtitleSyncKey, safeOffsetMs)
@@ -3294,6 +3294,7 @@ private fun SubtitleSyncMiniOverlay(
 ) {
   val firstChoiceFocus = remember { FocusRequester() }
   val wasPlaying = remember { player.playWhenReady || player.isPlaying }
+  val initialPositionMs = remember { player.currentPosition.coerceAtLeast(0L) }
   var positionMs by remember { mutableLongStateOf(player.currentPosition.coerceAtLeast(0L)) }
   var allCues by remember { mutableStateOf<List<SubtitleCue>>(emptyList()) }
   var cueLoadState by remember { mutableStateOf(SubtitleCueLoadState.LOADING) }
@@ -3431,7 +3432,9 @@ private fun SubtitleSyncMiniOverlay(
                   selected = matchedCueStartMs == cue.startMs,
                   onClick = {
                     matchedCueStartMs = cue.startMs
-                    onOffsetSelected(subtitleOffsetForCueMatch(positionMs, cue.startMs))
+                    onOffsetSelected(subtitleOffsetForCueMatch(initialPositionMs, cue.startMs))
+                    positionMs = cue.startMs
+                    player.seekTo(cue.startMs)
                   },
                   modifier = if (index == 0) Modifier.focusRequester(firstChoiceFocus) else Modifier,
                 )
@@ -3454,7 +3457,9 @@ private fun SubtitleSyncMiniOverlay(
             selected = matchedCueStartMs == onScreenCue.startMs,
             onClick = {
               matchedCueStartMs = onScreenCue.startMs
-              onOffsetSelected(subtitleOffsetForCueMatch(positionMs, onScreenCue.startMs))
+              onOffsetSelected(subtitleOffsetForCueMatch(initialPositionMs, onScreenCue.startMs))
+              positionMs = onScreenCue.startMs
+              player.seekTo(onScreenCue.startMs)
             },
             modifier =
               if (nearbyCues.isEmpty() && cueLoadState != SubtitleCueLoadState.LOADING) {
@@ -3482,7 +3487,10 @@ private fun SubtitleSyncMiniOverlay(
           SettingsChoiceChip(
             label = "Earlier ½s",
             selected = false,
-            onClick = { onOffsetSelected(adjustSubtitleSync(offsetMs, -500L)) },
+            onClick = {
+              onOffsetSelected(adjustSubtitleSync(offsetMs, -500L))
+              player.seekTo(positionMs)
+            },
             modifier =
               if (
                 nearbyCues.isEmpty() &&
@@ -3497,7 +3505,10 @@ private fun SubtitleSyncMiniOverlay(
           SettingsChoiceChip(
             label = "Earlier",
             selected = false,
-            onClick = { onOffsetSelected(adjustSubtitleSync(offsetMs, -100L)) },
+            onClick = {
+              onOffsetSelected(adjustSubtitleSync(offsetMs, -100L))
+              player.seekTo(positionMs)
+            },
           )
           SettingsChoiceChip(
             label = "Reset",
@@ -3505,17 +3516,24 @@ private fun SubtitleSyncMiniOverlay(
             onClick = {
               matchedCueStartMs = null
               onOffsetSelected(0L)
+              player.seekTo(positionMs)
             },
           )
           SettingsChoiceChip(
             label = "Later",
             selected = false,
-            onClick = { onOffsetSelected(adjustSubtitleSync(offsetMs, 100L)) },
+            onClick = {
+              onOffsetSelected(adjustSubtitleSync(offsetMs, 100L))
+              player.seekTo(positionMs)
+            },
           )
           SettingsChoiceChip(
             label = "Later ½s",
             selected = false,
-            onClick = { onOffsetSelected(adjustSubtitleSync(offsetMs, 500L)) },
+            onClick = {
+              onOffsetSelected(adjustSubtitleSync(offsetMs, 500L))
+              player.seekTo(positionMs)
+            },
           )
         }
       }
