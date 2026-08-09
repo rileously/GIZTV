@@ -10,9 +10,14 @@ import android.provider.Settings
 import android.view.ViewGroup
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -93,6 +98,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.key.Key
@@ -111,6 +117,7 @@ import androidx.compose.ui.semantics.onClick as semanticsOnClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -2367,6 +2374,24 @@ private fun ModernPlayerControls(
   var seekBarFocused by remember { mutableStateOf(false) }
   val surroundingControlsAlpha = if (seekBarFocused) 0f else 1f
 
+  var isPaused5s by remember { mutableStateOf(false) }
+  var pauseInteractionCounter by remember { mutableIntStateOf(0) }
+
+  val wrappedOnInteraction = {
+    isPaused5s = false
+    pauseInteractionCounter++
+    onInteraction()
+  }
+
+  LaunchedEffect(isPlaying, seekPreviewMs, pauseInteractionCounter) {
+    if (!isPlaying && seekPreviewMs == null) {
+      delay(5_000L)
+      isPaused5s = true
+    } else {
+      isPaused5s = false
+    }
+  }
+
   LaunchedEffect(player) {
     while (true) {
       if (seekPreviewMs == null) positionMs = player.currentPosition.coerceAtLeast(0L)
@@ -2550,44 +2575,69 @@ private fun ModernPlayerControls(
           Modifier.fillMaxWidth().align(Alignment.BottomCenter)
             .padding(horizontal = horizontalPadding, vertical = if (compact) 14.dp else 24.dp),
       ) {
-        if (isTelevision) {
-          ModernTvSeekBar(
-            positionMs = positionMs,
-            durationMs = durationMs,
-            onSeek = { targetMs ->
-              positionMs = targetMs
-              player.seekTo(targetMs)
-              onInteraction()
-            },
-            onScrub = { previewMs -> seekPreviewMs = previewMs },
-            onInteraction = onInteraction,
-            onFocusChanged = { seekBarFocused = it },
-          )
-        } else {
-          Slider(
-            value = (seekPreviewMs ?: positionMs).toFloat().coerceIn(0f, durationMs.coerceAtLeast(1L).toFloat()),
-            onValueChange = { value ->
-              seekPreviewMs = value.toLong()
-              onInteraction()
-            },
-            onValueChangeFinished = {
-              seekPreviewMs?.let(player::seekTo)
-              seekPreviewMs = null
-              onInteraction()
-            },
-            valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
-            enabled = durationMs > 0L,
-            colors =
-              SliderDefaults.colors(
-                thumbColor = SoftWhite,
-                activeTrackColor = AuroraMint,
-                inactiveTrackColor = SoftWhite.copy(alpha = .24f),
-                disabledThumbColor = MutedBlue,
-                disabledActiveTrackColor = MutedBlue.copy(alpha = .5f),
-                disabledInactiveTrackColor = SoftWhite.copy(alpha = .14f),
-              ),
-            modifier = Modifier.fillMaxWidth().height(if (compact) 28.dp else 34.dp),
-          )
+        AnimatedContent(
+          targetState = isPaused5s && durationMs > 0L,
+          transitionSpec = {
+            (fadeIn(animationSpec = tween(400)) + expandVertically()) togetherWith
+              (fadeOut(animationSpec = tween(300)) + shrinkVertically())
+          },
+          label = "SeekBarMorphTransition",
+        ) { showTitleProgress ->
+          if (showTitleProgress) {
+            TitleProgressSeekBar(
+              title = playbackTitle(request),
+              subtitle = playbackSubtitle(request),
+              positionMs = seekPreviewMs ?: positionMs,
+              durationMs = durationMs,
+              compact = compact,
+              onInteraction = wrappedOnInteraction,
+              onSeek = { targetMs ->
+                positionMs = targetMs
+                player.seekTo(targetMs)
+                wrappedOnInteraction()
+              },
+            )
+          } else {
+            if (isTelevision) {
+              ModernTvSeekBar(
+                positionMs = positionMs,
+                durationMs = durationMs,
+                onSeek = { targetMs ->
+                  positionMs = targetMs
+                  player.seekTo(targetMs)
+                  wrappedOnInteraction()
+                },
+                onScrub = { previewMs -> seekPreviewMs = previewMs },
+                onInteraction = wrappedOnInteraction,
+                onFocusChanged = { seekBarFocused = it },
+              )
+            } else {
+              Slider(
+                value = (seekPreviewMs ?: positionMs).toFloat().coerceIn(0f, durationMs.coerceAtLeast(1L).toFloat()),
+                onValueChange = { value ->
+                  seekPreviewMs = value.toLong()
+                  wrappedOnInteraction()
+                },
+                onValueChangeFinished = {
+                  seekPreviewMs?.let(player::seekTo)
+                  seekPreviewMs = null
+                  wrappedOnInteraction()
+                },
+                valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
+                enabled = durationMs > 0L,
+                colors =
+                  SliderDefaults.colors(
+                    thumbColor = SoftWhite,
+                    activeTrackColor = AuroraMint,
+                    inactiveTrackColor = SoftWhite.copy(alpha = .24f),
+                    disabledThumbColor = MutedBlue,
+                    disabledActiveTrackColor = MutedBlue.copy(alpha = .5f),
+                    disabledInactiveTrackColor = SoftWhite.copy(alpha = .14f),
+                  ),
+                modifier = Modifier.fillMaxWidth().height(if (compact) 28.dp else 34.dp),
+              )
+            }
+          }
         }
         Row(
           modifier = Modifier.fillMaxWidth(),
@@ -2674,6 +2724,84 @@ private fun ModernPlayerControls(
         }
       }
     }
+  }
+}
+
+@Composable
+private fun TitleProgressSeekBar(
+  title: String,
+  subtitle: String?,
+  positionMs: Long,
+  durationMs: Long,
+  compact: Boolean,
+  onInteraction: () -> Unit,
+  onSeek: (Long) -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val progress = if (durationMs > 0L) (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f
+  val displayTitle = remember(title, subtitle) {
+    if (!subtitle.isNullOrBlank()) "$title — $subtitle" else title
+  }
+
+  val textBrush = remember(progress) {
+    if (progress <= 0f) {
+      SolidColor(SoftWhite.copy(alpha = 0.35f))
+    } else if (progress >= 1f) {
+      SolidColor(AuroraMint)
+    } else {
+      val stop = progress.coerceIn(0.001f, 0.999f)
+      Brush.horizontalGradient(
+        0f to AuroraMint,
+        stop to AuroraMint,
+        stop to SoftWhite.copy(alpha = 0.38f),
+        1f to SoftWhite.copy(alpha = 0.38f),
+      )
+    }
+  }
+
+  Column(
+    modifier = modifier
+      .fillMaxWidth()
+      .height(42.dp)
+      .clickable { onInteraction() }
+      .onPreviewKeyEvent { event ->
+        if (event.key == Key.DirectionLeft || event.key == Key.DirectionRight || event.key == Key.DirectionCenter || event.key == Key.Enter) {
+          if (event.type == KeyEventType.KeyDown) {
+            if (event.key == Key.DirectionLeft) {
+              onSeek((positionMs - 10_000L).coerceAtLeast(0L))
+            } else if (event.key == Key.DirectionRight) {
+              onSeek((positionMs + 10_000L).coerceAtMost(durationMs))
+            } else {
+              onInteraction()
+            }
+          }
+          true
+        } else {
+          false
+        }
+      }
+      .focusable(),
+    verticalArrangement = Arrangement.Center,
+  ) {
+    Text(
+      text = "PAUSED · WATCHED PROGRESS",
+      color = AuroraMint,
+      fontWeight = FontWeight.Black,
+      fontSize = 10.sp,
+      letterSpacing = 1.4.sp,
+      modifier = Modifier.padding(bottom = 2.dp),
+    )
+    Text(
+      text = displayTitle,
+      style = TextStyle(
+        fontSize = if (compact) 20.sp else 24.sp,
+        fontWeight = FontWeight.Black,
+        brush = textBrush,
+      ),
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis,
+      modifier = Modifier.fillMaxWidth(),
+    )
   }
 }
 
