@@ -1,10 +1,14 @@
 package com.example.auroratv.ui.player
 
 import android.content.Context
+import android.media.MediaFormat
+import android.os.Build
+import android.os.Handler
 import android.os.Looper
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.Format
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.text.Cue
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
@@ -13,6 +17,11 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ForwardingRenderer
 import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.RendererConfiguration
+import androidx.media3.exoplayer.audio.AudioRendererEventListener
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.MediaCodecAudioRenderer
+import androidx.media3.exoplayer.mediacodec.MediaCodecAdapter
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.source.MediaSource.MediaPeriodId
 import androidx.media3.exoplayer.source.SampleStream
 import androidx.media3.exoplayer.text.TextOutput
@@ -56,7 +65,126 @@ internal class OffsetSubtitleRenderersFactory(
       }
     }
   }
+
+  /**
+   * Swaps the platform audio renderer for one that asks the decoder not to quieten anything.
+   *
+   * Replaced rather than added alongside, so there is still exactly one decoder for the sound.
+   */
+  override fun buildAudioRenderers(
+    context: Context,
+    extensionRendererMode: Int,
+    mediaCodecSelector: MediaCodecSelector,
+    enableDecoderFallback: Boolean,
+    audioSink: AudioSink,
+    eventHandler: Handler,
+    eventListener: AudioRendererEventListener,
+    out: ArrayList<Renderer>,
+  ) {
+    val firstAudioRenderer = out.size
+    super.buildAudioRenderers(
+      context,
+      extensionRendererMode,
+      mediaCodecSelector,
+      enableDecoderFallback,
+      audioSink,
+      eventHandler,
+      eventListener,
+      out,
+    )
+    for (index in firstAudioRenderer until out.size) {
+      if (out[index] is MediaCodecAudioRenderer) {
+        out[index] =
+          FullDynamicRangeAudioRenderer(
+            context,
+            codecAdapterFactory,
+            mediaCodecSelector,
+            enableDecoderFallback,
+            eventHandler,
+            eventListener,
+            audioSink,
+          )
+        break
+      }
+    }
+  }
 }
+
+/**
+ * Plays a soundtrack at the level it was mixed at.
+ *
+ * Android's AAC decoder normalises loudness and compresses dynamic range by default, using the
+ * metadata a stream carries about how loud it believes itself to be. On a film that means the whole
+ * mix is pulled down towards a speech reference level and the range between the quietest and
+ * loudest parts is squeezed — which is heard as a picture that is too quiet overall and, worse, as
+ * dialogue sitting on top of a score that has been pushed underneath it. The reported symptom
+ * exactly: low volume, and a mix that sounds filtered down to the voices.
+ *
+ * These keys turn all of it off, so the decoder hands over what was authored: no normalisation to
+ * a target level, no boosting of quiet passages, no attenuation of loud ones, and none of the
+ * heavier compression profile. The viewer's own volume control then governs loudness, which is
+ * where that decision belongs.
+ *
+ * Only AAC is touched, because these are AAC and xHE-AAC decoder keys; every other codec is handed
+ * to the platform exactly as before.
+ */
+@OptIn(UnstableApi::class)
+internal class FullDynamicRangeAudioRenderer(
+  context: Context,
+  codecAdapterFactory: MediaCodecAdapter.Factory,
+  mediaCodecSelector: MediaCodecSelector,
+  enableDecoderFallback: Boolean,
+  eventHandler: Handler?,
+  eventListener: AudioRendererEventListener?,
+  audioSink: AudioSink,
+) : MediaCodecAudioRenderer(
+    context,
+    codecAdapterFactory,
+    mediaCodecSelector,
+    enableDecoderFallback,
+    eventHandler,
+    eventListener,
+    audioSink,
+  ) {
+  override fun getMediaFormat(
+    format: Format,
+    codecMimeType: String,
+    codecMaxInputSize: Int,
+    codecOperatingRate: Float,
+  ): MediaFormat {
+    val mediaFormat = super.getMediaFormat(format, codecMimeType, codecMaxInputSize, codecOperatingRate)
+    if (isAacMimeType(codecMimeType) || isAacMimeType(format.sampleMimeType)) {
+      applyFullDynamicRange(mediaFormat)
+    }
+    return mediaFormat
+  }
+}
+
+private fun isAacMimeType(mimeType: String?): Boolean {
+  val normalized = mimeType?.lowercase() ?: return false
+  return normalized == MimeTypes.AUDIO_AAC || normalized.contains("mp4a") || normalized.contains("aac")
+}
+
+/**
+ * The decoder keys that together mean "leave it alone".
+ *
+ * A target reference level outside 0..127 is how the platform is told not to normalise loudness at
+ * all. Boost and attenuation at zero mean no dynamic-range gain is applied in either direction, and
+ * the heavy compression profile is off. On API 28 and above the MPEG-D effect is switched off too,
+ * which is the one that governs xHE-AAC.
+ */
+private fun applyFullDynamicRange(mediaFormat: MediaFormat) {
+  mediaFormat.setInteger(MediaFormat.KEY_AAC_DRC_TARGET_REFERENCE_LEVEL, -1)
+  mediaFormat.setInteger(MediaFormat.KEY_AAC_DRC_BOOST_FACTOR, 0)
+  mediaFormat.setInteger(MediaFormat.KEY_AAC_DRC_ATTENUATION_FACTOR, 0)
+  mediaFormat.setInteger(MediaFormat.KEY_AAC_DRC_HEAVY_COMPRESSION, 0)
+  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+    mediaFormat.setInteger(MediaFormat.KEY_AAC_DRC_EFFECT_TYPE, AAC_DRC_EFFECT_NONE)
+  }
+}
+
+/** `MediaFormat.DRC_EFFECT_TYPE_NONE`, named here because the constant is API 28. */
+private const val AAC_DRC_EFFECT_NONE = -1
 
 /**
  * Keeps a track's own advertising off the picture.
