@@ -3445,8 +3445,7 @@ private fun SubtitleSyncMiniOverlay(
                   onClick = {
                     matchedCueStartMs = cue.startMs
                     onOffsetSelected(subtitleOffsetForCueMatch(initialPositionMs, cue.startMs))
-                    positionMs = cue.startMs
-                    player.seekTo(cue.startMs)
+                    player.seekTo(initialPositionMs)
                   },
                   modifier = if (index == 0) Modifier.focusRequester(firstChoiceFocus) else Modifier,
                 )
@@ -3470,8 +3469,7 @@ private fun SubtitleSyncMiniOverlay(
             onClick = {
               matchedCueStartMs = onScreenCue.startMs
               onOffsetSelected(subtitleOffsetForCueMatch(initialPositionMs, onScreenCue.startMs))
-              positionMs = onScreenCue.startMs
-              player.seekTo(onScreenCue.startMs)
+              player.seekTo(initialPositionMs)
             },
             modifier =
               if (nearbyCues.isEmpty() && cueLoadState != SubtitleCueLoadState.LOADING) {
@@ -3501,7 +3499,7 @@ private fun SubtitleSyncMiniOverlay(
             selected = false,
             onClick = {
               onOffsetSelected(adjustSubtitleSync(offsetMs, -500L))
-              player.seekTo(positionMs)
+              player.seekTo(initialPositionMs)
             },
             modifier =
               if (
@@ -3519,7 +3517,7 @@ private fun SubtitleSyncMiniOverlay(
             selected = false,
             onClick = {
               onOffsetSelected(adjustSubtitleSync(offsetMs, -100L))
-              player.seekTo(positionMs)
+              player.seekTo(initialPositionMs)
             },
           )
           SettingsChoiceChip(
@@ -3528,7 +3526,7 @@ private fun SubtitleSyncMiniOverlay(
             onClick = {
               matchedCueStartMs = null
               onOffsetSelected(0L)
-              player.seekTo(positionMs)
+              player.seekTo(initialPositionMs)
             },
           )
           SettingsChoiceChip(
@@ -3536,7 +3534,7 @@ private fun SubtitleSyncMiniOverlay(
             selected = false,
             onClick = {
               onOffsetSelected(adjustSubtitleSync(offsetMs, 100L))
-              player.seekTo(positionMs)
+              player.seekTo(initialPositionMs)
             },
           )
           SettingsChoiceChip(
@@ -3544,7 +3542,7 @@ private fun SubtitleSyncMiniOverlay(
             selected = false,
             onClick = {
               onOffsetSelected(adjustSubtitleSync(offsetMs, 500L))
-              player.seekTo(positionMs)
+              player.seekTo(initialPositionMs)
             },
           )
         }
