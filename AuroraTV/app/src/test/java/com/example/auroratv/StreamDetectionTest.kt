@@ -74,6 +74,14 @@ class StreamDetectionTest {
     assertTrue(streamDispatchGraceMs(file) > streamDispatchGraceMs(film))
     assertEquals(700L, streamDispatchGraceMs(film))
     assertEquals(2_500L, streamDispatchGraceMs(file))
+    // Unless the page it came from has no playlist to reveal, in which case the window is dead
+    // time in front of a film that is ready to play.
+    assertEquals(700L, streamDispatchGraceMs(file, "https://vidfast.vc/movie/1156593"))
+    assertEquals(700L, streamDispatchGraceMs(file, "https://vidfast.vc/tv/1399/1/1"))
+    // Sites that do serve playlists keep the window, as does a page from outside the list.
+    assertEquals(2_500L, streamDispatchGraceMs(file, "https://vidrock.ru/movie/1156593"))
+    assertEquals(2_500L, streamDispatchGraceMs(file, "https://vidlink.pro/movie/1156593"))
+    assertEquals(2_500L, streamDispatchGraceMs(file, "https://example.net/watch/1"))
   }
 
   @Test

@@ -15,7 +15,9 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.platform.LocalContext
 import com.example.auroratv.data.PlaybackContext
+import com.example.auroratv.data.StreamResolutionStore
 import com.example.auroratv.ui.catalog.nextProviderPageUrl
 import com.example.auroratv.ui.player.HlsStreamRequest
 
@@ -39,6 +41,11 @@ internal fun StreamPrefetcher(
   if (target == null) return
   val currentOnResolved by rememberUpdatedState(onResolved)
   var client by remember(target.pageUrl) { mutableStateOf<AdBlockingWebViewClient?>(null) }
+  val appContext = LocalContext.current.applicationContext
+  val resolutionStore = remember(appContext) { StreamResolutionStore(appContext) }
+  // Whichever site last gave up a stream, which for a viewer who keeps picking one server is the
+  // one worth asking ahead of time. Nothing learned yet means the head of the list, as before.
+  val prefetchAttempt = remember(target.pageUrl) { resolutionStore.lastProviderIndex() ?: 0 }
 
   AndroidView(
     factory = { context ->
@@ -58,7 +65,11 @@ internal fun StreamPrefetcher(
           loadWithOverviewMode = true
           builtInZoomControls = false
           displayZoomControls = false
-          cacheMode = WebSettings.LOAD_NO_CACHE
+          // Ordinary cache rules, for the reason the foreground resolver uses them: a player's
+          // script bundle is the same on every visit and re-fetching it is most of the wait. It
+          // defers to the same run-wide judgement, so one page that resolved to nothing out of the
+          // cache turns it off here too.
+          cacheMode = resolverCacheMode()
           mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
           setGeolocationEnabled(false)
           userAgentString = CHROME_USER_AGENT
@@ -78,9 +89,7 @@ internal fun StreamPrefetcher(
           )
         webViewClient = resolver
         client = resolver
-        // The same provider the foreground resolver would have asked first, so a title found
-        // ahead of time is found from the same place as one opened by hand.
-        loadUrl(nextProviderPageUrl(target.pageUrl, 0) ?: target.pageUrl)
+        loadUrl(nextProviderPageUrl(target.pageUrl, prefetchAttempt) ?: target.pageUrl)
       }
     },
     // Behind the player, which is opaque and covers it completely.

@@ -6,6 +6,7 @@ import androidx.core.net.toUri
 private const val STREAM_RESOLUTION_PREFERENCES = "giztv_stream_resolution"
 private const val KEY_LAST_SUCCESS_PREFIX = "resolved_ms_"
 private const val KEY_HOST_SUCCESS_PREFIX = "resolved_host_ms_"
+private const val KEY_LAST_PROVIDER = "resolved_provider_index"
 
 /** Below this a recorded time is noise rather than a measurement worth keeping. */
 private const val MINIMUM_RECORDED_MS = 250L
@@ -47,6 +48,22 @@ internal class StreamResolutionStore(context: Context) {
     if (forPage > 0L) return forPage
     val host = hostOf(pageUrl) ?: return 0L
     return preferences.getLong(KEY_HOST_SUCCESS_PREFIX + host, 0L)
+  }
+
+  /**
+   * The site that last actually produced a stream, whichever one was asked first.
+   *
+   * A viewer who keeps reaching for a particular server is telling us where their titles are, and
+   * a search that begins somewhere else spends its first attempt failing before it finds out. Not
+   * per title — it is a preference about sites, not about films — and only ever a starting point,
+   * since failover still walks the whole list from there.
+   */
+  fun lastProviderIndex(): Int? =
+    preferences.getInt(KEY_LAST_PROVIDER, -1).takeIf { it >= 0 }
+
+  fun recordProviderIndex(index: Int) {
+    if (index < 0) return
+    preferences.edit().putInt(KEY_LAST_PROVIDER, index).apply()
   }
 
   fun recordSuccess(pageUrl: String, elapsedMs: Long) {

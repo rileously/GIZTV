@@ -551,7 +551,7 @@ class PlaybackLogicTest {
     assertEquals(45_000L, stallTimeoutMs(hasStartedPlayback = true))
     // One that has never produced a frame is more likely dead than slow, and every second spent
     // proving it is a second staring at a spinner before the next server is even asked.
-    assertEquals(20_000L, stallTimeoutMs(hasStartedPlayback = false))
+    assertEquals(25_000L, stallTimeoutMs(hasStartedPlayback = false))
     assertTrue(stallTimeoutMs(false) < stallTimeoutMs(true))
   }
 
@@ -596,15 +596,34 @@ class PlaybackLogicTest {
     val progressiveTv = playbackBufferProfile(isTelevision = true, progressive = true)
     val hlsPhone = playbackBufferProfile(isTelevision = false, progressive = false)
 
-    assertEquals(15_000, progressivePhone.minBufferMs)
-    assertEquals(45_000, progressivePhone.maxBufferMs)
-    assertEquals(1_500, progressivePhone.startBufferMs)
-    assertEquals(3_000, progressivePhone.rebufferMs)
-    assertEquals(2_500, progressiveTv.startBufferMs)
-    assertEquals(6_000, progressiveTv.rebufferMs)
+    assertEquals(20_000, progressivePhone.minBufferMs)
+    assertEquals(60_000, progressivePhone.maxBufferMs)
+    assertEquals(3_000, progressivePhone.startBufferMs)
+    assertEquals(5_000, progressivePhone.rebufferMs)
+    assertEquals(4_000, progressiveTv.startBufferMs)
+    assertEquals(8_000, progressiveTv.rebufferMs)
     // HLS keeps the deeper cushion; progressive must not inherit it.
     assertTrue(progressivePhone.minBufferMs < hlsPhone.minBufferMs)
     assertTrue(progressivePhone.maxBufferMs < hlsPhone.maxBufferMs)
+  }
+
+  @Test
+  fun aFastLink_startsAProgressiveFileWithoutFillingACushionItDoesNotNeed() {
+    val fastTv = playbackBufferProfile(isTelevision = true, progressive = true, fastLink = true)
+    val slowTv = playbackBufferProfile(isTelevision = true, progressive = true, fastLink = false)
+
+    assertEquals(1_000, fastTv.startBufferMs)
+    assertTrue(fastTv.startBufferMs < slowTv.startBufferMs)
+    // Only the opening moves. The safety net after a stall is what a stall actually needs, and a
+    // link that was fast a moment ago is not necessarily fast now.
+    assertEquals(slowTv.rebufferMs, fastTv.rebufferMs)
+    assertEquals(slowTv.minBufferMs, fastTv.minBufferMs)
+    assertEquals(slowTv.maxBufferMs, fastTv.maxBufferMs)
+    // A playlist has a ladder to step down instead, so its opening is left alone.
+    assertEquals(
+      playbackBufferProfile(isTelevision = true).startBufferMs,
+      playbackBufferProfile(isTelevision = true, fastLink = true).startBufferMs,
+    )
   }
 
   @Test

@@ -44,8 +44,8 @@ android {
         applicationId = "com.example.auroratv"
         minSdk = 23
         targetSdk = 36
-        versionCode = 92
-        versionName = "1.37.0"
+        versionCode = 93
+        versionName = "1.38.0"
         buildConfigField("String", "TMDB_API_KEY", "\"$escapedTmdbApiKey\"")
         buildConfigField("String", "UPDATE_MANIFEST_URL", "\"$escapedUpdateManifestUrl\"")
     }
@@ -103,6 +103,7 @@ dependencies {
 
   // Background update checks that outlive the app being open
   implementation(libs.androidx.work.runtime)
+  implementation(libs.androidx.startup.runtime)
 
   // A media session standing in for the television, so a watch and a lock screen can drive it
   implementation(libs.androidx.media)

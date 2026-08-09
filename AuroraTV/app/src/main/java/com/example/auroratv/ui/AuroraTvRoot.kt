@@ -36,6 +36,7 @@ import com.example.auroratv.ui.catalog.CatalogScreen
 import com.example.auroratv.ui.catalog.STREAM_PROVIDER_COUNT
 import com.example.auroratv.ui.catalog.catalogTargetOf
 import com.example.auroratv.ui.catalog.nextProviderPageUrl
+import com.example.auroratv.ui.catalog.providerIdOf
 import com.example.auroratv.ui.catalog.providerIndexOf
 import com.example.auroratv.ui.catalog.providerPageUrl
 import com.example.auroratv.ui.catalog.TmdbMovie
@@ -256,6 +257,40 @@ fun AuroraTvRoot(
       }
   }
 
+  /**
+   * Plays a stream found earlier, if it is still there, while the search for a fresh one runs.
+   *
+   * The loading page is already up by the time this is called, so it races the search rather than
+   * delaying it: whichever answers first is the one the viewer gets, and a remembered address that
+   * has quietly died costs only the moment spent asking. Naming a [providerId] asks for what that
+   * one site last gave up, which is what makes a hand-picked server instant on the second choosing.
+   */
+  fun raceRememberedStream(context: PlaybackContext, providerId: String? = null) {
+    val cached = streamCache.find(context.pageUrl, providerId) ?: return
+    scope.launch {
+      if (!streamStillLive(cached.url, cached.headers)) {
+        streamCache.forget(context.pageUrl, providerId)
+        return@launch
+      }
+      // Only if the viewer is still waiting for this same title and has not been served already.
+      if (pendingContext?.pageUrl != context.pageUrl || destination != Destination.BROWSER) {
+        return@launch
+      }
+      streamRequest =
+        HlsStreamRequest(
+          url = cached.url,
+          headers = cached.headers,
+          subtitles =
+            cached.subtitles.map { ExternalSubtitleTrack(it.url, it.label, it.language, it.mimeType) },
+          sourcePageUrl = cached.sourcePageUrl,
+          // Progressive CDN files must not inherit the HLS default mime; null lets Media3 sniff.
+          mimeType = streamMimeType(cached.url),
+          context = context,
+        )
+      destination = Destination.PLAYER
+    }
+  }
+
   fun openForPlayback(context: PlaybackContext, returnTo: Destination) {
     streamFailoverAttempts = 0
     playerMinimized = false
@@ -283,33 +318,8 @@ fun AuroraTvRoot(
     streamRequest = null
     destination = Destination.BROWSER
 
-    // A stream found earlier is worth trying before the page is ground through again. The loading
-    // page is already up, so this races the search rather than delaying it: whichever answers first
-    // is the one the viewer gets, and a remembered address that has quietly died costs only the
-    // moment spent asking.
-    val cached = streamCache.find(context.pageUrl) ?: return
-    scope.launch {
-      if (!streamStillLive(cached.url, cached.headers)) {
-        streamCache.forget(context.pageUrl)
-        return@launch
-      }
-      // Only if the viewer is still waiting for this same title and has not been served already.
-      if (pendingContext?.pageUrl != context.pageUrl || destination != Destination.BROWSER) {
-        return@launch
-      }
-      streamRequest =
-        HlsStreamRequest(
-          url = cached.url,
-          headers = cached.headers,
-          subtitles =
-            cached.subtitles.map { ExternalSubtitleTrack(it.url, it.label, it.language, it.mimeType) },
-          sourcePageUrl = cached.sourcePageUrl,
-          // Progressive CDN files must not inherit the HLS default mime; null lets Media3 sniff.
-          mimeType = streamMimeType(cached.url),
-          context = context,
-        )
-      destination = Destination.PLAYER
-    }
+    // Whoever answered last time, tried against the page being ground through again.
+    raceRememberedStream(context)
   }
 
   // A title asked for while the app was already open — from a widget, the television's own row,
@@ -427,6 +437,7 @@ fun AuroraTvRoot(
                     CachedSubtitle(it.url, it.label, it.language, it.mimeType)
                   },
                 sourcePageUrl = stream.sourcePageUrl,
+                providerId = providerIdOf(stream.sourcePageUrl),
               )
               if (destination == Destination.BROWSER && pendingContext?.pageUrl == context.pageUrl) {
                 prefetchTarget = null
@@ -711,6 +722,8 @@ fun AuroraTvRoot(
           val target = catalogTargetOf(playbackContext.pageUrl) ?: return@switchServer
           if (providerIndexOf(activeRequest.sourcePageUrl) == serverIndex) return@switchServer
           val providerUrl = providerPageUrl(target, serverIndex) ?: return@switchServer
+          // Only the most-recent entry, which belongs to the server being left. What the chosen
+          // one gave up last time is kept, and is what makes coming back to it instant.
           streamCache.forget(playbackContext.pageUrl)
           if (prefetched?.first == playbackContext.pageUrl) {
             prefetched = null
@@ -721,6 +734,10 @@ fun AuroraTvRoot(
           browserUrl = providerUrl
           streamRequest = null
           destination = Destination.BROWSER
+          // A viewer who picks a server is saying where their titles are, but only the resolve
+          // that follows records it: a choice that turns out not to work should not become the
+          // place every later title is looked for first.
+          raceRememberedStream(playbackContext, providerIdOf(providerUrl))
         },
         // Signed stream addresses can expire or point to an unhealthy edge. Forget the dead
         // address and resolve the title page again, but bound the automatic loop so a genuinely
@@ -740,7 +757,11 @@ fun AuroraTvRoot(
             }
           } else {
             val playbackContext = activeRequest.context
-            playbackContext?.pageUrl?.let(streamCache::forget)
+            // The site that served this one is out too: its address failed under playback, so
+            // choosing that server again must go looking rather than hand back the same dead one.
+            playbackContext?.pageUrl?.let {
+              streamCache.forget(it, providerIdOf(activeRequest.sourcePageUrl))
+            }
             when (
               streamFailureAction(
                 hasPlaybackContext = playbackContext != null,

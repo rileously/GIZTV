@@ -292,6 +292,15 @@ private const val PROGRESSIVE_TV_START_BUFFER_MS = 4_000
 private const val PROGRESSIVE_PHONE_START_BUFFER_MS = 3_000
 private const val PROGRESSIVE_TV_REBUFFER_MS = 8_000
 private const val PROGRESSIVE_PHONE_REBUFFER_MS = 5_000
+/**
+ * What a link that is plainly not the problem has to fill before the first frame.
+ *
+ * The cushions above are sized for a connection that might struggle. On one that has already been
+ * measured doing better than [FAST_LINK_BITRATE_BPS] the same numbers are simply seconds of a file
+ * arriving faster than it plays, held back from a viewer who is looking at a spinner. The safety
+ * net after a stall is untouched — this is only the opening.
+ */
+private const val PROGRESSIVE_FAST_LINK_START_BUFFER_MS = 1_000
 /** Default cap when a progressive CDN filename encodes an oversized resolution (e.g. 2160p.mp4). */
 internal const val PROGRESSIVE_DEFAULT_MAX_HEIGHT = 1080
 private const val PHONE_AUTO_MAX_VIDEO_WIDTH = 1280
@@ -310,7 +319,10 @@ private const val PROLONGED_STALL_TIMEOUT_MS = 45_000L
 /**
  * How long a stream that has never produced a single frame is given.
  *
- * VidFast takes ~15s to resolve its embed before emitting a URL; giving 25s startup window prevents premature timeouts.
+ * This clock starts once an address is in hand, so nothing a resolver spent finding it counts
+ * against it: what is being waited on here is a CDN that accepted the connection and then sent
+ * nothing. Generous even so, because giving up means the whole search again on the next site, and
+ * a single high-bitrate file can be slow to open without being dead.
  */
 private const val STARTUP_STALL_TIMEOUT_MS = 25_000L
 private const val STABLE_PLAYBACK_RESET_MS = 60_000L
@@ -473,13 +485,19 @@ internal data class PlaybackBufferProfile(
 internal fun playbackBufferProfile(
   isTelevision: Boolean,
   progressive: Boolean = false,
+  /** A link already measured comfortably faster than the file needs. See [PROGRESSIVE_FAST_LINK_START_BUFFER_MS]. */
+  fastLink: Boolean = false,
 ): PlaybackBufferProfile =
   if (progressive) {
     PlaybackBufferProfile(
       minBufferMs = PROGRESSIVE_MIN_BUFFER_MS,
       maxBufferMs = PROGRESSIVE_MAX_BUFFER_MS,
       startBufferMs =
-        if (isTelevision) PROGRESSIVE_TV_START_BUFFER_MS else PROGRESSIVE_PHONE_START_BUFFER_MS,
+        when {
+          fastLink -> PROGRESSIVE_FAST_LINK_START_BUFFER_MS
+          isTelevision -> PROGRESSIVE_TV_START_BUFFER_MS
+          else -> PROGRESSIVE_PHONE_START_BUFFER_MS
+        },
       rebufferMs = if (isTelevision) PROGRESSIVE_TV_REBUFFER_MS else PROGRESSIVE_PHONE_REBUFFER_MS,
     )
   } else {
@@ -1425,7 +1443,7 @@ internal fun HlsPlayerScreen(
           }
           // A decoder that cannot cope is this device's problem and the address is fine; anything
           // else and the address is the first suspect.
-          val decoderFailure = isVideoDecoderFailure(playerError)
+          val decoderFailure = isDecoderFailure(playerError)
           if (!decoderFailure && onPlaybackFailed()) {
             savePlaybackProgress()
             return
@@ -4167,7 +4185,7 @@ private fun audioTrackLabel(format: Format, index: Int): String {
   val isCommentary = (format.roleFlags and C.ROLE_FLAG_COMMENTARY) != 0
   val languageName =
     format.language
-      ?.takeIf { it.isNotBlank() && it != "und" }
+      ?.takeIf { it.isNotBlank() && !it.equals("und", ignoreCase = true) }
       ?.let { language ->
         when (language.lowercase()) {
           "en", "eng" -> "English"
@@ -4175,7 +4193,11 @@ private fun audioTrackLabel(format: Format, index: Int): String {
           else -> Locale.forLanguageTag(language).getDisplayLanguage(Locale.ENGLISH).takeIf(String::isNotBlank)
         }
       }
-  val name = format.label?.takeIf(String::isNotBlank) ?: languageName ?: "Audio ${index + 1}"
+  val name =
+    format.label
+      ?.takeIf { it.isNotBlank() && !it.equals("und", ignoreCase = true) }
+      ?: languageName
+      ?: "Audio ${index + 1}"
   val channelSuffix = if (format.channelCount >= 6 && !name.contains("5.1")) " · 5.1" else ""
   val roleSuffix = when {
     isDescriptive -> " (Audio Description)"
@@ -4188,8 +4210,14 @@ private fun audioTrackLabel(format: Format, index: Int): String {
 @androidx.annotation.OptIn(UnstableApi::class)
 internal fun selectAudioTrack(player: Player, option: AudioTrackOption) {
   val builder = player.trackSelectionParameters.buildUpon().clearOverridesOfType(C.TRACK_TYPE_AUDIO)
-  val audioOverride = option.override ?: preferredEnglishAudioOverride(player.currentTracks)
-  audioOverride?.let(builder::setOverrideForType)
+  if (option.override != null) {
+    builder.setOverrideForType(option.override)
+  } else {
+    builder
+      .setPreferredAudioLanguages("en", "eng")
+      .setPreferredAudioRoleFlags(C.ROLE_FLAG_MAIN)
+    preferredEnglishAudioOverride(player.currentTracks)?.let(builder::setOverrideForType)
+  }
   val updatedParameters = builder.build()
   if (updatedParameters != player.trackSelectionParameters) {
     player.trackSelectionParameters = updatedParameters
@@ -4283,7 +4311,16 @@ private fun preferredEnglishAudioOverride(tracks: Tracks): TrackSelectionOverrid
           { (_, _, format) ->
             if ((format.roleFlags and C.ROLE_FLAG_MAIN) != 0 || (format.selectionFlags and C.SELECTION_FLAG_DEFAULT) != 0) 0 else 1
           },
-          // 4. Prefer stereo (2 channels) over multi-channel or unusual channel counts
+          // 4. Prefer universally supported audio codecs (AAC, PCM, MP3, Opus) over AC-3/E-AC-3/DTS passthrough
+          { (_, _, format) ->
+            val mime = format.sampleMimeType?.lowercase().orEmpty()
+            when {
+              mime.contains("aac") || mime.contains("mp4a") || mime.contains("mpeg") || mime.contains("opus") || mime.contains("raw") -> 0
+              mime.contains("ac3") || mime.contains("eac3") || mime.contains("dts") -> 1
+              else -> 0
+            }
+          },
+          // 5. Prefer stereo (2 channels) over multi-channel or unusual channel counts
           { (_, _, format) ->
             when (format.channelCount) {
               2 -> 0
@@ -4464,7 +4501,9 @@ internal fun createHlsPlayer(
     )
   }
   val mediaSource = createHlsMediaSource(context, playbackRequest)
-  val bufferProfile = playbackBufferProfile(isTelevision, progressive = progressive)
+  val fastLink = bandwidthMeter.bitrateEstimate >= FAST_LINK_BITRATE_BPS
+  val bufferProfile =
+    playbackBufferProfile(isTelevision, progressive = progressive, fastLink = fastLink)
   val loadControl =
     DefaultLoadControl.Builder()
       // Slow links need time rather than bytes. Progressive files use a shorter cushion (see
@@ -4519,7 +4558,7 @@ internal fun createHlsPlayer(
           selectionBuilder,
           initialAutomaticQualityPhase(bandwidthMeter.bitrateEstimate),
           isTelevision = isTelevision,
-          fastLink = bandwidthMeter.bitrateEstimate >= FAST_LINK_BITRATE_BPS,
+          fastLink = fastLink,
         )
       }
       trackSelectionParameters = selectionBuilder.build()
@@ -4643,11 +4682,20 @@ internal fun applyAutomaticQualityPhase(
   }
 }
 
-internal fun isVideoDecoderFailure(error: Throwable): Boolean =
+internal fun isDecoderFailure(error: Throwable): Boolean =
   generateSequence(error) { it.cause }.any { cause ->
-    cause.javaClass.simpleName.contains("MediaCodecVideo", ignoreCase = true) ||
-      cause.message?.contains("MediaCodecVideoRenderer", ignoreCase = true) == true
+    val name = cause.javaClass.simpleName
+    val msg = cause.message.orEmpty()
+    name.contains("MediaCodec", ignoreCase = true) ||
+      name.contains("DecoderInitializationException", ignoreCase = true) ||
+      name.contains("AudioSink", ignoreCase = true) ||
+      name.contains("AudioTrack", ignoreCase = true) ||
+      msg.contains("MediaCodec", ignoreCase = true) ||
+      msg.contains("AudioSink", ignoreCase = true) ||
+      msg.contains("DecoderInitializationException", ignoreCase = true)
   }
+
+internal fun isVideoDecoderFailure(error: Throwable): Boolean = isDecoderFailure(error)
 
 internal fun isHlsTrackMappingFailure(error: Throwable): Boolean =
   generateSequence(error) { it.cause }.any { cause ->

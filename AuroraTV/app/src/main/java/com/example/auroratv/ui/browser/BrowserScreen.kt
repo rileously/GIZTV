@@ -84,6 +84,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.net.toUri
 import androidx.media3.common.MimeTypes
 import com.example.auroratv.ui.catalog.STREAM_PROVIDER_HOSTS
+import com.example.auroratv.ui.catalog.isProgressiveOnlyProviderPage
+import com.example.auroratv.ui.catalog.providerIdOf
+import com.example.auroratv.ui.catalog.providerIndexOf
 import com.example.auroratv.ui.catalog.serverLabelFor
 import androidx.tv.material3.Text
 import com.example.auroratv.BuildConfig
@@ -132,7 +135,15 @@ private const val SUBTITLE_DISCOVERY_DELAY_MS = 2_500L
 private const val SUBTITLE_GRACE_MS = 700L
 /** The window a placeholder file gets to be overtaken by the real playlist. */
 private const val PROGRESSIVE_STREAM_GRACE_MS = 2_500L
-private const val MAX_SUBTITLE_CATALOG_WAIT_MS = 8_000L
+/**
+ * How long a found stream waits on a subtitle catalog that is still in flight.
+ *
+ * The catalog is asked for the moment the page starts, so by the time a stream turns up it has
+ * already had the whole of that page's load to answer. What is left here is a short allowance for
+ * one that is genuinely lagging, not a second search — the rest of it was dead time in front of a
+ * film that was ready to play.
+ */
+private const val MAX_SUBTITLE_CATALOG_WAIT_MS = 3_000L
 private const val SUBTITLE_CATALOG_POLL_MS = 250L
 internal const val CHROME_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -312,7 +323,7 @@ internal fun BrowserScreen(
       stage = PreparationStage.OPENING
       status = "Taking longer than usual · starting over"
       attemptStartedAtMs = SystemClock.elapsedRealtime()
-      webView?.loadUrl(initialUrl)
+      webView?.reloadIgnoringCache(initialUrl)
     } else {
       preparationFailed = true
     }
@@ -379,12 +390,14 @@ internal fun BrowserScreen(
               loadWithOverviewMode = true
               builtInZoomControls = false
               displayZoomControls = false
-              // A stream is only discovered by watching requests leave, and the cache is never
-              // consulted for a request that is never made: on a second visit the page would be
-              // rebuilt entirely from cache and resolve silently to nothing. Plain browsing keeps
-              // the cache, since there is nothing to discover there.
-              cacheMode =
-                if (playback != null) WebSettings.LOAD_NO_CACHE else WebSettings.LOAD_DEFAULT
+              // Ordinary cache rules, which is what these pages are built for. Refusing the cache
+              // outright meant every attempt re-downloaded a player's entire script bundle before
+              // it could begin working out where the video was — the wait a fast connection cannot
+              // shorten, because it was never about bandwidth. Their signed addresses and their
+              // resolve calls are served no-store and still go to the network; only the unchanging
+              // scripts and styles come off disk. A page that finds nothing is started over without
+              // the cache and turns it off for everything after it: see [resolverCacheSuspect].
+              cacheMode = if (playback != null) resolverCacheMode() else WebSettings.LOAD_DEFAULT
               mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
               setGeolocationEnabled(false)
               settings.userAgentString = CHROME_USER_AGENT
@@ -425,6 +438,8 @@ internal fun BrowserScreen(
                       pageUrl = it.pageUrl,
                       elapsedMs = SystemClock.elapsedRealtime() - attemptStartedAtMs,
                     )
+                    // Which site answered, so the next title is looked for there first.
+                    providerIndexOf(stream.sourcePageUrl)?.let(resolutionStore::recordProviderIndex)
                     // And where it was, so the next attempt need not be made at all.
                     streamCacheStore.remember(
                       pageUrl = it.pageUrl,
@@ -435,6 +450,7 @@ internal fun BrowserScreen(
                           CachedSubtitle(track.url, track.label, track.language, track.mimeType)
                         },
                       sourcePageUrl = stream.sourcePageUrl,
+                      providerId = providerIdOf(stream.sourcePageUrl),
                     )
                   }
                   latestStreamDetected.value(stream)
@@ -490,7 +506,7 @@ internal fun BrowserScreen(
           automaticRetries = 0
           stage = PreparationStage.OPENING
           attemptStartedAtMs = SystemClock.elapsedRealtime()
-          webView?.loadUrl(initialUrl)
+          webView?.reloadIgnoringCache(initialUrl)
         },
         onShowPage = { pageRevealed = true },
         onCancel = onExit,
@@ -851,6 +867,29 @@ private fun PreparationStageTrack(stage: PreparationStage, sweep: Float) {
   }
 }
 
+/**
+ * Whether reading the cache has been seen to cost an attempt, for the rest of this run.
+ *
+ * Resolving reads ordinary cache rules, so a player's scripts are only fetched once. That is worth
+ * the whole wait when it works, and worth nothing at all if a page can rebuild itself from disk and
+ * quietly ask for no video. The first attempt that has to be started over says so here, and every
+ * resolver opened afterwards — this title's and the next one's — goes back to the network for
+ * everything until the app is next started.
+ */
+@Volatile private var resolverCacheSuspect = false
+
+/** What a resolving WebView should do about the cache, given how this run has gone so far. */
+internal fun resolverCacheMode(): Int =
+  if (resolverCacheSuspect) WebSettings.LOAD_NO_CACHE else WebSettings.LOAD_DEFAULT
+
+/** Starts a resolving page over with nothing kept from the last go. See [resolverCacheSuspect]. */
+private fun WebView.reloadIgnoringCache(url: String) {
+  resolverCacheSuspect = true
+  settings.cacheMode = WebSettings.LOAD_NO_CACHE
+  clearCache(false)
+  loadUrl(url)
+}
+
 /** The three things a viewer actually cares about while a title is being prepared. */
 internal enum class PreparationStage(val label: String, val shortLabel: String) {
   OPENING("Opening the player…", "OPEN PLAYER"),
@@ -1060,7 +1099,7 @@ internal class AdBlockingWebViewClient(
       onStatus("Video found · collecting separate subtitles…")
       collectPageSubtitles(view)
       mainHandler.removeCallbacks(dispatchPendingStream)
-      mainHandler.postDelayed(dispatchPendingStream, streamDispatchGraceMs(url))
+      mainHandler.postDelayed(dispatchPendingStream, streamDispatchGraceMs(url, currentPageUrl))
     }
   }
 
@@ -1436,9 +1475,17 @@ internal fun shouldReplacePendingStream(pendingUrl: String?, candidateUrl: Strin
  * A playlist is almost certainly the film, so it only waits for its subtitles. A plain file is
  * held a little longer, since that is exactly the window in which a page that loaded a placeholder
  * reveals the real playlist.
+ *
+ * Unless the page it came from has no playlists to reveal. vidfast serves complete files and
+ * nothing else, so every one of its titles was spending that window waiting to be overtaken by
+ * something that was never going to arrive.
  */
-internal fun streamDispatchGraceMs(url: String): Long =
-  if (isHlsUrl(url)) SUBTITLE_GRACE_MS else PROGRESSIVE_STREAM_GRACE_MS
+internal fun streamDispatchGraceMs(url: String, pageUrl: String? = null): Long =
+  if (isHlsUrl(url) || isProgressiveOnlyProviderPage(pageUrl)) {
+    SUBTITLE_GRACE_MS
+  } else {
+    PROGRESSIVE_STREAM_GRACE_MS
+  }
 
 /** Anything the player can be handed directly, whichever shape the source chose to serve it in. */
 internal fun isPlayableStreamUrl(url: String): Boolean =

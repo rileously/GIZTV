@@ -13,6 +13,14 @@ internal data class StreamProvider(
   val host: String,
   val movieUrl: (movieId: Int) -> String,
   val episodeUrl: (showId: Int, seasonNumber: Int, episodeNumber: Int) -> String,
+  /**
+   * Whether this site only ever hands out a complete file, never a playlist.
+   *
+   * The resolver holds a plain file for a moment before handing it over, because a page that loaded
+   * a placeholder reveals the real playlist inside that window. A site that has no playlists to
+   * reveal spends that window doing nothing but keeping the viewer waiting.
+   */
+  val progressiveOnly: Boolean = false,
 )
 
 /**
@@ -25,12 +33,18 @@ internal data class StreamProvider(
  * title; it was not failing, the resolver was taking the placeholder its player loads before it
  * has resolved anything and discarding the real playlist that followed. See `isDecoyMediaUrl`.
  *
- * vidfast trails because it is slow and inflexible, not because it is unreliable. Its own page
- * spends around fifteen seconds working before it emits any address — roughly twice vidlink's
- * whole resolution — and what it then emits is a single progressive file, sometimes 2160p, with no
- * ladder for the player to adapt down. Nothing here can hurry the page up; the player caps oversized
- * progressive filenames (see preferProgressivePlaybackUrl) and uses a shorter buffer profile so
- * those titles do not stall the way an HLS cushion would on one huge file.
+ * vidfast trails because it is inflexible, not because it is unreliable: what it emits is a single
+ * progressive file, sometimes 2160p, with no ladder for the player to adapt down. The player caps
+ * oversized progressive filenames (see preferProgressivePlaybackUrl) and uses a shorter buffer
+ * profile so those titles do not stall the way an HLS cushion would on one huge file.
+ *
+ * Its page used to spend around fifteen seconds working before it emitted any address, and most of
+ * that was not the page: the resolver refused the HTTP cache outright, so every attempt fetched its
+ * entire script bundle again before it could begin. That was the wait a fast connection could not
+ * shorten. Resolving now reads ordinary cache rules and falls back to the network on any attempt
+ * that finds nothing, [progressiveOnly] spares its files the hold meant for pages that might still
+ * produce a playlist, and what it does give up is remembered per site so choosing SR3 twice only
+ * costs the search once.
  */
 internal val STREAM_PROVIDERS: List<StreamProvider> =
   listOf(
@@ -59,8 +73,21 @@ internal val STREAM_PROVIDERS: List<StreamProvider> =
       episodeUrl = { show, season, episode ->
         "https://vidfast.vc/tv/$show/$season/$episode?autoPlay=true&sub=en&chromecast=false"
       },
+      // It has never served a playlist, so nothing is ever gained by holding its file back.
+      progressiveOnly = true,
     ),
   )
+
+/** The provider serving a page, or null for anything outside the list. */
+internal fun providerFor(pageUrl: String?): StreamProvider? =
+  providerIndexOf(pageUrl)?.let(STREAM_PROVIDERS::get)
+
+/** The site a page belongs to, in the form a per-provider cache entry is keyed by. */
+internal fun providerIdOf(pageUrl: String?): String? = providerFor(pageUrl)?.id
+
+/** Whether the site behind a page only ever hands out complete files. See [StreamProvider.progressiveOnly]. */
+internal fun isProgressiveOnlyProviderPage(pageUrl: String?): Boolean =
+  providerFor(pageUrl)?.progressiveOnly == true
 
 // VidSrc (vsembed.ru) is deliberately absent. Its player is a nested iframe that assembles the
 // stream address inside the page from an obfuscated payload, next to a script whose whole job is

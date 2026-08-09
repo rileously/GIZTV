@@ -52,11 +52,19 @@ internal class StreamCacheStore(context: Context) {
       Context.MODE_PRIVATE,
     )
 
-  fun find(pageUrl: String): CachedStream? {
-    val raw = preferences.getString(watchHistoryKey(pageUrl), null) ?: return null
+  /**
+   * The stream last found for a title, or the one a named site last gave up for it.
+   *
+   * Asking for a particular [providerId] is how a hand-picked server stops costing a full search
+   * every time it is chosen. The unnamed entry is whoever answered most recently, which is what
+   * pressing play wants; the named ones survive a switch away and back.
+   */
+  fun find(pageUrl: String, providerId: String? = null): CachedStream? {
+    val key = cacheKey(pageUrl, providerId)
+    val raw = preferences.getString(key, null) ?: return null
     val cached = runCatching { decode(raw) }.getOrNull() ?: return null
     if (System.currentTimeMillis() >= cached.expiresAtMs) {
-      forget(pageUrl)
+      preferences.edit().remove(key).apply()
       return null
     }
     return cached
@@ -68,6 +76,8 @@ internal class StreamCacheStore(context: Context) {
     headers: Map<String, String>,
     subtitles: List<CachedSubtitle>,
     sourcePageUrl: String?,
+    /** The site that produced it, so choosing that server again need not go looking. */
+    providerId: String? = null,
   ) {
     val entry =
       CachedStream(
@@ -77,13 +87,27 @@ internal class StreamCacheStore(context: Context) {
         sourcePageUrl = sourcePageUrl,
         expiresAtMs = expiryOf(url),
       )
-    preferences.edit().putString(watchHistoryKey(pageUrl), encode(entry)).apply()
+    val encoded = encode(entry)
+    val editor = preferences.edit().putString(cacheKey(pageUrl, null), encoded)
+    providerId?.let { editor.putString(cacheKey(pageUrl, it), encoded) }
+    editor.apply()
   }
 
-  /** Called the moment a remembered stream fails, so it is never offered twice. */
-  fun forget(pageUrl: String) {
-    preferences.edit().remove(watchHistoryKey(pageUrl)).apply()
+  /**
+   * Called the moment a remembered stream fails, so it is never offered twice.
+   *
+   * With no [providerId] only the most-recent entry goes: the others belong to sites that have not
+   * been asked and may still be perfectly good. Naming one throws that site's answer away too,
+   * which is what a stream failing under playback means.
+   */
+  fun forget(pageUrl: String, providerId: String? = null) {
+    val editor = preferences.edit().remove(cacheKey(pageUrl, null))
+    providerId?.let { editor.remove(cacheKey(pageUrl, it)) }
+    editor.apply()
   }
+
+  private fun cacheKey(pageUrl: String, providerId: String?): String =
+    watchHistoryKey(pageUrl) + if (providerId == null) "" else "@$providerId"
 
   private fun encode(entry: CachedStream): String =
     JSONObject()
