@@ -25,14 +25,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -219,8 +222,8 @@ internal fun CatalogScreen(
   // the rails under a viewer who is part-way along one.
   val categories = remember { catalogCategories() }
   val railFocusRequesters = remember(categories) { List(categories.size) { FocusRequester() } }
-  val gridState = rememberLazyGridState()
-  val railState = rememberLazyListState()
+  val gridState = rememberSaveable(saver = LazyGridState.Saver) { LazyGridState() }
+  val railState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
   // Phone footer owns destinations; hide the always-on search row until asked.
   val phoneChrome = !showTopDestinationActions
 
@@ -1588,7 +1591,9 @@ private fun <T> CatalogRail(
       attribution = attribution,
       modifier = Modifier.padding(horizontal = edge),
     )
+    val railListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
     LazyRow(
+      state = railListState,
       modifier = Modifier.fillMaxWidth().focusGroup(),
       // The inset lives here rather than around the whole rail, so the first card lines up with
       // everything else while the last one is free to scroll off the edge of the screen.

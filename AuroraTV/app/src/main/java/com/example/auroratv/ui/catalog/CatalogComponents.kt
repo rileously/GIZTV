@@ -28,8 +28,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -677,7 +679,9 @@ internal fun ContinueWatchingSection(
       modifier = Modifier.padding(horizontal = edge),
     )
     Spacer(Modifier.height(8.dp))
+    val continueListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
     LazyRow(
+      state = continueListState,
       modifier = Modifier.fillMaxWidth().focusGroup(),
       contentPadding = PaddingValues(horizontal = edge),
       horizontalArrangement = Arrangement.spacedBy(12.dp),

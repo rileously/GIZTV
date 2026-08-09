@@ -16,7 +16,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.runtime.rememberCoroutineScope
@@ -466,9 +468,25 @@ fun AuroraTvRoot(
           )
         }
 
-        when (destination) {
-          Destination.CATALOG ->
+        val isCatalogActive = destination == Destination.CATALOG
+        val isDetailScreen =
+          destination == Destination.MOVIE_DETAIL ||
+            destination == Destination.SHOW_DETAIL ||
+            destination == Destination.PERSON_DETAIL
+
+        if (isCatalogActive || isDetailScreen) {
+          Box(
+            modifier =
+              Modifier.fillMaxSize()
+                .alpha(if (isCatalogActive) 1f else 0f)
+                .focusProperties { canFocus = isCatalogActive }
+          ) {
             destinationState.SaveableStateProvider(Destination.CATALOG) { Catalog() }
+          }
+        }
+
+        when (destination) {
+          Destination.CATALOG -> Unit
           Destination.MOVIE_DETAIL -> {
             val movie = selectedMovie
             if (movie != null) {
