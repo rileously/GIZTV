@@ -1,9 +1,11 @@
 package com.example.auroratv
 
 import com.example.auroratv.ui.catalog.catalogCategories
+import com.example.auroratv.ui.catalog.catalogShortcutCategoryId
 import com.example.auroratv.ui.catalog.decadeCategory
 import com.example.auroratv.ui.catalog.decadeStarts
 import com.example.auroratv.ui.catalog.genreTopRatedCategories
+import com.example.auroratv.ui.catalog.parseTmdbShows
 import com.example.auroratv.ui.catalog.genreTopRatedCategory
 import com.example.auroratv.ui.catalog.parseTopBilledActor
 import org.junit.Assert.assertEquals
@@ -79,6 +81,26 @@ class CatalogCategoryTest {
     assertTrue(labels.contains("Top Rated Romance"))
     assertTrue(labels.contains("Top Rated Action"))
     assertEquals(10, genreTopRatedCategories().size)
+  }
+
+  @Test
+  fun homeShortcuts_openTheRailNamedByTheChip() {
+    assertNull(catalogShortcutCategoryId("All"))
+    assertEquals("acclaimed", catalogShortcutCategoryId("Top Rated"))
+    assertEquals("genre-action", catalogShortcutCategoryId("Action"))
+    assertEquals("genre-scifi", catalogShortcutCategoryId("Sci-Fi"))
+    assertEquals("genre-horror", catalogShortcutCategoryId("Horror"))
+  }
+
+  @Test
+  fun tvShowParser_retainsBackdropForTheHomeHero() {
+    val show =
+      parseTmdbShows(
+          """{"results":[{"id":7,"name":"Example","first_air_date":"2026-01-01","vote_average":8.1,"overview":"Story","poster_path":"/poster.jpg","backdrop_path":"/wide.jpg"}]}"""
+        )
+        .single()
+
+    assertEquals("https://image.tmdb.org/t/p/w780/wide.jpg", show.backdropUrl)
   }
 
   @Test

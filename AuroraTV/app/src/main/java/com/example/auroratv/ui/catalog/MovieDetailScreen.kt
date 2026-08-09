@@ -8,6 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -40,8 +41,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -76,7 +77,29 @@ import com.example.auroratv.theme.MutedBlue
 import com.example.auroratv.theme.NightSurface
 import com.example.auroratv.theme.SoftWhite
 import java.util.Locale
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+
+/** Starts every same-destination movie swap at the hero with a valid D-pad focus target. */
+@Composable
+internal fun MovieDetailFocusResetEffect(
+  movieId: Int,
+  scrollState: ScrollState,
+  playFocusRequester: FocusRequester,
+  retryAttempts: Int = 10,
+  retryDelayMs: Long = 60L,
+) {
+  LaunchedEffect(movieId) {
+    scrollState.scrollTo(0)
+    repeat(retryAttempts) { attempt ->
+      withFrameNanos {}
+      if (runCatching { playFocusRequester.requestFocus() }.getOrDefault(false)) {
+        return@LaunchedEffect
+      }
+      if (attempt > 0 && retryDelayMs > 0) delay(retryDelayMs)
+    }
+  }
+}
 
 /**
  * Netflix-styled Movie Detail screen:
@@ -101,36 +124,46 @@ internal fun MovieDetailScreen(
   val detailsRepository = remember { TmdbPlaybackDetailsRepository(BuildConfig.TMDB_API_KEY) }
   val movieRepository = remember { TmdbMovieRepository(BuildConfig.TMDB_API_KEY) }
   val myListStore = remember(context) { MyListStore(context) }
-  val scope = rememberCoroutineScope()
 
-  val backFocusRequester = remember { FocusRequester() }
-  val playFocusRequester = remember { FocusRequester() }
+  // A new detail opened from "More Like This" stays at the same composable call site. Keying these
+  // requesters to the movie prevents focus from remaining attached to the recommendation card that
+  // is removed during the swap.
+  val backFocusRequester = remember(movie.id) { FocusRequester() }
+  val playFocusRequester = remember(movie.id) { FocusRequester() }
+  val scrollState = rememberScrollState()
 
   var details by remember(movie.id) { mutableStateOf<TmdbPlaybackDetails?>(null) }
   var recommendations by remember(movie.id) { mutableStateOf<List<TmdbMovie>>(emptyList()) }
   var loadingDetails by remember(movie.id) { mutableStateOf(true) }
   var saved by remember(movie.id) { mutableStateOf(myListStore.contains(LibraryKind.MOVIE, movie.id)) }
-  var selectedReview by remember { mutableStateOf<PlaybackReview?>(null) }
+  var selectedReview by remember(movie.id) { mutableStateOf<PlaybackReview?>(null) }
 
   LaunchedEffect(movie.id) {
     onConsidering(movie.toPlaybackContext())
     loadingDetails = true
-    scope.launch {
-      runCatching { detailsRepository.movieDetails(movie.id) }
-        .onSuccess { details = it }
-        .onFailure { Log.e("GizTvMovieDetail", "Failed loading movie details for ${movie.id}", it) }
-      
-      runCatching { movieRepository.recommendations(movie.id) }
-        .onSuccess { recommendations = it }
-        .onFailure { Log.e("GizTvMovieDetail", "Failed loading recommendations for ${movie.id}", it) }
-
-      loadingDetails = false
+    try {
+      details = detailsRepository.movieDetails(movie.id)
+    } catch (cancelled: CancellationException) {
+      throw cancelled
+    } catch (failure: Throwable) {
+      Log.e("GizTvMovieDetail", "Failed loading movie details for ${movie.id}", failure)
     }
+
+    try {
+      recommendations = movieRepository.recommendations(movie.id)
+    } catch (cancelled: CancellationException) {
+      throw cancelled
+    } catch (failure: Throwable) {
+      Log.e("GizTvMovieDetail", "Failed loading recommendations for ${movie.id}", failure)
+    }
+
+    loadingDetails = false
   }
 
-  LaunchedEffect(Unit) {
-    playFocusRequester.requestFocus()
-  }
+  // Recommendation cards live near the bottom of this scroll container. Without the reset the
+  // replacement movie inherits that offset, then loses focus when the old recommendations are
+  // removed. Always present a new detail from its hero and make Play the deterministic target.
+  MovieDetailFocusResetEffect(movie.id, scrollState, playFocusRequester)
 
   BackHandler(onBack = onBack)
 
@@ -151,7 +184,6 @@ internal fun MovieDetailScreen(
       .background(DeepSpace)
   ) {
     val narrow = maxWidth < 720.dp
-    val scrollState = rememberScrollState()
 
     Column(
       modifier = Modifier

@@ -282,7 +282,9 @@ internal fun SegmentedTabs(
         compact = compact,
         modifier =
           Modifier.focusProperties { if (down != null) this.down = down }
-            .let { if (index == 0) it.focusRequester(firstTabFocusRequester) else it },
+            // The requester follows the selected destination, so initial TV focus and a return from
+            // Search land on the tab the viewer is actually using.
+            .let { if (index == selectedIndex) it.focusRequester(firstTabFocusRequester) else it },
       )
     }
   }
@@ -585,19 +587,26 @@ internal fun PosterCard(
     }
   }
   val scale by animateFloatAsState(if (focused) 1.045f else 1f, label = "card focus scale")
-  val outline by animateColorAsState(if (focused) AuroraMint else SoftWhite.copy(alpha = .08f), label = "card outline")
+  val outline by
+    animateColorAsState(
+      if (focused) AuroraMint else SoftWhite.copy(alpha = .10f),
+      label = "card outline",
+    )
   Column(
     modifier =
-      modifier.graphicsLayer { scaleX = scale; scaleY = scale }.clip(RoundedCornerShape(16.dp))
-        .background(NightSurface).border(if (focused) 3.dp else 1.dp, outline, RoundedCornerShape(16.dp))
+      modifier.graphicsLayer { scaleX = scale; scaleY = scale }
         .onFocusChanged { focused = it.isFocused }.clickable(onClick = onClick)
         .semantics { role = Role.Button; contentDescription = actionLabel }
   ) {
-    Box {
+    Box(
+      modifier =
+        Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(RoundedCornerShape(14.dp))
+          .border(if (focused) 3.dp else 1.dp, outline, RoundedCornerShape(14.dp))
+    ) {
       TmdbArtwork(
         url = posterUrl,
         contentDescription = "$title poster",
-        modifier = Modifier.fillMaxWidth().aspectRatio(2f / 3f),
+        modifier = Modifier.fillMaxSize(),
         fallbackLabel = "No poster",
       )
       if (watched) {
@@ -611,18 +620,18 @@ internal fun PosterCard(
         }
       }
     }
-    Column(Modifier.padding(horizontal = 11.dp, vertical = 10.dp)) {
+    Column(Modifier.padding(horizontal = 3.dp, vertical = 8.dp)) {
       Text(
         title,
         color = SoftWhite,
         fontWeight = FontWeight.Bold,
-        fontSize = 14.sp,
+        fontSize = 13.sp,
         maxLines = 2,
         minLines = 2,
         overflow = TextOverflow.Ellipsis,
-        lineHeight = 17.sp,
+        lineHeight = 16.sp,
       )
-      Spacer(Modifier.height(5.dp))
+      Spacer(Modifier.height(3.dp))
       Row(verticalAlignment = Alignment.CenterVertically) {
         Text(subtitle, color = MutedBlue, fontSize = 11.sp)
         Spacer(Modifier.weight(1f))
@@ -661,8 +670,7 @@ internal fun Modifier.remoteFocusNavigation(
         Key.DirectionRight -> right
         else -> null
       } ?: return@onPreviewKeyEvent false
-    val handled: Boolean = runCatching { destination.requestFocus(); true }.getOrElse { false }
-    handled
+    runCatching { destination.requestFocus() }.getOrDefault(false)
   }
 @Composable
 internal fun ContinueWatchingSection(
@@ -673,10 +681,22 @@ internal fun ContinueWatchingSection(
   up: FocusRequester,
   down: FocusRequester,
   hasGrid: Boolean,
+  onMoveUp: (() -> Unit)? = null,
+  onMoveDown: (() -> Unit)? = null,
   /** The screen's own inset, applied here so the rail itself can reach the edges. */
   edge: Dp = 42.dp,
 ) {
-  Column {
+  Column(
+    modifier =
+      Modifier.onPreviewKeyEvent { event ->
+        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+        when (event.key) {
+          Key.DirectionUp -> onMoveUp?.let { it(); true } ?: false
+          Key.DirectionDown -> onMoveDown?.let { it(); true } ?: false
+          else -> false
+        }
+      }
+  ) {
     Text(
       if (entries.isEmpty()) "Watch history" else "Continue watching",
       color = SoftWhite,
@@ -834,23 +854,29 @@ internal fun ContinueWatchingCard(
   // Laid out wide and short: a poster-shaped card here would push the catalog below the fold.
   Row(
     modifier =
-      modifier.width(248.dp).graphicsLayer { scaleX = scale; scaleY = scale }
-        .clip(RoundedCornerShape(14.dp)).background(NightSurface)
-        .border(if (focused) 3.dp else 1.dp, outline, RoundedCornerShape(14.dp))
+      modifier.width(228.dp).graphicsLayer { scaleX = scale; scaleY = scale }
+        .clip(RoundedCornerShape(14.dp))
+        .background(if (focused) NightSurface.copy(alpha = .92f) else Color.Transparent)
+        .border(if (focused) 3.dp else 0.dp, outline, RoundedCornerShape(14.dp))
         .onFocusChanged { focused = it.isFocused }.clickable(onClick = onClick)
         .semantics {
           role = Role.Button
           contentDescription = "Resume ${entry.title}${entry.subtitle?.let { ", $it" } ?: ""}"
         }
-        .padding(8.dp),
+        .padding(7.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
     // The fixed width keeps the progress bar tied to the poster instead of the whole card.
-    Box(modifier = Modifier.width(54.dp), contentAlignment = Alignment.BottomStart) {
+    Box(
+      modifier =
+        Modifier.width(60.dp).clip(RoundedCornerShape(9.dp))
+          .border(1.dp, SoftWhite.copy(alpha = .12f), RoundedCornerShape(9.dp)),
+      contentAlignment = Alignment.BottomStart,
+    ) {
       TmdbArtwork(
         url = entry.posterUrl,
         contentDescription = "${entry.title} poster",
-        modifier = Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(RoundedCornerShape(8.dp)),
+        modifier = Modifier.fillMaxWidth().aspectRatio(2f / 3f),
         compact = true,
       )
       Box(modifier = Modifier.fillMaxWidth().height(4.dp).background(DeepSpace.copy(alpha = .7f))) {
@@ -888,192 +914,209 @@ internal fun HeroSpotlightBanner(
   overview: String?,
   rating: Double?,
   posterUrl: String?,
+  backdropUrl: String?,
   onPlay: () -> Unit,
   onOpenDetails: () -> Unit,
   firstCardFocusRequester: FocusRequester? = null,
   up: FocusRequester? = null,
   down: FocusRequester? = null,
+  onFocused: (FocusRequester) -> Unit = {},
   edge: Dp = 42.dp,
   narrow: Boolean = false,
   modifier: Modifier = Modifier,
 ) {
-  var focused by remember { mutableStateOf(false) }
   var playButtonFocused by remember { mutableStateOf(false) }
   var detailsButtonFocused by remember { mutableStateOf(false) }
+  val localPlayFocusRequester = remember { FocusRequester() }
+  val playFocusRequester = firstCardFocusRequester ?: localPlayFocusRequester
+  val detailsFocusRequester = remember { FocusRequester() }
+  val heroFocused = playButtonFocused || detailsButtonFocused
+  val heroScale by animateFloatAsState(if (heroFocused) 1.008f else 1f, label = "hero focus scale")
+  val playScale by animateFloatAsState(if (playButtonFocused) 1.05f else 1f, label = "hero play scale")
+  val detailsScale by
+    animateFloatAsState(if (detailsButtonFocused) 1.05f else 1f, label = "hero details scale")
 
   Box(
     modifier =
       modifier
-        .padding(horizontal = edge, vertical = 8.dp)
+        .padding(horizontal = edge, vertical = 4.dp)
         .fillMaxWidth()
-        .height(if (narrow) 200.dp else 250.dp)
+        .height(if (narrow) 258.dp else 206.dp)
+        .graphicsLayer { scaleX = heroScale; scaleY = heroScale }
         .clip(RoundedCornerShape(20.dp))
-        .background(
-          Brush.horizontalGradient(
-            colors = listOf(Color(0xFF0F1A2D), Color(0xFF14243B), Color(0xFF1E3A5F))
-          )
-        )
         .border(
-          width = if (focused) 2.dp else 1.dp,
-          brush = if (focused) SolidColor(AuroraMint) else SolidColor(SoftWhite.copy(alpha = 0.15f)),
+          width = if (heroFocused) 2.dp else 0.dp,
+          brush = if (heroFocused) SolidColor(AuroraMint) else SolidColor(Color.Transparent),
           shape = RoundedCornerShape(20.dp),
         ),
   ) {
-    Row(modifier = Modifier.fillMaxSize()) {
-      Column(
-        modifier =
-          Modifier.weight(1f)
-            .fillMaxHeight()
-            .padding(horizontal = if (narrow) 16.dp else 24.dp, vertical = if (narrow) 14.dp else 20.dp),
-        verticalArrangement = Arrangement.SpaceBetween,
-      ) {
-        Column {
-          Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-              modifier =
-                Modifier
-                  .clip(RoundedCornerShape(6.dp))
-                  .background(AuroraMint.copy(alpha = 0.18f))
-                  .border(1.dp, AuroraMint.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
-                  .padding(horizontal = 8.dp, vertical = 2.dp),
-            ) {
-              Text(
-                "FEATURED SPOTLIGHT",
-                color = AuroraMint,
-                fontWeight = FontWeight.Black,
-                fontSize = 10.sp,
-                letterSpacing = 1.4.sp,
-              )
-            }
-            if (rating != null && rating > 0) {
-              Spacer(modifier = Modifier.width(10.dp))
-              Icon(
-                Icons.Filled.Star,
-                contentDescription = null,
-                tint = Color(0xFFFFC107),
-                modifier = Modifier.size(14.dp),
-              )
-              Spacer(modifier = Modifier.width(4.dp))
-              Text(
-                String.format(Locale.US, "%.1f", rating),
-                color = SoftWhite,
-                fontWeight = FontWeight.Bold,
-                fontSize = 12.sp,
-              )
-            }
-            if (!subtitle.isNullOrBlank()) {
-              Spacer(modifier = Modifier.width(10.dp))
-              Text(
-                subtitle,
-                color = MutedBlue,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
-              )
-            }
-          }
-
-          Spacer(modifier = Modifier.height(8.dp))
-          Text(
-            title,
-            color = SoftWhite,
-            fontWeight = FontWeight.Black,
-            fontSize = if (narrow) 20.sp else 26.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+    TmdbArtwork(
+      url = backdropUrl ?: posterUrl,
+      contentDescription = "$title backdrop",
+      modifier = Modifier.fillMaxSize(),
+      fallbackLabel = "Featured title",
+    )
+    // A strong left mask keeps copy readable over any artwork while the softer bottom mask lets
+    // the image remain the dominant surface, as it is in the supplied streaming references.
+    Box(
+      Modifier.fillMaxSize().background(
+        Brush.horizontalGradient(
+          listOf(
+            Color(0xFF03070E).copy(alpha = .98f),
+            Color(0xFF03070E).copy(alpha = .82f),
+            Color(0xFF03070E).copy(alpha = .20f),
           )
+        )
+      )
+    )
+    Box(
+      Modifier.fillMaxSize().background(
+        Brush.verticalGradient(
+          listOf(Color.Transparent, Color(0xFF03070E).copy(alpha = .76f))
+        )
+      )
+    )
 
-          if (!overview.isNullOrBlank()) {
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-              overview,
-              color = SoftWhite.copy(alpha = 0.8f),
-              fontSize = 12.sp,
-              maxLines = if (narrow) 2 else 3,
-              overflow = TextOverflow.Ellipsis,
-              lineHeight = 16.sp,
+    Column(
+      modifier =
+        Modifier.fillMaxHeight().fillMaxWidth(if (narrow) .86f else .64f)
+          .padding(horizontal = if (narrow) 18.dp else 26.dp, vertical = if (narrow) 18.dp else 20.dp),
+      verticalArrangement = Arrangement.SpaceBetween,
+    ) {
+      Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          GizTvMark(
+            modifier = Modifier.size(if (narrow) 22.dp else 24.dp),
+            cornerRadius = 6.dp,
+          )
+          Spacer(Modifier.width(8.dp))
+          Text(
+            "FEATURED",
+            color = AuroraMint,
+            fontWeight = FontWeight.Black,
+            fontSize = 10.sp,
+            letterSpacing = 1.6.sp,
+          )
+          if (rating != null && rating > 0) {
+            Spacer(modifier = Modifier.width(12.dp))
+            Icon(
+              Icons.Filled.Star,
+              contentDescription = null,
+              tint = Color(0xFFFFC857),
+              modifier = Modifier.size(14.dp),
             )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+              String.format(Locale.US, "%.1f", rating),
+              color = SoftWhite,
+              fontWeight = FontWeight.Bold,
+              fontSize = 12.sp,
+            )
+          }
+          if (!subtitle.isNullOrBlank()) {
+            Spacer(modifier = Modifier.width(10.dp))
+            Text(subtitle, color = SoftWhite.copy(alpha = .72f), fontSize = 12.sp)
           }
         }
 
-        Row(
-          horizontalArrangement = Arrangement.spacedBy(10.dp),
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          val playModifier =
-            firstCardFocusRequester?.let { Modifier.focusRequester(it) } ?: Modifier
-          val focusControl =
-            Modifier.focusProperties {
-              if (up != null) this.up = up
-              if (down != null) this.down = down
-            }
+        Spacer(modifier = Modifier.height(if (narrow) 12.dp else 9.dp))
+        Text(
+          title,
+          color = SoftWhite,
+          fontWeight = FontWeight.Black,
+          fontSize = if (narrow) 25.sp else 29.sp,
+          maxLines = if (narrow) 2 else 1,
+          overflow = TextOverflow.Ellipsis,
+          lineHeight = if (narrow) 29.sp else 32.sp,
+        )
 
-          Row(
-            modifier =
-              playModifier
-                .then(focusControl)
-                .onFocusChanged { playButtonFocused = it.isFocused; if (it.isFocused) focused = true }
-                .clip(RoundedCornerShape(12.dp))
-                .background(if (playButtonFocused) AuroraMint else AuroraMint.copy(alpha = 0.88f))
-                .clickable { onPlay() }
-                .padding(horizontal = 16.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically,
-          ) {
-            Icon(
-              Icons.Filled.PlayArrow,
-              contentDescription = null,
-              tint = Color.Black,
-              modifier = Modifier.size(18.dp),
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(
-              "Play Now",
-              color = Color.Black,
-              fontWeight = FontWeight.Black,
-              fontSize = 13.sp,
-            )
-          }
-
-          Row(
-            modifier =
-              focusControl
-                .onFocusChanged { detailsButtonFocused = it.isFocused; if (it.isFocused) focused = true }
-                .clip(RoundedCornerShape(12.dp))
-                .background(if (detailsButtonFocused) SoftWhite.copy(alpha = 0.25f) else NightSurface.copy(alpha = 0.7f))
-                .border(1.dp, SoftWhite.copy(alpha = 0.25f), RoundedCornerShape(12.dp))
-                .clickable { onOpenDetails() }
-                .padding(horizontal = 14.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically,
-          ) {
-            Icon(
-              Icons.Filled.Info,
-              contentDescription = null,
-              tint = SoftWhite,
-              modifier = Modifier.size(16.dp),
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(
-              "More Info",
-              color = SoftWhite,
-              fontWeight = FontWeight.Bold,
-              fontSize = 13.sp,
-            )
-          }
+        if (!overview.isNullOrBlank()) {
+          Spacer(modifier = Modifier.height(7.dp))
+          Text(
+            overview,
+            color = SoftWhite.copy(alpha = .82f),
+            fontSize = if (narrow) 13.sp else 12.sp,
+            maxLines = if (narrow) 3 else 2,
+            overflow = TextOverflow.Ellipsis,
+            lineHeight = 17.sp,
+          )
         }
       }
 
-      if (!posterUrl.isNullOrBlank()) {
-        Box(
+      Row(
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        val playModifier =
+          Modifier.focusRequester(playFocusRequester).focusProperties {
+            if (up != null) this.up = up
+            if (down != null) this.down = down
+            right = detailsFocusRequester
+          }
+            .remoteFocusNavigation(up = up, down = down, right = detailsFocusRequester)
+
+        Row(
           modifier =
-            Modifier
-              .fillMaxHeight()
-              .width(if (narrow) 110.dp else 150.dp)
-              .padding(12.dp)
-              .clip(RoundedCornerShape(14.dp)),
+            playModifier.graphicsLayer { scaleX = playScale; scaleY = playScale }
+              .onFocusChanged {
+                playButtonFocused = it.isFocused
+                if (it.isFocused) onFocused(playFocusRequester)
+              }
+              .clip(RoundedCornerShape(10.dp))
+              .background(SoftWhite)
+              .border(
+                if (playButtonFocused) 3.dp else 0.dp,
+                if (playButtonFocused) AuroraMint else Color.Transparent,
+                RoundedCornerShape(10.dp),
+              )
+              .clickable { onPlay() }
+              .padding(horizontal = if (narrow) 18.dp else 20.dp, vertical = 9.dp),
+          verticalAlignment = Alignment.CenterVertically,
         ) {
-          TmdbArtwork(
-            url = posterUrl,
-            contentDescription = title,
-            modifier = Modifier.fillMaxSize(),
+          Icon(Icons.Filled.PlayArrow, null, tint = Color.Black, modifier = Modifier.size(18.dp))
+          Spacer(modifier = Modifier.width(6.dp))
+          Text("Play", color = Color.Black, fontWeight = FontWeight.Black, fontSize = 13.sp)
+        }
+
+        Row(
+          modifier =
+            Modifier.focusRequester(detailsFocusRequester)
+              .focusProperties {
+                if (up != null) this.up = up
+                if (down != null) this.down = down
+                left = playFocusRequester
+              }
+              .remoteFocusNavigation(up = up, down = down, left = playFocusRequester)
+              .graphicsLayer { scaleX = detailsScale; scaleY = detailsScale }
+              .onFocusChanged {
+                detailsButtonFocused = it.isFocused
+                if (it.isFocused) onFocused(detailsFocusRequester)
+              }
+              .clip(RoundedCornerShape(10.dp))
+              .background(
+                if (detailsButtonFocused) AuroraMint else Color(0xFF5A626E).copy(alpha = .74f)
+              )
+              .border(
+                if (detailsButtonFocused) 2.dp else 1.dp,
+                if (detailsButtonFocused) SoftWhite else SoftWhite.copy(alpha = .28f),
+                RoundedCornerShape(10.dp),
+              )
+              .clickable { onOpenDetails() }
+              .padding(horizontal = 16.dp, vertical = 9.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Icon(
+            Icons.Filled.Info,
+            contentDescription = null,
+            tint = if (detailsButtonFocused) DeepSpace else SoftWhite,
+            modifier = Modifier.size(16.dp),
+          )
+          Spacer(modifier = Modifier.width(6.dp))
+          Text(
+            "More Info",
+            color = if (detailsButtonFocused) DeepSpace else SoftWhite,
+            fontWeight = FontWeight.Bold,
+            fontSize = 13.sp,
           )
         }
       }
@@ -1089,12 +1132,25 @@ internal fun CatalogFilterRow(
   filters: List<String>,
   selectedFilter: String,
   onSelectFilter: (String) -> Unit,
+  firstFilterFocusRequester: FocusRequester,
+  up: FocusRequester?,
+  down: FocusRequester?,
+  onMoveUp: (() -> Unit)? = null,
+  onMoveDown: (() -> Unit)? = null,
   edge: Dp = 42.dp,
   modifier: Modifier = Modifier,
 ) {
   val filterListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
   Row(
-    modifier = modifier.fillMaxWidth(),
+    modifier =
+      modifier.fillMaxWidth().onPreviewKeyEvent { event ->
+        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+        when (event.key) {
+          Key.DirectionUp -> onMoveUp?.let { it(); true } ?: false
+          Key.DirectionDown -> onMoveDown?.let { it(); true } ?: false
+          else -> false
+        }
+      },
     verticalAlignment = Alignment.CenterVertically,
   ) {
     LazyRow(
@@ -1110,6 +1166,15 @@ internal fun CatalogFilterRow(
         Box(
           modifier =
             Modifier
+              .let {
+                if (filter == selectedFilter) it.focusRequester(firstFilterFocusRequester)
+                else it
+              }
+              .focusProperties {
+                if (up != null) this.up = up
+                if (down != null) this.down = down
+              }
+              .remoteFocusNavigation(up = up)
               .graphicsLayer { scaleX = scale; scaleY = scale }
               .onFocusChanged { focused = it.isFocused }
               .clip(RoundedCornerShape(20.dp))

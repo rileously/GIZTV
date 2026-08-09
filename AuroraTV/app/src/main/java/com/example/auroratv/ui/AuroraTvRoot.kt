@@ -109,6 +109,17 @@ internal fun iptvPlaybackSourceAt(
   index: Int,
 ): Pair<Int, HlsStreamRequest>? = sources.getOrNull(index)?.let { index to it }
 
+/** Adds the page being left to a detail history, or starts a fresh history from the catalog. */
+internal fun <T> detailHistoryAfterOpen(
+  history: List<T>,
+  current: T?,
+  fromCatalog: Boolean,
+): List<T> = if (fromCatalog || current == null) emptyList() else history + current
+
+/** Removes and returns the exact detail page Back should reveal next. */
+internal fun <T> detailHistoryAfterBack(history: List<T>): Pair<List<T>, T?> =
+  if (history.isEmpty()) history to null else history.dropLast(1) to history.last()
+
 private enum class Destination {
   CATALOG,
   MOVIE_DETAIL,
@@ -126,6 +137,15 @@ private enum class Destination {
 }
 
 private data class PersonSelection(val id: Int, val name: String, val isDirector: Boolean = false)
+
+/** A browse-detail page that Back can return to before finally uncovering the catalog. */
+private sealed interface CatalogDetailRoute {
+  data class Movie(val movie: TmdbMovie) : CatalogDetailRoute
+
+  data class Person(val person: PersonSelection) : CatalogDetailRoute
+
+  data class Show(val show: TmdbShow) : CatalogDetailRoute
+}
 
 /** Browse surfaces that keep the phone footer visible (YouTube-style: hide on player/detail). */
 private fun Destination.showsPhoneBottomNav(): Boolean =
@@ -190,6 +210,7 @@ fun AuroraTvRoot(
   var selectedMovie by remember { mutableStateOf<TmdbMovie?>(null) }
   var selectedPerson by remember { mutableStateOf<PersonSelection?>(null) }
   var selectedShow by remember { mutableStateOf<TmdbShow?>(null) }
+  var catalogDetailBackStack by remember { mutableStateOf<List<CatalogDetailRoute>>(emptyList()) }
   var selectedDrama by remember { mutableStateOf<ShortDrama?>(null) }
   // Held while the browser resolves a stream, then attached to the request the player receives.
   var pendingContext by remember { mutableStateOf(initialResume) }
@@ -402,17 +423,60 @@ fun AuroraTvRoot(
     }
   }
 
+  fun currentCatalogDetailRoute(): CatalogDetailRoute? =
+    when (destination) {
+      Destination.MOVIE_DETAIL -> selectedMovie?.let(CatalogDetailRoute::Movie)
+      Destination.PERSON_DETAIL -> selectedPerson?.let(CatalogDetailRoute::Person)
+      Destination.SHOW_DETAIL -> selectedShow?.let(CatalogDetailRoute::Show)
+      else -> null
+    }
+
+  fun showCatalogDetail(route: CatalogDetailRoute) {
+    when (route) {
+      is CatalogDetailRoute.Movie -> {
+        selectedMovie = route.movie
+        destination = Destination.MOVIE_DETAIL
+      }
+      is CatalogDetailRoute.Person -> {
+        selectedPerson = route.person
+        destination = Destination.PERSON_DETAIL
+      }
+      is CatalogDetailRoute.Show -> {
+        selectedShow = route.show
+        destination = Destination.SHOW_DETAIL
+      }
+    }
+  }
+
+  fun openCatalogDetail(route: CatalogDetailRoute, fromCatalog: Boolean = false) {
+    catalogDetailBackStack =
+      detailHistoryAfterOpen(
+        history = catalogDetailBackStack,
+        current = currentCatalogDetailRoute(),
+        fromCatalog = fromCatalog,
+      )
+    showCatalogDetail(route)
+  }
+
+  fun returnFromCatalogDetail() {
+    val (remaining, previous) = detailHistoryAfterBack(catalogDetailBackStack)
+    catalogDetailBackStack = remaining
+    if (previous == null) {
+      destination = Destination.CATALOG
+    } else {
+      showCatalogDetail(previous)
+    }
+  }
+
   @Composable
   fun Catalog() {
     CatalogScreen(
       onPlay = { context -> openForPlayback(context, Destination.CATALOG) },
       onOpenMovie = { movie ->
-        selectedMovie = movie
-        destination = Destination.MOVIE_DETAIL
+        openCatalogDetail(CatalogDetailRoute.Movie(movie), fromCatalog = true)
       },
       onOpenShow = { show ->
-        selectedShow = show
-        destination = Destination.SHOW_DETAIL
+        openCatalogDetail(CatalogDetailRoute.Show(show), fromCatalog = true)
       },
       onOpenWeb = { destination = Destination.WEB_HOME },
       onOpenShortDramas = { destination = Destination.SHORT_DRAMAS },
@@ -431,6 +495,7 @@ fun AuroraTvRoot(
         if (isTelevision) null else ({ destination = Destination.REMOTE }),
       // Phone footer owns destination jumps; top-bar chips stay on leanback.
       showTopDestinationActions = isTelevision,
+      isActive = destination == Destination.CATALOG,
       requestSearchFocus = requestSectionSearch && destination == Destination.CATALOG,
       onSearchFocusHandled = { requestSectionSearch = false },
     )
@@ -530,17 +595,20 @@ fun AuroraTvRoot(
                 MovieDetailScreen(
                   movie = movie,
                   onPlay = { context -> openForPlayback(context, Destination.MOVIE_DETAIL) },
-                  onOpenMovie = { nextMovie -> selectedMovie = nextMovie },
+                  onOpenMovie = { nextMovie ->
+                    openCatalogDetail(CatalogDetailRoute.Movie(nextMovie))
+                  },
                   onOpenPerson = { id, name, isDirector ->
-                    selectedPerson = PersonSelection(id, name, isDirector)
-                    destination = Destination.PERSON_DETAIL
+                    openCatalogDetail(
+                      CatalogDetailRoute.Person(PersonSelection(id, name, isDirector))
+                    )
                   },
                   onConsidering = { considered ->
                     if (streamCache.find(considered.pageUrl) == null && prefetchTarget?.pageUrl != considered.pageUrl) {
                       prefetchTarget = considered
                     }
                   },
-                  onBack = { destination = Destination.CATALOG },
+                  onBack = ::returnFromCatalogDetail,
                 )
               } else {
                 Catalog()
@@ -554,10 +622,9 @@ fun AuroraTvRoot(
                   personName = person.name,
                   isDirector = person.isDirector,
                   onOpenMovie = { movie ->
-                    selectedMovie = movie
-                    destination = Destination.MOVIE_DETAIL
+                    openCatalogDetail(CatalogDetailRoute.Movie(movie))
                   },
-                  onBack = { destination = Destination.MOVIE_DETAIL },
+                  onBack = ::returnFromCatalogDetail,
                 )
               } else {
                 Catalog()
@@ -574,7 +641,7 @@ fun AuroraTvRoot(
                       prefetchTarget = considered
                     }
                   },
-                  onBack = { destination = Destination.CATALOG },
+                  onBack = ::returnFromCatalogDetail,
                 )
               } else {
                 Catalog()

@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
@@ -154,6 +155,47 @@ private const val RAIL_CONCURRENCY = 4
 private const val RAIL_FOCUS_ATTEMPTS = 12
 private const val RAIL_FOCUS_RETRY_MS = 100L
 
+/** Reclaims the last focused catalog card after a covering detail page is dismissed. */
+@Composable
+internal fun RestoreCatalogFocusEffect(
+  isActive: Boolean,
+  focusRequester: FocusRequester?,
+  settleDelayMs: Long = 120L,
+  retryAttempts: Int = RAIL_FOCUS_ATTEMPTS,
+  retryDelayMs: Long = RAIL_FOCUS_RETRY_MS,
+) {
+  var wasActive by remember { mutableStateOf(isActive) }
+  LaunchedEffect(isActive) {
+    val restoring = isActive && !wasActive
+    wasActive = isActive
+    if (!restoring) return@LaunchedEffect
+    val requester = focusRequester ?: return@LaunchedEffect
+    if (settleDelayMs > 0) delay(settleDelayMs)
+    repeat(retryAttempts) { attempt ->
+      withFrameNanos {}
+      if (runCatching { requester.requestFocus() }.getOrDefault(false)) return@LaunchedEffect
+      if (attempt > 0 && retryDelayMs > 0) delay(retryDelayMs)
+    }
+  }
+}
+
+/** Compact shortcuts shown between the featured title and the catalog rails. */
+private val CATALOG_SHORTCUTS =
+  listOf("All", "Top Rated", "Action", "Comedy", "Drama", "Sci-Fi", "Animation", "Horror")
+
+/** The rail opened by a home shortcut; `null` means the top of the home screen. */
+internal fun catalogShortcutCategoryId(label: String): String? =
+  when (label) {
+    "Top Rated" -> "acclaimed"
+    "Action" -> "genre-action"
+    "Comedy" -> "genre-comedy"
+    "Drama" -> "genre-drama"
+    "Sci-Fi" -> "genre-scifi"
+    "Animation" -> "genre-animation"
+    "Horror" -> "genre-horror"
+    else -> null
+  }
+
 /** One rail on the page: its listing, and how much of it is known so far. */
 private data class RailSlot(val category: CatalogCategory, val size: Int, val pending: Boolean)
 
@@ -198,6 +240,8 @@ internal fun CatalogScreen(
    * expands on demand from the header icon or footer Search.
    */
   showTopDestinationActions: Boolean = true,
+  /** False while a detail page is covering the still-composed catalog. */
+  isActive: Boolean = true,
   /** When true, expand and focus the catalog search field (phone bottom-nav Search). */
   requestSearchFocus: Boolean = false,
   onSearchFocusHandled: () -> Unit = {},
@@ -221,8 +265,11 @@ internal fun CatalogScreen(
   val firstTabFocusRequester = remember { FocusRequester() }
   val searchFieldFocusRequester = remember { FocusRequester() }
   val searchButtonFocusRequester = remember { FocusRequester() }
+  val heroFocusRequester = remember { FocusRequester() }
+  val filterFocusRequester = remember { FocusRequester() }
   val continueRowFocusRequester = remember { FocusRequester() }
   val gridFocusRequester = remember { FocusRequester() }
+  var lastContentFocusRequester by remember { mutableStateOf<FocusRequester?>(null) }
   // One per listing, so a press of down lands on the next rail rather than wherever focus search
   // decides — the same reason every other list on this screen names its own neighbours.
   // Worked out once: a decade rail depends on the current year, and recomposing must not shuffle
@@ -265,9 +312,7 @@ internal fun CatalogScreen(
   var loading by remember { mutableStateOf(true) }
   var errorMessage by remember { mutableStateOf<String?>(null) }
   var confirmingHistoryClear by rememberSaveable { mutableStateOf(false) }
-  var showQuickResume by rememberSaveable { mutableStateOf(true) }
   var selectedGenreFilter by rememberSaveable { mutableStateOf("All") }
-  val catalogFilters = listOf("All", "Top Rated", "Action", "Comedy", "Drama", "Sci-Fi", "Animation", "Horror")
   val spotlightMovie = remember(recommendedMovies, movieSections) {
     recommendedMovies.firstOrNull() ?: movieSections.values.flatten().firstOrNull()
   }
@@ -473,6 +518,27 @@ internal fun CatalogScreen(
 
   BackHandler(enabled = phoneChrome && searchExpanded) { collapseSearchUi() }
 
+  // A television has no touch event to establish its first focus target. Start on the active tab
+  // once, while preserving the focused rail when this saveable catalog returns from a detail page.
+  LaunchedEffect(showTopDestinationActions) {
+    if (!showTopDestinationActions) return@LaunchedEffect
+    // Let the activity regain window focus before accepting a successful request; during a cold
+    // launch the node can attach one frame before Android finishes restoring the task.
+    delay(300)
+    repeat(RAIL_FOCUS_ATTEMPTS) { attempt ->
+      withFrameNanos {}
+      if (runCatching { firstTabFocusRequester.requestFocus() }.getOrDefault(false)) {
+        return@LaunchedEffect
+      }
+      if (attempt > 0) delay(RAIL_FOCUS_RETRY_MS)
+    }
+  }
+
+  // Detail pages temporarily disable focus on the catalog without destroying it. When the page is
+  // uncovered, explicitly return focus to the exact card/button that opened it; relying on spatial
+  // focus search otherwise starts again at the selected top tab.
+  RestoreCatalogFocusEffect(isActive, lastContentFocusRequester)
+
   // Lent to a paired phone so a search typed on a real keyboard lands in the box rather than
   // arriving as a stream of key presses aimed at whatever happens to be focused. The television's
   // own keyboard stays down: the typing is happening in someone's hand, not on the screen.
@@ -672,11 +738,20 @@ internal fun CatalogScreen(
   val showRecommendedRail = showRails && recommended > 0
   val actorItems = if (tab == CatalogTab.MOVIES) actorMovies.size else actorShows.size
   val showActorRail = showRails && featuredActor != null && actorItems > 0
+  val showHero =
+    showRails &&
+      when (tab) {
+        CatalogTab.MOVIES -> spotlightMovie != null
+        CatalogTab.SHOWS -> spotlightShow != null
+        CatalogTab.MY_LIST -> false
+      }
   // Rails past the fold are not composed, and neither a FocusRequester nor focus search can reach a
   // node that does not exist yet. So the move is driven: scroll the neighbour into view first, then
   // hand it the focus. Hoisted because the personalized rail moves into the fixed ones too.
   val leadingRailItems =
-    (if (showContinueRow) 1 else 0) +
+    (if (showHero) 1 else 0) +
+      1 + // Category shortcuts are always present while browsing rails.
+      (if (showContinueRow) 1 else 0) +
       (if (showRecommendedRail) 1 else 0) +
       (if (showActorRail) 1 else 0)
   // One move at a time. Holding the pad down used to start a fresh animation per press, each
@@ -698,7 +773,9 @@ internal fun CatalogScreen(
         // edge of the loaded rails: focus could not move down, and nothing below would load until
         // it did.
         repeat(RAIL_FOCUS_ATTEMPTS) { attempt ->
-          if (runCatching { railFocusRequesters[target].requestFocus() }.isSuccess) return@launch
+          if (
+            runCatching { railFocusRequesters[target].requestFocus() }.getOrDefault(false)
+          ) return@launch
           withFrameNanos {}
           if (attempt > 0) delay(RAIL_FOCUS_RETRY_MS)
         }
@@ -736,20 +813,80 @@ internal fun CatalogScreen(
   // unattached, and the pad stopped on Search.
   val firstBodyFocusRequester =
     when {
+      showHero -> heroFocusRequester
+      showRails -> filterFocusRequester
+      else -> gridFocusRequester
+    }
+  val focusAboveFilters =
+    when {
+      showHero -> heroFocusRequester
+      else -> searchButtonFocusRequester
+    }
+  val focusBelowFilters =
+    when {
       showContinueRow -> continueRowFocusRequester
       showRecommendedRail -> recommendedFocusRequester
       showActorRail -> actorFocusRequester
-      showRails -> firstRailFocusRequester
-      else -> gridFocusRequester
+      else -> firstRailFocusRequester
     }
+  val filterItemIndex = if (showHero) 1 else 0
+  val continueItemIndex = filterItemIndex + 1
+  val recommendedItemIndex = continueItemIndex + if (showContinueRow) 1 else 0
+  val actorItemIndex = recommendedItemIndex + if (showRecommendedRail) 1 else 0
+  val focusHomeItem: (Int, FocusRequester) -> Unit = { itemIndex, requester ->
+    railMove.value?.cancel()
+    railMove.value =
+      scope.launch {
+        val layoutInfo = railState.layoutInfo
+        val placed = layoutInfo.visibleItemsInfo.firstOrNull { it.index == itemIndex }
+        val fullyVisible =
+          placed != null &&
+            placed.offset >= layoutInfo.viewportStartOffset &&
+            placed.offset + placed.size <= layoutInfo.viewportEndOffset
+        if (!fullyVisible) railState.animateScrollToItem(itemIndex)
+        repeat(RAIL_FOCUS_ATTEMPTS) { attempt ->
+          if (runCatching { requester.requestFocus() }.getOrDefault(false)) return@launch
+          withFrameNanos {}
+          if (attempt > 0) delay(RAIL_FOCUS_RETRY_MS)
+        }
+      }
+    Unit
+  }
+  val moveAboveFilters: () -> Unit = {
+    when {
+      showHero -> focusHomeItem(0, heroFocusRequester)
+      else -> searchButtonFocusRequester.requestFocus()
+    }
+    Unit
+  }
+  val moveBelowFilters: () -> Unit = {
+    when {
+      showContinueRow -> focusHomeItem(continueItemIndex, continueRowFocusRequester)
+      showRecommendedRail -> focusHomeItem(recommendedItemIndex, recommendedFocusRequester)
+      showActorRail -> focusHomeItem(actorItemIndex, actorFocusRequester)
+      else -> moveToRail(firstLoadedRail)
+    }
+    Unit
+  }
+  val activateCatalogShortcut: (String) -> Unit = { label ->
+    selectedGenreFilter = label
+    val categoryId = catalogShortcutCategoryId(label)
+    if (categoryId == null) {
+      focusHomeItem(0, firstBodyFocusRequester)
+    } else {
+      sections.indexOfFirst { it.category.id == categoryId }
+        .takeIf { it >= 0 }
+        ?.let(moveToRail)
+    }
+  }
 
   BoxWithConstraints(
     modifier =
       modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures { dismissKeyboard() } }
         .background(
           Brush.radialGradient(
-            colors = listOf(Color(0xFF17345C), DeepSpace),
-            radius = 1_300f,
+            colors = listOf(Color(0xFF143843), Color(0xFF091421), Color(0xFF03070E)),
+            radius = 1_450f,
             center = androidx.compose.ui.geometry.Offset(1_300f, 180f),
           )
         )
@@ -757,6 +894,7 @@ internal fun CatalogScreen(
     val narrow = maxWidth < 600.dp
     val compact = maxHeight < 600.dp
     val phoneDense = phoneChrome && narrow
+    val labelDestinationActions = maxWidth >= 1_180.dp
     // Phone: search stays collapsed until the header icon or footer Search opens it. TV keeps
     // the leanback field always available for the remote.
     val showSearchRow = browsing && (!phoneChrome || searchExpanded || searchActive)
@@ -787,6 +925,7 @@ internal fun CatalogScreen(
         narrow = narrow,
         compact = compact || phoneDense,
         phoneDense = phoneDense,
+        labelDestinationActions = labelDestinationActions,
         showDestinationActions = showTopDestinationActions,
         onOpenWeb = { dismissKeyboard(); onOpenWeb() },
         onOpenShortDramas = { dismissKeyboard(); onOpenShortDramas() },
@@ -866,6 +1005,11 @@ internal fun CatalogScreen(
                 tabFocusRequester = firstTabFocusRequester,
                 bodyFocusRequester =
                   firstBodyFocusRequester.takeIf { showRails || showContinueRow || itemCount > 0 },
+                onMoveDown = {
+                  if (showRails) focusHomeItem(0, firstBodyFocusRequester)
+                  else runCatching { firstBodyFocusRequester.requestFocus() }
+                  Unit
+                },
               )
             }
           },
@@ -918,17 +1062,6 @@ internal fun CatalogScreen(
                 }
               ),
           ) {
-            if (showQuickResume && continueWatching.isNotEmpty()) {
-              item(key = "quick_resume_banner") {
-                QuickResumeBanner(
-                  entry = continueWatching.first(),
-                  onResume = { onPlay(continueWatching.first().toPlaybackContext()) },
-                  onDismiss = { showQuickResume = false },
-                  edge = edge,
-                )
-              }
-            }
-
             if (tab == CatalogTab.MOVIES && spotlightMovie != null) {
               item(key = "hero_spotlight_movie") {
                 HeroSpotlightBanner(
@@ -937,11 +1070,13 @@ internal fun CatalogScreen(
                   overview = spotlightMovie.overview,
                   rating = spotlightMovie.voteAverage,
                   posterUrl = spotlightMovie.posterUrl,
+                  backdropUrl = spotlightMovie.backdropUrl,
                   onPlay = { onPlay(spotlightMovie.toPlaybackContext()) },
                   onOpenDetails = { onOpenMovie(spotlightMovie) },
-                  firstCardFocusRequester = firstBodyFocusRequester,
+                  firstCardFocusRequester = heroFocusRequester,
                   up = searchButtonFocusRequester,
-                  down = if (showContinueRow) continueRowFocusRequester else recommendedFocusRequester,
+                  down = filterFocusRequester,
+                  onFocused = { lastContentFocusRequester = it },
                   edge = edge,
                   narrow = narrow,
                 )
@@ -954,11 +1089,13 @@ internal fun CatalogScreen(
                   overview = spotlightShow.overview,
                   rating = spotlightShow.voteAverage,
                   posterUrl = spotlightShow.posterUrl,
+                  backdropUrl = spotlightShow.backdropUrl,
                   onPlay = { onOpenShow(spotlightShow) },
                   onOpenDetails = { onOpenShow(spotlightShow) },
-                  firstCardFocusRequester = firstBodyFocusRequester,
+                  firstCardFocusRequester = heroFocusRequester,
                   up = searchButtonFocusRequester,
-                  down = if (showContinueRow) continueRowFocusRequester else recommendedFocusRequester,
+                  down = filterFocusRequester,
+                  onFocused = { lastContentFocusRequester = it },
                   edge = edge,
                   narrow = narrow,
                 )
@@ -967,9 +1104,14 @@ internal fun CatalogScreen(
 
             item(key = "catalog_filters") {
               CatalogFilterRow(
-                filters = catalogFilters,
+                filters = CATALOG_SHORTCUTS,
                 selectedFilter = selectedGenreFilter,
-                onSelectFilter = { selectedGenreFilter = it },
+                onSelectFilter = activateCatalogShortcut,
+                firstFilterFocusRequester = filterFocusRequester,
+                up = focusAboveFilters,
+                down = focusBelowFilters,
+                onMoveUp = moveAboveFilters,
+                onMoveDown = moveBelowFilters,
                 edge = edge,
               )
             }
@@ -981,7 +1123,7 @@ internal fun CatalogScreen(
                   onResume = { entry -> onPlay(entry.toPlaybackContext()) },
                   onClearHistory = { confirmingHistoryClear = true },
                   firstCardFocusRequester = continueRowFocusRequester,
-                  up = searchButtonFocusRequester,
+                  up = filterFocusRequester,
                   down =
                     when {
                       showRecommendedRail -> recommendedFocusRequester
@@ -989,6 +1131,15 @@ internal fun CatalogScreen(
                       else -> firstRailFocusRequester
                     },
                   hasGrid = sections.isNotEmpty() || showRecommendedRail || showActorRail,
+                  onMoveUp = { focusHomeItem(filterItemIndex, filterFocusRequester) },
+                  onMoveDown = {
+                    when {
+                      showRecommendedRail ->
+                        focusHomeItem(recommendedItemIndex, recommendedFocusRequester)
+                      showActorRail -> focusHomeItem(actorItemIndex, actorFocusRequester)
+                      else -> moveToRail(firstLoadedRail)
+                    }
+                  },
                   edge = edge,
                 )
               }
@@ -997,7 +1148,7 @@ internal fun CatalogScreen(
             // Above the fixed listings, because it is the one rail built for this viewer.
             if (showRecommendedRail) {
               item(key = "recommended") {
-                val up = if (showContinueRow) continueRowFocusRequester else searchButtonFocusRequester
+                val up = if (showContinueRow) continueRowFocusRequester else filterFocusRequester
                 if (tab == CatalogTab.MOVIES) {
                   CatalogRail(
                     heading = recommendationHeading(recommendationSeeds),
@@ -1008,8 +1159,17 @@ internal fun CatalogScreen(
                     firstCardFocusRequester = recommendedFocusRequester,
                     up = up,
                     down = null,
-                    onMoveDown = { if (showActorRail) actorFocusRequester.requestFocus() else moveToRail(firstLoadedRail) },
-                    onMoveUp = null,
+                    onMoveDown = {
+                      if (showActorRail) focusHomeItem(actorItemIndex, actorFocusRequester)
+                      else moveToRail(firstLoadedRail)
+                    },
+                    onMoveUp = {
+                      focusHomeItem(
+                        if (showContinueRow) continueItemIndex else filterItemIndex,
+                        up,
+                      )
+                    },
+                    onCardFocused = { lastContentFocusRequester = it },
                   ) { movie, cardModifier ->
                     PosterCard(
                       title = movie.title,
@@ -1033,8 +1193,17 @@ internal fun CatalogScreen(
                     firstCardFocusRequester = recommendedFocusRequester,
                     up = up,
                     down = null,
-                    onMoveDown = { if (showActorRail) actorFocusRequester.requestFocus() else moveToRail(firstLoadedRail) },
-                    onMoveUp = null,
+                    onMoveDown = {
+                      if (showActorRail) focusHomeItem(actorItemIndex, actorFocusRequester)
+                      else moveToRail(firstLoadedRail)
+                    },
+                    onMoveUp = {
+                      focusHomeItem(
+                        if (showContinueRow) continueItemIndex else filterItemIndex,
+                        up,
+                      )
+                    },
+                    onCardFocused = { lastContentFocusRequester = it },
                   ) { show, cardModifier ->
                     PosterCard(
                       title = show.name,
@@ -1056,7 +1225,7 @@ internal fun CatalogScreen(
                   when {
                     showRecommendedRail -> recommendedFocusRequester
                     showContinueRow -> continueRowFocusRequester
-                    else -> searchButtonFocusRequester
+                    else -> filterFocusRequester
                   }
                 val heading = "More with ${featuredActor?.name.orEmpty()}"
                 if (tab == CatalogTab.MOVIES) {
@@ -1070,7 +1239,17 @@ internal fun CatalogScreen(
                     up = up,
                     down = null,
                     onMoveDown = { moveToRail(firstLoadedRail) },
-                    onMoveUp = null,
+                    onMoveUp = {
+                      focusHomeItem(
+                        when {
+                          showRecommendedRail -> recommendedItemIndex
+                          showContinueRow -> continueItemIndex
+                          else -> filterItemIndex
+                        },
+                        up,
+                      )
+                    },
+                    onCardFocused = { lastContentFocusRequester = it },
                   ) { movie, cardModifier ->
                     PosterCard(
                       title = movie.title,
@@ -1095,7 +1274,17 @@ internal fun CatalogScreen(
                     up = up,
                     down = null,
                     onMoveDown = { moveToRail(firstLoadedRail) },
-                    onMoveUp = null,
+                    onMoveUp = {
+                      focusHomeItem(
+                        when {
+                          showRecommendedRail -> recommendedItemIndex
+                          showContinueRow -> continueItemIndex
+                          else -> filterItemIndex
+                        },
+                        up,
+                      )
+                    },
+                    onCardFocused = { lastContentFocusRequester = it },
                   ) { show, cardModifier ->
                     PosterCard(
                       title = show.name,
@@ -1127,7 +1316,7 @@ internal fun CatalogScreen(
                     showActorRail -> actorFocusRequester
                     showRecommendedRail -> recommendedFocusRequester
                     showContinueRow -> continueRowFocusRequester
-                    else -> searchButtonFocusRequester
+                    else -> filterFocusRequester
                   }
                 } else {
                   null
@@ -1161,7 +1350,15 @@ internal fun CatalogScreen(
                     onMoveDown = if (index + 1 < sections.size) { { moveToRail(index + 1) } } else null,
                     // Above the first loaded rail, Up is named via [up] (cast / recommended /
                     // continue / search). Intercepting it here would send the pad at a placeholder.
-                    onMoveUp = if (index > firstLoadedRail) { { moveToRail(index - 1) } } else null,
+                    onMoveUp =
+                      if (index > firstLoadedRail) {
+                        { moveToRail(index - 1) }
+                      } else {
+                        up?.let { requester ->
+                          { focusHomeItem((leadingRailItems - 1).coerceAtLeast(0), requester) }
+                        }
+                      },
+                    onCardFocused = { lastContentFocusRequester = it },
                   ) { movie, cardModifier ->
                     PosterCard(
                       title = movie.title,
@@ -1186,7 +1383,15 @@ internal fun CatalogScreen(
                     up = up,
                     down = down,
                     onMoveDown = if (index + 1 < sections.size) { { moveToRail(index + 1) } } else null,
-                    onMoveUp = if (index > firstLoadedRail) { { moveToRail(index - 1) } } else null,
+                    onMoveUp =
+                      if (index > firstLoadedRail) {
+                        { moveToRail(index - 1) }
+                      } else {
+                        up?.let { requester ->
+                          { focusHomeItem((leadingRailItems - 1).coerceAtLeast(0), requester) }
+                        }
+                      },
+                    onCardFocused = { lastContentFocusRequester = it },
                   ) { show, cardModifier ->
                     PosterCard(
                       title = show.name,
@@ -1259,7 +1464,10 @@ internal fun CatalogScreen(
                     watched = historyStore.find(vidfastMovieUrl(movie.id))?.completed == true,
                     onClick = { onOpenMovie(movie) },
                     onDwell = { onConsidering(movie.toPlaybackContext()) },
-                    modifier = gridEntryModifier(movie.id == movies.firstOrNull()?.id, gridFocusRequester),
+                    modifier =
+                      gridEntryModifier(movie.id == movies.firstOrNull()?.id, gridFocusRequester) {
+                        lastContentFocusRequester = it
+                      },
                   )
                 }
               }
@@ -1275,7 +1483,11 @@ internal fun CatalogScreen(
                     posterUrl = show.posterUrl,
                     actionLabel = "Open ${show.name}",
                     onClick = { onOpenShow(show) },
-                    modifier = gridEntryModifier(movies.isEmpty() && show.id == shows.firstOrNull()?.id, gridFocusRequester),
+                    modifier =
+                      gridEntryModifier(
+                        movies.isEmpty() && show.id == shows.firstOrNull()?.id,
+                        gridFocusRequester,
+                      ) { lastContentFocusRequester = it },
                   )
                 }
               }
@@ -1295,7 +1507,10 @@ internal fun CatalogScreen(
                       watched = historyStore.find(vidfastMovieUrl(movie.id))?.completed == true,
                       onClick = { onOpenMovie(movie) },
                       onDwell = { onConsidering(movie.toPlaybackContext()) },
-                      modifier = gridEntryModifier(movie.id == movies.firstOrNull()?.id, gridFocusRequester),
+                      modifier =
+                        gridEntryModifier(movie.id == movies.firstOrNull()?.id, gridFocusRequester) {
+                          lastContentFocusRequester = it
+                        },
                     )
                   }
                 CatalogTab.SHOWS ->
@@ -1307,7 +1522,10 @@ internal fun CatalogScreen(
                       posterUrl = show.posterUrl,
                       actionLabel = "Open ${show.name}",
                       onClick = { onOpenShow(show) },
-                      modifier = gridEntryModifier(show.id == shows.firstOrNull()?.id, gridFocusRequester),
+                      modifier =
+                        gridEntryModifier(show.id == shows.firstOrNull()?.id, gridFocusRequester) {
+                          lastContentFocusRequester = it
+                        },
                     )
                   }
                 CatalogTab.MY_LIST ->
@@ -1323,7 +1541,9 @@ internal fun CatalogScreen(
                         else onOpenMovie(item.toMovie())
                       },
                       modifier =
-                        gridEntryModifier(item.id == savedItems.firstOrNull()?.id, gridFocusRequester),
+                        gridEntryModifier(item.id == savedItems.firstOrNull()?.id, gridFocusRequester) {
+                          lastContentFocusRequester = it
+                        },
                     )
                   }
               }
@@ -1360,8 +1580,17 @@ internal fun CatalogScreen(
   }
 }
 
-private fun gridEntryModifier(isFirst: Boolean, gridFocusRequester: FocusRequester): Modifier =
-  if (isFirst) Modifier.focusRequester(gridFocusRequester) else Modifier
+@Composable
+private fun gridEntryModifier(
+  isFirst: Boolean,
+  gridFocusRequester: FocusRequester,
+  onFocused: (FocusRequester) -> Unit,
+): Modifier {
+  val ownFocusRequester = remember { FocusRequester() }
+  val itemFocusRequester = if (isFirst) gridFocusRequester else ownFocusRequester
+  return Modifier.focusRequester(itemFocusRequester)
+    .onFocusChanged { if (it.isFocused) onFocused(itemFocusRequester) }
+}
 
 internal fun TmdbMovie.toPlaybackContext(): PlaybackContext =
   PlaybackContext(
@@ -1467,19 +1696,14 @@ private fun SectionHeading(
 }
 
 
-/**
- * Wordmark, tabs, destinations and the search box, gathered into one header surface.
- *
- * Stacking these separately cost four rows of chrome before any artwork; on a 10-foot layout that
- * pushed the catalog itself under the fold. On phone the footer owns destinations, so this surface
- * stays to brand + compact tabs + Remote, with search expanding only when asked.
- */
+/** Wordmark, navigation and search kept deliberately light so artwork starts the page. */
 @Composable
 private fun CatalogTopBar(
   modifier: Modifier = Modifier,
   narrow: Boolean,
   compact: Boolean,
   phoneDense: Boolean = false,
+  labelDestinationActions: Boolean,
   showDestinationActions: Boolean,
   onOpenWeb: () -> Unit,
   onOpenShortDramas: () -> Unit,
@@ -1497,10 +1721,9 @@ private fun CatalogTopBar(
   tabs: @Composable () -> Unit,
   search: (@Composable () -> Unit)?,
 ) {
-  val shape = RoundedCornerShape(if (phoneDense) 16.dp else if (narrow) 20.dp else 24.dp)
   // Labels do not fit beside the wordmark on a phone, and a clipped label helps nobody; the icon
   // carries it there and the spoken label stays on for a screen reader either way.
-  val labelled = !narrow
+  val labelled = !narrow && labelDestinationActions
   val actions: @Composable () -> Unit = {
     Row(
       horizontalArrangement = Arrangement.spacedBy(if (phoneDense) 4.dp else if (labelled) 8.dp else 6.dp),
@@ -1561,18 +1784,12 @@ private fun CatalogTopBar(
   }
   Column(
     modifier =
-      modifier.fillMaxWidth().clip(shape)
-        .background(
-          Brush.horizontalGradient(
-            listOf(NightSurface.copy(alpha = .95f), NightSurface.copy(alpha = .55f))
-          )
-        )
-        .border(1.dp, SoftWhite.copy(alpha = .07f), shape)
+      modifier.fillMaxWidth()
         .padding(
-          horizontal = if (phoneDense) 10.dp else if (narrow) 12.dp else 16.dp,
-          vertical = if (phoneDense) 8.dp else if (compact) 10.dp else 13.dp,
+          horizontal = if (phoneDense) 2.dp else 4.dp,
+          vertical = if (phoneDense) 2.dp else 4.dp,
         ),
-    verticalArrangement = Arrangement.spacedBy(if (phoneDense) 6.dp else if (compact) 9.dp else 12.dp),
+    verticalArrangement = Arrangement.spacedBy(if (phoneDense) 6.dp else if (compact) 8.dp else 10.dp),
   ) {
     if (narrow) {
       Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -1593,7 +1810,11 @@ private fun CatalogTopBar(
         actions()
       }
     }
-    search?.invoke()
+    search?.let { searchContent ->
+      Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+        Box(modifier = Modifier.widthIn(max = 720.dp).fillMaxWidth()) { searchContent() }
+      }
+    }
   }
 }
 
@@ -1646,6 +1867,7 @@ private fun <T> CatalogRail(
   down: FocusRequester?,
   onMoveDown: (() -> Unit)?,
   onMoveUp: (() -> Unit)?,
+  onCardFocused: (FocusRequester) -> Unit = {},
   card: @Composable (T, Modifier) -> Unit,
 ) {
   if (items.isEmpty()) return
@@ -1683,9 +1905,13 @@ private fun <T> CatalogRail(
       horizontalArrangement = Arrangement.spacedBy(if (narrow) 12.dp else 18.dp),
     ) {
       items(items = items, key = key) { item ->
+        val ownFocusRequester = remember { FocusRequester() }
+        val itemFocusRequester =
+          if (key(item) == firstKey) firstCardFocusRequester else ownFocusRequester
         val cardModifier =
           Modifier.width(if (narrow) 132.dp else 158.dp)
-            .let { if (key(item) == firstKey) it.focusRequester(firstCardFocusRequester) else it }
+            .focusRequester(itemFocusRequester)
+            .onFocusChanged { if (it.isFocused) onCardFocused(itemFocusRequester) }
             .focusProperties {
               if (up != null) this.up = up
               if (down != null) this.down = down
@@ -1708,6 +1934,7 @@ private fun CatalogSearchRow(
   searchButtonFocusRequester: FocusRequester,
   tabFocusRequester: FocusRequester,
   bodyFocusRequester: FocusRequester?,
+  onMoveDown: (() -> Unit)? = null,
 ) {
   val fieldModifier =
     Modifier.focusRequester(searchFieldFocusRequester).focusProperties {
@@ -1728,7 +1955,19 @@ private fun CatalogSearchRow(
       down = bodyFocusRequester,
     )
   Row(
-    modifier = Modifier.focusGroup().fillMaxWidth(),
+    modifier =
+      Modifier.focusGroup().fillMaxWidth().onPreviewKeyEvent { event ->
+        if (
+          event.type == KeyEventType.KeyDown &&
+            event.key == Key.DirectionDown &&
+            onMoveDown != null
+        ) {
+          onMoveDown()
+          true
+        } else {
+          false
+        }
+      },
     horizontalArrangement = Arrangement.spacedBy(10.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
