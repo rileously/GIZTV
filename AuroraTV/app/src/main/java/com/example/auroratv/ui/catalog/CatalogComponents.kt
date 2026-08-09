@@ -38,7 +38,11 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -53,6 +57,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -867,6 +872,374 @@ internal fun ContinueWatchingCard(
       }
       entry.resumeLabel?.let {
         Text(it, color = AuroraMint, fontWeight = FontWeight.Bold, fontSize = 10.sp, maxLines = 1)
+      }
+    }
+  }
+}
+
+/**
+ * Top full-bleed Netflix/Disney+ style Hero Spotlight Banner for featured movies or shows.
+ */
+@Composable
+internal fun HeroSpotlightBanner(
+  title: String,
+  subtitle: String?,
+  overview: String?,
+  rating: Double?,
+  posterUrl: String?,
+  onPlay: () -> Unit,
+  onOpenDetails: () -> Unit,
+  firstCardFocusRequester: FocusRequester? = null,
+  up: FocusRequester? = null,
+  down: FocusRequester? = null,
+  edge: Dp = 42.dp,
+  narrow: Boolean = false,
+  modifier: Modifier = Modifier,
+) {
+  var focused by remember { mutableStateOf(false) }
+  var playButtonFocused by remember { mutableStateOf(false) }
+  var detailsButtonFocused by remember { mutableStateOf(false) }
+
+  Box(
+    modifier =
+      modifier
+        .padding(horizontal = edge, vertical = 8.dp)
+        .fillMaxWidth()
+        .height(if (narrow) 200.dp else 250.dp)
+        .clip(RoundedCornerShape(20.dp))
+        .background(
+          Brush.horizontalGradient(
+            colors = listOf(Color(0xFF0F1A2D), Color(0xFF14243B), Color(0xFF1E3A5F))
+          )
+        )
+        .border(
+          width = if (focused) 2.dp else 1.dp,
+          brush = if (focused) SolidColor(AuroraMint) else SolidColor(SoftWhite.copy(alpha = 0.15f)),
+          shape = RoundedCornerShape(20.dp),
+        ),
+  ) {
+    Row(modifier = Modifier.fillMaxSize()) {
+      Column(
+        modifier =
+          Modifier.weight(1f)
+            .fillMaxHeight()
+            .padding(horizontal = if (narrow) 16.dp else 24.dp, vertical = if (narrow) 14.dp else 20.dp),
+        verticalArrangement = Arrangement.SpaceBetween,
+      ) {
+        Column {
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+              modifier =
+                Modifier
+                  .clip(RoundedCornerShape(6.dp))
+                  .background(AuroraMint.copy(alpha = 0.18f))
+                  .border(1.dp, AuroraMint.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
+                  .padding(horizontal = 8.dp, vertical = 2.dp),
+            ) {
+              Text(
+                "FEATURED SPOTLIGHT",
+                color = AuroraMint,
+                fontWeight = FontWeight.Black,
+                fontSize = 10.sp,
+                letterSpacing = 1.4.sp,
+              )
+            }
+            if (rating != null && rating > 0) {
+              Spacer(modifier = Modifier.width(10.dp))
+              Icon(
+                Icons.Filled.Star,
+                contentDescription = null,
+                tint = Color(0xFFFFC107),
+                modifier = Modifier.size(14.dp),
+              )
+              Spacer(modifier = Modifier.width(4.dp))
+              Text(
+                String.format(Locale.US, "%.1f", rating),
+                color = SoftWhite,
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+              )
+            }
+            if (!subtitle.isNullOrBlank()) {
+              Spacer(modifier = Modifier.width(10.dp))
+              Text(
+                subtitle,
+                color = MutedBlue,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+              )
+            }
+          }
+
+          Spacer(modifier = Modifier.height(8.dp))
+          Text(
+            title,
+            color = SoftWhite,
+            fontWeight = FontWeight.Black,
+            fontSize = if (narrow) 20.sp else 26.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+
+          if (!overview.isNullOrBlank()) {
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+              overview,
+              color = SoftWhite.copy(alpha = 0.8f),
+              fontSize = 12.sp,
+              maxLines = if (narrow) 2 else 3,
+              overflow = TextOverflow.Ellipsis,
+              lineHeight = 16.sp,
+            )
+          }
+        }
+
+        Row(
+          horizontalArrangement = Arrangement.spacedBy(10.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          val playModifier =
+            firstCardFocusRequester?.let { Modifier.focusRequester(it) } ?: Modifier
+          val focusControl =
+            Modifier.focusProperties {
+              if (up != null) this.up = up
+              if (down != null) this.down = down
+            }
+
+          Row(
+            modifier =
+              playModifier
+                .then(focusControl)
+                .onFocusChanged { playButtonFocused = it.isFocused; if (it.isFocused) focused = true }
+                .clip(RoundedCornerShape(12.dp))
+                .background(if (playButtonFocused) AuroraMint else AuroraMint.copy(alpha = 0.88f))
+                .clickable { onPlay() }
+                .padding(horizontal = 16.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Icon(
+              Icons.Filled.PlayArrow,
+              contentDescription = null,
+              tint = Color.Black,
+              modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+              "Play Now",
+              color = Color.Black,
+              fontWeight = FontWeight.Black,
+              fontSize = 13.sp,
+            )
+          }
+
+          Row(
+            modifier =
+              focusControl
+                .onFocusChanged { detailsButtonFocused = it.isFocused; if (it.isFocused) focused = true }
+                .clip(RoundedCornerShape(12.dp))
+                .background(if (detailsButtonFocused) SoftWhite.copy(alpha = 0.25f) else NightSurface.copy(alpha = 0.7f))
+                .border(1.dp, SoftWhite.copy(alpha = 0.25f), RoundedCornerShape(12.dp))
+                .clickable { onOpenDetails() }
+                .padding(horizontal = 14.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Icon(
+              Icons.Filled.Info,
+              contentDescription = null,
+              tint = SoftWhite,
+              modifier = Modifier.size(16.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+              "More Info",
+              color = SoftWhite,
+              fontWeight = FontWeight.Bold,
+              fontSize = 13.sp,
+            )
+          }
+        }
+      }
+
+      if (!posterUrl.isNullOrBlank()) {
+        Box(
+          modifier =
+            Modifier
+              .fillMaxHeight()
+              .width(if (narrow) 110.dp else 150.dp)
+              .padding(12.dp)
+              .clip(RoundedCornerShape(14.dp)),
+        ) {
+          TmdbArtwork(
+            url = posterUrl,
+            contentDescription = title,
+            modifier = Modifier.fillMaxSize(),
+          )
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Filter bar for catalog rails (All, Top Rated, Action, Comedy, Drama, Sci-Fi, etc.).
+ */
+@Composable
+internal fun CatalogFilterRow(
+  filters: List<String>,
+  selectedFilter: String,
+  onSelectFilter: (String) -> Unit,
+  edge: Dp = 42.dp,
+  modifier: Modifier = Modifier,
+) {
+  val filterListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+  Row(
+    modifier = modifier.fillMaxWidth(),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    LazyRow(
+      state = filterListState,
+      modifier = Modifier.fillMaxWidth().focusGroup(),
+      contentPadding = PaddingValues(horizontal = edge),
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      items(items = filters, key = { it }) { filter ->
+        val selected = filter == selectedFilter
+        var focused by remember { mutableStateOf(false) }
+        val scale by animateFloatAsState(if (focused) 1.06f else 1f, label = "filter chip scale")
+        Box(
+          modifier =
+            Modifier
+              .graphicsLayer { scaleX = scale; scaleY = scale }
+              .onFocusChanged { focused = it.isFocused }
+              .clip(RoundedCornerShape(20.dp))
+              .background(
+                if (selected) AuroraMint else if (focused) SoftWhite.copy(alpha = 0.22f) else NightSurface.copy(alpha = 0.65f)
+              )
+              .border(
+                width = if (focused) 1.5.dp else 1.dp,
+                color = if (selected) AuroraMint else if (focused) SoftWhite.copy(alpha = 0.4f) else SoftWhite.copy(alpha = 0.12f),
+                shape = RoundedCornerShape(20.dp),
+              )
+              .clickable { onSelectFilter(filter) }
+              .padding(horizontal = 14.dp, vertical = 7.dp),
+        ) {
+          Text(
+            text = filter,
+            color = if (selected) Color.Black else SoftWhite,
+            fontWeight = if (selected || focused) FontWeight.Black else FontWeight.Medium,
+            fontSize = 12.sp,
+          )
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Prominent Quick Resume floating action card for re-opening app to last watched movie/show.
+ */
+@Composable
+internal fun QuickResumeBanner(
+  entry: WatchHistoryEntry,
+  onResume: () -> Unit,
+  onDismiss: () -> Unit,
+  edge: Dp = 42.dp,
+  modifier: Modifier = Modifier,
+) {
+  val progressFraction =
+    if (entry.durationMs > 0L) (entry.positionMs.toFloat() / entry.durationMs.toFloat()).coerceIn(0f, 1f)
+    else 0.5f
+
+  var focused by remember { mutableStateOf(false) }
+  val scale by animateFloatAsState(if (focused) 1.02f else 1f, label = "quick resume scale")
+
+  Box(
+    modifier =
+      modifier
+        .padding(horizontal = edge, vertical = 6.dp)
+        .fillMaxWidth()
+        .graphicsLayer { scaleX = scale; scaleY = scale }
+        .onFocusChanged { focused = it.isFocused }
+        .clip(RoundedCornerShape(16.dp))
+        .background(
+          Brush.horizontalGradient(
+            colors = listOf(Color(0xFF132A3B), Color(0xFF1E3A52))
+          )
+        )
+        .border(
+          width = if (focused) 2.dp else 1.dp,
+          color = if (focused) AuroraMint else AuroraMint.copy(alpha = 0.35f),
+          shape = RoundedCornerShape(16.dp),
+        )
+        .clickable { onResume() }
+        .padding(horizontal = 14.dp, vertical = 10.dp),
+  ) {
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+      Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+        Box(
+          modifier =
+            Modifier
+              .size(36.dp)
+              .clip(CircleShape)
+              .background(AuroraMint),
+          contentAlignment = Alignment.Center,
+        ) {
+          Icon(
+            Icons.Filled.PlayArrow,
+            contentDescription = null,
+            tint = Color.Black,
+            modifier = Modifier.size(20.dp),
+          )
+        }
+        Spacer(modifier = Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+              "RESUME WATCHING",
+              color = AuroraMint,
+              fontWeight = FontWeight.Black,
+              fontSize = 10.sp,
+              letterSpacing = 1.2.sp,
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+              "${(progressFraction * 100).toInt()}%",
+              color = SoftWhite.copy(alpha = 0.7f),
+              fontSize = 10.sp,
+              fontWeight = FontWeight.Bold,
+            )
+          }
+          Text(
+            entry.title,
+            color = SoftWhite,
+            fontWeight = FontWeight.Bold,
+            fontSize = 13.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+        }
+      }
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+          modifier =
+            Modifier
+              .size(28.dp)
+              .clip(CircleShape)
+              .background(NightSurface.copy(alpha = 0.6f))
+              .clickable { onDismiss() },
+          contentAlignment = Alignment.Center,
+        ) {
+          Icon(
+            Icons.Filled.Close,
+            contentDescription = "Dismiss quick resume",
+            tint = MutedBlue,
+            modifier = Modifier.size(16.dp),
+          )
+        }
       }
     }
   }

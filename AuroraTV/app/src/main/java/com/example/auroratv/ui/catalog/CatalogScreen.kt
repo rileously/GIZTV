@@ -265,6 +265,15 @@ internal fun CatalogScreen(
   var loading by remember { mutableStateOf(true) }
   var errorMessage by remember { mutableStateOf<String?>(null) }
   var confirmingHistoryClear by rememberSaveable { mutableStateOf(false) }
+  var showQuickResume by rememberSaveable { mutableStateOf(true) }
+  var selectedGenreFilter by rememberSaveable { mutableStateOf("All") }
+  val catalogFilters = listOf("All", "Top Rated", "Action", "Comedy", "Drama", "Sci-Fi", "Animation", "Horror")
+  val spotlightMovie = remember(recommendedMovies, movieSections) {
+    recommendedMovies.firstOrNull() ?: movieSections.values.flatten().firstOrNull()
+  }
+  val spotlightShow = remember(recommendedShows, showSections) {
+    recommendedShows.firstOrNull() ?: showSections.values.flatten().firstOrNull()
+  }
   /** How far down the listings have been asked for; grows as the viewer scrolls towards them. */
   var railsRequested by rememberSaveable { mutableStateOf(EAGER_RAILS) }
   /**
@@ -909,6 +918,62 @@ internal fun CatalogScreen(
                 }
               ),
           ) {
+            if (showQuickResume && continueWatching.isNotEmpty()) {
+              item(key = "quick_resume_banner") {
+                QuickResumeBanner(
+                  entry = continueWatching.first(),
+                  onResume = { onPlay(continueWatching.first().toPlaybackContext()) },
+                  onDismiss = { showQuickResume = false },
+                  edge = edge,
+                )
+              }
+            }
+
+            if (tab == CatalogTab.MOVIES && spotlightMovie != null) {
+              item(key = "hero_spotlight_movie") {
+                HeroSpotlightBanner(
+                  title = spotlightMovie.title,
+                  subtitle = spotlightMovie.year ?: "Movie",
+                  overview = spotlightMovie.overview,
+                  rating = spotlightMovie.voteAverage,
+                  posterUrl = spotlightMovie.posterUrl,
+                  onPlay = { onPlay(spotlightMovie.toPlaybackContext()) },
+                  onOpenDetails = { onOpenMovie(spotlightMovie) },
+                  firstCardFocusRequester = firstBodyFocusRequester,
+                  up = searchButtonFocusRequester,
+                  down = if (showContinueRow) continueRowFocusRequester else recommendedFocusRequester,
+                  edge = edge,
+                  narrow = narrow,
+                )
+              }
+            } else if (tab == CatalogTab.SHOWS && spotlightShow != null) {
+              item(key = "hero_spotlight_show") {
+                HeroSpotlightBanner(
+                  title = spotlightShow.name,
+                  subtitle = spotlightShow.year ?: "TV Series",
+                  overview = spotlightShow.overview,
+                  rating = spotlightShow.voteAverage,
+                  posterUrl = spotlightShow.posterUrl,
+                  onPlay = { onOpenShow(spotlightShow) },
+                  onOpenDetails = { onOpenShow(spotlightShow) },
+                  firstCardFocusRequester = firstBodyFocusRequester,
+                  up = searchButtonFocusRequester,
+                  down = if (showContinueRow) continueRowFocusRequester else recommendedFocusRequester,
+                  edge = edge,
+                  narrow = narrow,
+                )
+              }
+            }
+
+            item(key = "catalog_filters") {
+              CatalogFilterRow(
+                filters = catalogFilters,
+                selectedFilter = selectedGenreFilter,
+                onSelectFilter = { selectedGenreFilter = it },
+                edge = edge,
+              )
+            }
+
             if (showContinueRow) {
               item {
                 ContinueWatchingSection(
