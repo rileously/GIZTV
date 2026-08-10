@@ -252,7 +252,7 @@ class HlsPlaybackTest {
     val instrumentation = InstrumentationRegistry.getInstrumentation()
 
     instrumentation.runOnMainSync {
-      val themedContext = ContextThemeWrapper(instrumentation.targetContext, R.style.Theme_GIZTV)
+      val themedContext = ContextThemeWrapper(instrumentation.targetContext, R.style.Theme_GizTv)
       MediaRouteButton(themedContext)
     }
   }

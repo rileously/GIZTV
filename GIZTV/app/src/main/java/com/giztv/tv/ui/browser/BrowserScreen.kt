@@ -92,6 +92,7 @@ import com.giztv.tv.BuildConfig
 import com.giztv.tv.data.PlaybackContext
 import com.giztv.tv.data.CachedSubtitle
 import com.giztv.tv.data.StreamCacheStore
+import com.giztv.tv.data.PlaybackFailureStore
 import com.giztv.tv.data.StreamResolutionStore
 import com.giztv.tv.data.streamResolutionTimeoutMs
 import com.giztv.tv.theme.GizBlue
@@ -313,6 +314,7 @@ internal fun BrowserScreen(
   var preparationFailed by remember { mutableStateOf(false) }
   var preparationAttempt by remember { mutableIntStateOf(0) }
   val resolutionStore = remember(context) { StreamResolutionStore(context) }
+  val failureStore = remember(context) { PlaybackFailureStore(context) }
   val streamCacheStore = remember(context) { StreamCacheStore(context) }
   val bookmarkStore = remember(context) { BookmarkStore(context) }
   // Read once and kept in hand, so the toolbar star and the panel agree without touching disk on
@@ -343,6 +345,9 @@ internal fun BrowserScreen(
       webView?.reloadIgnoringCache(initialUrl)
     } else {
       preparationFailed = true
+      // Every retry is spent and the page produced nothing, so a listing offering this title is
+      // offering something that does not play. Remembered so it can stop being offered.
+      playback?.pageUrl?.let(failureStore::record)
     }
   }
 
@@ -455,6 +460,9 @@ internal fun BrowserScreen(
                       pageUrl = it.pageUrl,
                       elapsedMs = SystemClock.elapsedRealtime() - attemptStartedAtMs,
                     )
+                    // Whatever was wrong here is over, so a title hidden for failing earlier is
+                    // offered again rather than being written off for good.
+                    failureStore.clear(it.pageUrl)
                     // Which site answered, so the next title is looked for there first.
                     providerIndexOf(stream.sourcePageUrl)?.let(resolutionStore::recordProviderIndex)
                     // And where it was, so the next attempt need not be made at all.

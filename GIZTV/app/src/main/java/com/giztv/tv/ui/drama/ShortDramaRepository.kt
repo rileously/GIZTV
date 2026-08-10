@@ -34,6 +34,10 @@ internal data class ShortDrama(
    * A genre reads best and the cast next, but the listing carries neither — only the trending feed
    * does — so the run length stands in, which is the thing a viewer weighs up anyway.
    */
+  /** The address opening this drama uses, and so the identity a recorded failure is stored under. */
+  val playablePageUrl: String
+    get() = chartDramaEpisodeUrl(slug, 1)
+
   val subtitle: String
     get() =
       tags.firstOrNull()?.takeIf(String::isNotBlank)
@@ -66,9 +70,26 @@ internal object ShortDramaRepository {
   }
 }
 
-/** Seed searches for the chip row: chartdrama matches on title text, so these are title words. */
+/**
+ * The categories offered above the grid.
+ *
+ * These are the genres of the form rather than a taxonomy the source publishes, because it does not
+ * publish one. `/api/categories` and `/api/genres` are not there, `/api/tags` answers empty, and the
+ * listing carries no tags on its entries. Real genre labels exist only on `/api/trending`, whose
+ * entries come from other sources and whose pages 404 on this one — a category row built from them
+ * would be a row of titles that cannot play.
+ *
+ * So each of these is matched against title text, which for short drama is closer to a genre than
+ * it sounds: the form names its own tropes on the cover. Chosen for what the listing actually
+ * returns, measured rather than guessed — every one answers with dozens of titles, and they are
+ * ordered roughly by how much there is behind each.
+ *
+ * Six of them, because the row shares its line with the search field and a seventh squeezes the
+ * placeholder onto two lines. Heiress and Boss are the next two worth having if that row ever gets
+ * its own line.
+ */
 internal val DEFAULT_DRAMA_KEYWORDS =
-  listOf("Love", "Marriage", "CEO", "Wife", "Husband", "Secret")
+  listOf("Love", "Billionaire", "Revenge", "Secret", "CEO", "Marriage")
 
 /** DramaBox is source 5 in chartdrama's catalogue. */
 private const val DRAMABOX_SOURCE = "5"

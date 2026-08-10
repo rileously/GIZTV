@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import com.giztv.tv.data.PlaybackContext
+import com.giztv.tv.data.PlaybackFailureStore
 import com.giztv.tv.data.WatchHistoryEntry
 import com.giztv.tv.data.WatchHistoryStore
 import com.giztv.tv.theme.GizMint
@@ -73,9 +74,13 @@ import kotlinx.coroutines.launch
 /**
  * The short drama listing.
  *
- * chartdrama matches on title text rather than genre, so the keyword chips are title words: the
- * page opens on the first one and every chip press is exactly one request, which the repository
- * caches and paces.
+ * The categories sit above the grid and the page opens on the first of them, so there is something
+ * to browse before anything is typed. chartdrama matches on title text rather than genre, so each
+ * category is a word rather than a filter — see [DEFAULT_DRAMA_KEYWORDS] for why there is no better
+ * option. Every chip press is exactly one request, which the repository caches and paces.
+ *
+ * Titles that have been opened and produced no stream are left out, so the grid stops offering what
+ * the source has stopped serving.
  */
 @Composable
 internal fun ShortDramaScreen(
@@ -105,6 +110,7 @@ internal fun ShortDramaScreen(
   var query by rememberSaveable { mutableStateOf("") }
   var searchActive by rememberSaveable { mutableStateOf(false) }
   var searchExpanded by rememberSaveable { mutableStateOf(false) }
+  val failureStore = remember(context) { PlaybackFailureStore(context) }
   var dramas by remember { mutableStateOf<List<ShortDrama>>(emptyList()) }
   var continueWatching by remember { mutableStateOf<List<WatchHistoryEntry>>(emptyList()) }
   var loading by remember { mutableStateOf(true) }
@@ -120,7 +126,10 @@ internal fun ShortDramaScreen(
       loading = true
       errorMessage = null
       runCatching { ShortDramaRepository.search(searchQuery) }
-        .onSuccess { dramas = it }
+        // A title that has already been opened and produced no stream is not offered again. The
+        // listing has no idea its own site has stopped serving these, so the only thing that knows
+        // is what happened last time someone tried.
+        .onSuccess { dramas = it.filterNot { drama -> failureStore.hasFailed(drama.playablePageUrl) } }
         .onFailure {
           Log.e("GizTvShortDrama", "Short drama search failed for \"$searchQuery\"", it)
           errorMessage = friendlyCatalogError(it)

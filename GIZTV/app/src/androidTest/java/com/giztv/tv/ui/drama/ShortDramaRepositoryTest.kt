@@ -122,12 +122,21 @@ class ShortDramaRepositoryTest {
   }
 
   @Test
-  fun defaultKeywords_areTitleWordsRatherThanGenres() {
-    // chartdrama matches on title text, so a genre word would match nothing at all.
+  fun defaultCategories_areWordsTheListingActuallyAnswersWith() {
+    // chartdrama matches on title text, so a category is only worth offering if titles carry the
+    // word. That is not the same as excluding every genre word: measured against the listing,
+    // "Billionaire" returns well over a hundred titles because the form names its tropes on the
+    // cover, while "Werewolf" returns three and would open on an almost empty grid.
     assertTrue(DEFAULT_DRAMA_KEYWORDS.contains("Love"))
     assertTrue(DEFAULT_DRAMA_KEYWORDS.contains("Marriage"))
-    assertFalse(DEFAULT_DRAMA_KEYWORDS.contains("Billionaire"))
+    assertTrue(DEFAULT_DRAMA_KEYWORDS.contains("Billionaire"))
     assertFalse(DEFAULT_DRAMA_KEYWORDS.contains("Werewolf"))
+  }
+
+  @Test
+  fun defaultCategories_fitTheRowTheyShareWithSearch() {
+    // A seventh chip pushes the search placeholder onto a second line on a 1080p television.
+    assertTrue(DEFAULT_DRAMA_KEYWORDS.size <= 6)
   }
 
   @Test
