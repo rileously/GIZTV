@@ -15,12 +15,13 @@ jobs:
     defaults:
       run:
         working-directory: AuroraTV
+    # No ANDROID_KEYSTORE_* here on purpose. The secret keystore predates the permanent key and
+    # signs with a different certificate, so a release built from it cannot install over v1.52.0.
+    # Leaving those unset makes the build fall back to app/giztv.keystore, the permanent key every
+    # release from v1.52.0 onwards is signed with.
     env:
       UPDATE_GITHUB_REPOSITORY: ${{ github.repository }}
       TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
-      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
       GH_TOKEN: ${{ github.token }}
 
     steps:
@@ -36,16 +37,8 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Restore release signing key
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          test -n "$ANDROID_KEYSTORE_BASE64"
-          test -n "$ANDROID_KEYSTORE_PASSWORD"
-          test -n "$ANDROID_KEY_ALIAS"
-          test -n "$ANDROID_KEY_PASSWORD"
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/giztv-release.jks"
-          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/giztv-release.jks" >> "$GITHUB_ENV"
+      - name: Verify the permanent signing key is present
+        run: test -f app/giztv.keystore
 
       - name: Verify tag matches the app version
         run: |
@@ -63,6 +56,14 @@ jobs:
           bash ./gradlew :app:assembleRelease
 
       - name: Create update metadata
+        env:
+          # v1.51.0 and older were signed with a different key, so those installs cannot be updated
+          # over. They have to be reinstalled once; every release since v1.52.0 auto-installs.
+          RELEASE_NOTES: |
+            A new GIZTV update with the latest playback, performance, and interface improvements.
+
+            Coming from v1.51.0 or older? Uninstall GIZTV once, then install this build. Updates
+            after that install themselves.
         run: |
           APK_SOURCE="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' ! -name '*unsigned*' -print -quit)"
           test -n "$APK_SOURCE"
@@ -75,7 +76,7 @@ jobs:
             --arg versionName "$VERSION_NAME" \
             --arg apkUrl "$APK_URL" \
             --arg sha256 "$APK_SHA256" \
-            --arg releaseNotes "A new GIZTV update with the latest playback, performance, and interface improvements." \
+            --arg releaseNotes "$RELEASE_NOTES" \
             '{versionCode: $versionCode, versionName: $versionName, apkUrl: $apkUrl, sha256: $sha256, releaseNotes: $releaseNotes}' \
             > update.json
           echo "APK_NAME=$APK_NAME" >> "$GITHUB_ENV"
