@@ -958,6 +958,16 @@ internal class AdBlockingWebViewClient(
   @Volatile private var lastSubtitleAtMs = 0L
   @Volatile private var currentPageUrl = HOME_URL
   @Volatile private var currentPageTitle = ""
+  /**
+   * The last document loaded into a frame that is not the main one — in practice, the player iframe.
+   *
+   * A CDN that checks where a stream request came from checks the frame that made it, not the page
+   * around it. DaddyLive is the case that forced this: it hands playback to a third-party player on
+   * its own host, whose CDN answers 403 to a `Referer` of `dlhd.st` and 200 to one naming the
+   * player. WebView leaves `Referer` off the hls.js fetch, so [reportStream]'s fallback is what
+   * actually travels, and the page URL was the wrong answer for anything playing inside an iframe.
+   */
+  @Volatile private var lastSubFrameDocumentUrl: String? = null
   private val dispatchPendingStream =
     object : Runnable {
       override fun run() {
@@ -1003,6 +1013,9 @@ internal class AdBlockingWebViewClient(
     blockedRequestCount.set(0)
     subtitles.clear()
     fetchedSubtitleCatalogs.clear()
+    // A player iframe belongs to the page that embedded it. Carrying one into the next title would
+    // name the wrong origin on the next stream.
+    lastSubFrameDocumentUrl = null
     pendingStream = null
     mainHandler.removeCallbacks(dispatchPendingStream)
     onStatus("Blocking ads and popups")
@@ -1064,6 +1077,7 @@ internal class AdBlockingWebViewClient(
     // Pictures, typefaces and stylesheets on a page nobody is looking at. The script that asks for
     // the video still runs; it simply runs without waiting for a poster to arrive first.
     if (resolvingOnly && isDecorativeRequest(request, url)) return emptyResponse()
+    if (isSubFrameDocumentRequest(request, url)) lastSubFrameDocumentUrl = url
     if (isSupportedSubtitleCatalogUrl(url)) captureSubtitleCatalog(url, request.requestHeaders)
     if (isExternalSubtitleUrl(url)) captureSubtitle(url)
     if (isPlayableStreamUrl(url)) reportStream(view, request)
@@ -1089,13 +1103,21 @@ internal class AdBlockingWebViewClient(
     return true
   }
 
+  /**
+   * The address to claim a sub-frame request came from.
+   *
+   * The player iframe when one has loaded, and otherwise the page itself — which is the behaviour
+   * every source had before, so a page whose video is requested by the main document is unaffected.
+   */
+  private fun frameReferer(): String = lastSubFrameDocumentUrl ?: currentPageUrl
+
   private fun reportStream(view: WebView?, request: WebResourceRequest) {
     val url = request.url.toString()
     val headers =
       completeStreamRequestHeaders(
         requestHeaders = request.requestHeaders,
         userAgent = userAgent,
-        fallbackReferer = currentPageUrl,
+        fallbackReferer = if (request.isForMainFrame) currentPageUrl else frameReferer(),
         cookie = CookieManager.getInstance().getCookie(url),
       )
     queueStream(view, url, headers)
@@ -1550,8 +1572,33 @@ internal fun isStoryboardTrackUrl(url: String): Boolean {
  */
 internal fun isPlayableStreamUrl(url: String): Boolean {
   if (subtitleMimeType(url) != null || isStoryboardTrackUrl(url)) return false
+  if (isStaticAssetUrl(url)) return false
   return isHlsUrl(url) || isProgressiveMediaUrl(url)
 }
+
+/**
+ * Files that are part of a player rather than something to play.
+ *
+ * [isHlsUrl] reads addresses, not content types, and one of the things it reads is `/hls/`. That is
+ * a fair guess for a playlist and a bad one for `@swarmcloud/hls/p2p-engine.min.js`, the peer-to-peer
+ * script DaddyLive's player loads from a CDN — which arrives before the real playlist does and was
+ * winning the race to become the stream. Media3 then failed on it with a source error.
+ *
+ * Judged on the path so a query string carrying `.m3u8` cannot be mistaken for a script.
+ */
+internal fun isStaticAssetUrl(url: String): Boolean {
+  val path = url.substringBefore('?').substringBefore('#').lowercase()
+  val extension = path.substringAfterLast('/', path).substringAfterLast('.', "")
+  return extension in nonMediaExtensions
+}
+
+private val nonMediaExtensions =
+  setOf(
+    "js", "mjs", "css", "map",
+    "woff", "woff2", "ttf", "otf",
+    "svg", "ico", "png", "jpg", "jpeg", "gif", "webp", "bmp",
+    "html", "htm",
+  )
 
 /**
  * A playlist is announced, because interception sees the address before the content type. A plain
@@ -1777,6 +1824,24 @@ private fun isBlockedUrl(url: String): Boolean {
  * from URLs that carry no useful suffix. Scripts, documents and anything that might be the video are
  * never touched.
  */
+/**
+ * Whether a request is an iframe loading a page of its own, rather than something a page fetched.
+ *
+ * Judged by what the request asked to receive: a frame navigating asks for a document, while the
+ * scripts and media inside it ask for anything but. `isForMainFrame` alone would also match every
+ * image and script an iframe pulls in, and the last of those to arrive is not where the video
+ * came from.
+ */
+internal fun isSubFrameDocumentRequest(request: WebResourceRequest, url: String): Boolean {
+  if (request.isForMainFrame) return false
+  // Only an address a CDN could check. `about:blank` frames are common and name nothing.
+  if (!url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true)) {
+    return false
+  }
+  val accept = request.requestHeaders.headerValue("Accept").orEmpty()
+  return accept.contains("text/html", ignoreCase = true)
+}
+
 private fun isDecorativeRequest(request: WebResourceRequest, url: String): Boolean {
   if (request.isForMainFrame) return false
   val accept = request.requestHeaders["Accept"].orEmpty().lowercase()
