@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -768,11 +769,12 @@ private fun FullReviewDialog(
   Dialog(onDismissRequest = onDismiss) {
     Box(
       modifier = Modifier
-        .fillMaxWidth(0.92f)
+        .fillMaxWidth(0.95f)
+        .heightIn(max = 550.dp)
         .clip(RoundedCornerShape(18.dp))
         .background(NightSurface)
         .border(1.dp, SoftWhite.copy(alpha = 0.2f), RoundedCornerShape(18.dp))
-        .padding(20.dp)
+        .padding(16.dp)
     ) {
       Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
         Row(

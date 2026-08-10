@@ -63,7 +63,10 @@ internal fun <T> mergeRecommendations(
 ): List<T> {
   val timesSuggested = mutableMapOf<Int, Int>()
   answers.forEach { answer ->
-    answer.distinctBy(id).forEach { item -> timesSuggested.merge(id(item), 1, Int::plus) }
+    answer.distinctBy(id).forEach { item ->
+      val itemId = id(item)
+      timesSuggested[itemId] = (timesSuggested[itemId] ?: 0) + 1
+    }
   }
   return answers
     .flatten()

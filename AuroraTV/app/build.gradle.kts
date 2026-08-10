@@ -118,7 +118,10 @@ dependencies {
   implementation(libs.androidx.tv.material)
   implementation(libs.androidx.compose.material3)
   implementation(libs.androidx.compose.material.icons.extended)
-  implementation(libs.androidx.compose.animation)
+  // Image loading
+  implementation(libs.coil.compose)
+  implementation(libs.coil.network.okhttp)
+  implementation(libs.coil.core)
 
   // Native adaptive HLS playback
   implementation(libs.androidx.media3.exoplayer)

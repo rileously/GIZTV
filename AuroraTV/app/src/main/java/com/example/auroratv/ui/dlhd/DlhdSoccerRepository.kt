@@ -244,7 +244,9 @@ internal fun mergeDlhdSchedules(vararg lists: List<DlhdSoccerEvent>): List<DlhdS
   val merged = LinkedHashMap<String, DlhdSoccerEvent>()
   for (list in lists) {
     for (event in list) {
-      merged.putIfAbsent(event.id, event)
+      if (!merged.containsKey(event.id)) {
+        merged[event.id] = event
+      }
     }
   }
   return sortDlhdEvents(merged.values.toList())

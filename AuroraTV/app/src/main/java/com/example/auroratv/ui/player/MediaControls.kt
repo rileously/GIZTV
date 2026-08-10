@@ -16,6 +16,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.core.content.ContextCompat
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -83,7 +84,7 @@ internal fun MediaControlsEffect(
   }
 
   val artworkUrl = request.context?.posterUrl
-  val title = request.context?.title ?: request.title ?: context.getString(R.string.app_name)
+  val title = request.context?.title ?: request.title ?: stringResource(R.string.app_name)
   val subtitle = request.context?.subtitle.orEmpty()
 
   DisposableEffect(player, title, subtitle, artworkUrl) {

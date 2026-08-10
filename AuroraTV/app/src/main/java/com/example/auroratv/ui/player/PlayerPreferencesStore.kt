@@ -10,10 +10,17 @@ private const val KEY_SUBTITLE_SIZE = "subtitle_size"
 private const val KEY_SUBTITLE_POSITION = "subtitle_position"
 private const val KEY_SUBTITLE_STYLE = "subtitle_style"
 private const val KEY_STABLE_PLAYBACK = "stable_playback"
+private const val KEY_AUDIO_PASSTHROUGH = "audio_passthrough"
 
 internal const val SUBTITLES_OFF_LABEL = "Off"
 internal const val AUTO_SUBTITLE_LABEL = "Auto English"
 internal const val AUTO_AUDIO_LABEL = "Auto English"
+
+internal enum class AudioPassthroughMode(val label: String) {
+  AUTO("Auto (HDMI Detect)"),
+  ALWAYS("Passthrough (AC-3 / EAC-3 / Atmos)"),
+  DISABLED("Disabled (Stereo Downmix)");
+}
 
 /**
  * How the viewer likes to watch, kept between videos.
@@ -72,6 +79,11 @@ internal class PlayerPreferencesStore(context: Context) {
     read(KEY_SUBTITLE_STYLE, SubtitleStyleOption.OUTLINE, SubtitleStyleOption::valueOf)
 
   fun setSubtitleStyle(option: SubtitleStyleOption) = write(KEY_SUBTITLE_STYLE, option.name)
+
+  fun audioPassthrough(): AudioPassthroughMode =
+    read(KEY_AUDIO_PASSTHROUGH, AudioPassthroughMode.AUTO, AudioPassthroughMode::valueOf)
+
+  fun setAudioPassthrough(mode: AudioPassthroughMode) = write(KEY_AUDIO_PASSTHROUGH, mode.name)
 
   // A saved name outliving the choice it named must not take the player down with it.
   private fun <T> read(key: String, fallback: T, parse: (String) -> T): T {

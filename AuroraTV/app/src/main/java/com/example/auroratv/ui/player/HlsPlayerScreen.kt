@@ -1,3 +1,5 @@
+@file:Suppress("UnsafeOptInUsageError")
+
 package com.example.auroratv.ui.player
 
 import android.app.Activity
@@ -56,6 +58,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Brightness6
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Close
@@ -183,6 +186,7 @@ import java.util.concurrent.atomic.AtomicLong
 import com.example.auroratv.link.RemoteOptionGroup
 import com.example.auroratv.link.RemoteOptionItem
 import com.example.auroratv.link.RemotePlayerOptions
+import com.example.auroratv.ui.catalog.CatalogActionButton
 import com.example.auroratv.theme.AuroraBlue
 import com.example.auroratv.theme.AuroraMint
 import com.example.auroratv.theme.DeepSpace
@@ -332,7 +336,7 @@ private const val STABLE_PLAYBACK_RESET_MS = 60_000L
 private const val LOCAL_STALL_RECOVERY_ATTEMPTS = 1
 private const val PLAYER_SWIPE_SENSITIVITY = 1.25f
 private const val PLAYER_GESTURE_FEEDBACK_MS = 650L
-private const val MINIMUM_WINDOW_BRIGHTNESS = .01f
+internal const val MINIMUM_WINDOW_BRIGHTNESS = .01f
 /**
  * Grab band around the subtitle baseline, as a fraction of the player height.
  *
@@ -370,7 +374,7 @@ internal enum class PlayerSwipeControl {
   VOLUME,
 }
 
-private data class PlayerSwipeFeedback(
+internal data class PlayerSwipeFeedback(
   val control: PlayerSwipeControl,
   val level: Float,
 )
@@ -443,7 +447,7 @@ internal enum class PlayerSeekSide {
 }
 
 /** A run of taps on one edge, shown as a single total rather than one jump after another. */
-private data class PlayerSeekBurst(
+internal data class PlayerSeekBurst(
   val side: PlayerSeekSide,
   val totalMs: Long,
 )
@@ -751,6 +755,7 @@ internal enum class VideoResizeOption(val label: String, val resizeMode: Int) {
 private enum class PlayerControlDialog {
   SUBTITLES,
   SUBTITLE_SYNC,
+  CUSTOM_SUBTITLE,
   AUDIO,
   QUALITY,
   PICTURE,
@@ -885,9 +890,10 @@ internal fun HlsPlayerScreen(
     )
   }
   var selectedAudio by remember(request, compatibilityMode) { mutableStateOf(playerPreferences.audioTrack()) }
+  var audioPassthroughMode by remember(request) { mutableStateOf(playerPreferences.audioPassthrough()) }
   var selectedSubtitle by remember(request, compatibilityMode) { mutableStateOf(playerPreferences.subtitleTrack()) }
   val localPlayer =
-    remember(request, compatibilityMode) {
+    remember(request, compatibilityMode, audioPassthroughMode) {
       createHlsPlayer(
         context = context,
         request = request,
@@ -895,6 +901,7 @@ internal fun HlsPlayerScreen(
         subtitleOffset = subtitleOffset,
         startPositionMs = resumePositionMs,
         isTelevision = isTelevision,
+        passthroughMode = audioPassthroughMode,
       )
     }
   val player: Player =
@@ -1085,16 +1092,18 @@ internal fun HlsPlayerScreen(
     seekBurst = null
   }
 
+  // Pre-queue next episode in background as soon as current episode playback is steady
+  LaunchedEffect(isVideoPlaying, nextEntry) {
+    if (!isVideoPlaying || nextEntry == null) return@LaunchedEffect
+    val playbackContext = request.context
+    onPrepareNext(playbackContext.advanceTo(nextEntry))
+  }
+
   // Roll into the next episode once one finishes, unless the viewer steps in first.
   LaunchedEffect(nextPromptVisible) {
-    // Both are known here: the prompt is only visible when there is a next episode to show, and
-    // there is only a next episode when the catalog gave this playback a context.
     if (!nextPromptVisible) return@LaunchedEffect
     val playbackContext = request.context
     val next = nextEntry
-    // Nothing is being decoded now the episode is over, so finding the next stream can start while
-    // the countdown runs instead of after it.
-    onPrepareNext(playbackContext.advanceTo(next))
     autoAdvanceSeconds = autoAdvanceDelaySeconds
     while (autoAdvanceSeconds > 0) {
       delay(1_000L)
@@ -2122,6 +2131,7 @@ internal fun HlsPlayerScreen(
         selectedQuality = selectedQuality,
         audioOptions = audioOptions,
         selectedAudio = selectedAudio,
+        audioPassthroughMode = audioPassthroughMode,
         subtitleOptions = subtitleOptions,
         selectedSubtitle = selectedSubtitle,
         serverOptions = serverOptions,
@@ -2144,6 +2154,12 @@ internal fun HlsPlayerScreen(
           selectedAudio = option
           playerPreferences.setAudioTrack(option)
           selectAudioTrack(player, option)
+        },
+        onAudioPassthroughSelected = { mode ->
+          resumePositionMs = player.currentPosition.coerceAtLeast(0L)
+          resumePlayWhenReady = player.playWhenReady
+          audioPassthroughMode = mode
+          playerPreferences.setAudioPassthrough(mode)
         },
         onSubtitleSelected = { option ->
           selectedSubtitle = option
@@ -2177,153 +2193,29 @@ internal fun HlsPlayerScreen(
             compatibilityMode = enabled
           }
         },
+        onOpenCustomSubtitle = { openSettings(PlayerControlDialog.CUSTOM_SUBTITLE) },
         onClose = ::closeSettings,
       )
     }
-  }
-}
 
-private fun currentPlayerBrightness(context: Context, activity: Activity?): Float {
-  val windowLevel = activity?.window?.attributes?.screenBrightness ?: -1f
-  if (windowLevel >= 0f) return windowLevel.coerceIn(0f, 1f)
-  val systemLevel =
-    Settings.System.getInt(
-      context.contentResolver,
-      Settings.System.SCREEN_BRIGHTNESS,
-      128,
-    )
-  return (systemLevel / 255f).coerceIn(MINIMUM_WINDOW_BRIGHTNESS, 1f)
-}
-
-private fun Activity.setPlayerBrightness(level: Float) {
-  window.attributes =
-    window.attributes.apply {
-      screenBrightness =
-        if (level < 0f) WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
-        else level.coerceIn(MINIMUM_WINDOW_BRIGHTNESS, 1f)
-    }
-}
-
-private fun currentMediaVolume(audioManager: AudioManager): Float {
-  val maximum = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-  if (maximum <= 0) return 0f
-  return (audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / maximum)
-    .coerceIn(0f, 1f)
-}
-
-private fun setMediaVolume(audioManager: AudioManager, player: Player, level: Float) {
-  val safeLevel = level.coerceIn(0f, 1f)
-  if (audioManager.isVolumeFixed) {
-    player.volume = safeLevel
-    return
-  }
-  val maximum = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-  val target = mediaVolumeIndex(safeLevel, maximum)
-  if (target == audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)) return
-  runCatching { audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0) }
-    .onFailure { player.volume = safeLevel }
-}
-
-@Composable
-private fun SubtitleDragFeedbackOverlay(
-  bottomPaddingFraction: Float,
-  positionLabel: String,
-  modifier: Modifier = Modifier,
-) {
-  BoxWithConstraints(modifier) {
-    val pad = maxHeight * bottomPaddingFraction.coerceIn(0f, 1f)
-    Box(
-      Modifier
-        .align(Alignment.BottomCenter)
-        .padding(bottom = pad)
-        .fillMaxWidth(.46f)
-        .height(2.dp)
-        .clip(RoundedCornerShape(1.dp))
-        .background(SoftWhite.copy(alpha = .28f)),
-    )
-    Text(
-      text = positionLabel,
-      color = SoftWhite.copy(alpha = .72f),
-      fontSize = 12.sp,
-      fontWeight = FontWeight.SemiBold,
-      modifier =
-        Modifier
-          .align(Alignment.BottomCenter)
-          .padding(bottom = pad + 10.dp)
-          .semantics { contentDescription = "Subtitle position $positionLabel" },
-    )
-  }
-}
-
-@Composable
-private fun PlayerSwipeFeedbackOverlay(
-  feedback: PlayerSwipeFeedback,
-  modifier: Modifier = Modifier,
-) {
-  val level = feedback.level.coerceIn(0f, 1f)
-  val percentage = (level * 100f).roundToInt()
-  val label = if (feedback.control == PlayerSwipeControl.BRIGHTNESS) "Brightness" else "Volume"
-  val icon =
-    when {
-      feedback.control == PlayerSwipeControl.BRIGHTNESS -> Icons.Filled.Brightness6
-      level == 0f -> Icons.AutoMirrored.Filled.VolumeOff
-      else -> Icons.AutoMirrored.Filled.VolumeUp
-    }
-  // Standing up rather than lying down: the bar fills the way the thumb is moving, so the gesture
-  // and the readout point the same direction.
-  val shape = RoundedCornerShape(28.dp)
-  Column(
-    modifier =
-      modifier.width(56.dp).clip(shape)
-        .background(Color.Black.copy(alpha = .82f))
-        .border(1.dp, SoftWhite.copy(alpha = .2f), shape)
-        .semantics { contentDescription = "$label $percentage percent" }
-        .padding(horizontal = 10.dp, vertical = 16.dp),
-    horizontalAlignment = Alignment.CenterHorizontally,
-  ) {
-    Text("$percentage%", color = AuroraMint, fontWeight = FontWeight.Black, fontSize = 12.sp)
-    Spacer(Modifier.height(12.dp))
-    Box(
-      modifier =
-        Modifier.width(6.dp).height(124.dp).clip(RoundedCornerShape(3.dp))
-          .background(SoftWhite.copy(alpha = .18f)),
-      contentAlignment = Alignment.BottomCenter,
-    ) {
-      Box(
-        Modifier.fillMaxWidth().fillMaxHeight(level).clip(RoundedCornerShape(3.dp))
-          .background(AuroraMint)
+    if (activeDialog == PlayerControlDialog.CUSTOM_SUBTITLE) {
+      CustomSubtitleDialog(
+        onDismiss = { openSettings(PlayerControlDialog.SUBTITLES) },
+        onAddSubtitle = { newTrack ->
+          val updatedSubtitles = request.subtitles + newTrack
+          val updatedRequest = request.copy(subtitles = updatedSubtitles)
+          val currentPos = player.currentPosition.coerceAtLeast(0L)
+          val playState = player.playWhenReady
+          val newMediaSource = createHlsMediaSource(context, updatedRequest)
+          (player as? ExoPlayer)?.let { exo ->
+            exo.setMediaSource(newMediaSource, currentPos)
+            exo.playWhenReady = playState
+            exo.prepare()
+          }
+          selectedSubtitle = SubtitleTrackOption(newTrack.label)
+        },
       )
     }
-    Spacer(Modifier.height(12.dp))
-    Icon(icon, contentDescription = null, tint = AuroraMint, modifier = Modifier.size(22.dp))
-  }
-}
-
-@Composable
-private fun PlayerSeekBurstOverlay(burst: PlayerSeekBurst, modifier: Modifier = Modifier) {
-  val backward = burst.side == PlayerSeekSide.BACKWARD
-  val label = "${burst.totalMs / 1_000L} seconds"
-  // A half-round wash off the edge it was tapped on, so the side that moved is unmistakable.
-  val shape =
-    if (backward) RoundedCornerShape(topEnd = 360.dp, bottomEnd = 360.dp)
-    else RoundedCornerShape(topStart = 360.dp, bottomStart = 360.dp)
-  Column(
-    modifier =
-      modifier.fillMaxHeight().clip(shape).background(Color.Black.copy(alpha = .36f))
-        .semantics {
-          contentDescription = if (backward) "Rewound $label" else "Forward $label"
-        },
-    horizontalAlignment = Alignment.CenterHorizontally,
-    verticalArrangement = Arrangement.Center,
-  ) {
-    Icon(
-      if (backward) Icons.Filled.FastRewind else Icons.Filled.FastForward,
-      contentDescription = null,
-      tint = SoftWhite,
-      modifier = Modifier.size(40.dp),
-    )
-    Spacer(Modifier.height(8.dp))
-    Text(label, color = SoftWhite, fontWeight = FontWeight.Bold, fontSize = 14.sp)
   }
 }
 
@@ -3124,177 +3016,6 @@ private fun ModernTransportControl(
   }
 }
 
-/** "Play on TV", and afterwards a note that it went. */
-@Composable
-private fun HandoverPill(sent: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
-  Row(
-    modifier =
-      modifier
-        .background(if (sent) NightSurface else AuroraMint.copy(alpha = .92f), RoundedCornerShape(20.dp))
-        .clickable(enabled = !sent, onClick = onClick)
-        .padding(horizontal = 16.dp, vertical = 10.dp),
-    verticalAlignment = Alignment.CenterVertically,
-  ) {
-    Icon(
-      Icons.Filled.Tv,
-      contentDescription = null,
-      tint = if (sent) SoftWhite else DeepSpace,
-      modifier = Modifier.size(20.dp),
-    )
-    Spacer(Modifier.width(8.dp))
-    Text(
-      if (sent) "Playing on TV" else "Play on TV",
-      color = if (sent) SoftWhite else DeepSpace,
-      fontWeight = FontWeight.Bold,
-      fontSize = 13.sp,
-    )
-  }
-}
-
-@Composable
-private fun ModernPlayerActionPill(
-  icon: ImageVector,
-  label: String,
-  value: String?,
-  onClick: () -> Unit,
-  onInteraction: () -> Unit,
-  showValue: Boolean = true,
-  modifier: Modifier = Modifier,
-) {
-  var focused by remember { mutableStateOf(false) }
-  Row(
-    modifier =
-      modifier.height(44.dp).clip(RoundedCornerShape(22.dp))
-        .background(if (focused) AuroraMint else SoftWhite.copy(alpha = .13f))
-        .border(2.dp, if (focused) AuroraBlue else SoftWhite.copy(alpha = .16f), RoundedCornerShape(22.dp))
-        .onFocusChanged {
-          focused = it.isFocused
-          if (it.isFocused) onInteraction()
-        }
-        .onKeyEvent { event ->
-          if (
-            event.type == KeyEventType.KeyDown && event.nativeKeyEvent.repeatCount == 0 &&
-              (event.key == Key.DirectionCenter || event.key == Key.Enter || event.key == Key.NumPadEnter)
-          ) {
-            onClick()
-            true
-          } else {
-            false
-          }
-        }
-        .focusable()
-        .pointerInput(onClick) { detectTapGestures { onClick() } }
-        .semantics {
-          role = Role.Button
-          contentDescription = if (value == null) label else "$label, $value"
-          semanticsOnClick {
-            onClick()
-            true
-          }
-        }
-        .padding(horizontal = 14.dp),
-    verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(7.dp),
-  ) {
-    Icon(icon, contentDescription = null, tint = if (focused) DeepSpace else SoftWhite, modifier = Modifier.size(19.dp))
-    // A pill is a label, not a paragraph: "Decoder" was folding onto a second line and taking the
-    // whole row with it once the time column grew an end-time under it.
-    Text(
-      label,
-      color = if (focused) DeepSpace else SoftWhite,
-      fontWeight = FontWeight.Bold,
-      fontSize = 12.sp,
-      maxLines = 1,
-      softWrap = false,
-    )
-    value?.takeIf { showValue }?.let {
-      Text(it, color = if (focused) DeepSpace.copy(alpha = .7f) else MutedBlue, fontSize = 11.sp)
-    }
-  }
-}
-
-@Composable
-private fun ModernPlayerStatusChip(label: String, icon: ImageVector? = null, modifier: Modifier = Modifier) {
-  Row(
-    modifier =
-      modifier.height(34.dp).widthIn(max = 150.dp).clip(RoundedCornerShape(17.dp))
-        .background(DeepSpace.copy(alpha = .72f))
-        .border(1.dp, SoftWhite.copy(alpha = .14f), RoundedCornerShape(17.dp))
-        .padding(horizontal = 11.dp),
-    verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(6.dp),
-  ) {
-    icon?.let { Icon(it, contentDescription = null, tint = AuroraMint, modifier = Modifier.size(16.dp)) }
-    Text(
-      label,
-      color = SoftWhite,
-      fontWeight = FontWeight.Bold,
-      fontSize = 11.sp,
-      maxLines = 1,
-      overflow = TextOverflow.Ellipsis,
-    )
-  }
-}
-
-/**
- * What the viewer is watching, preferring the catalog's own title over anything scraped from the
- * page. Falling back to the host is a last resort for streams found by plain browsing.
- */
-private fun playbackTitle(request: HlsStreamRequest): String {
-  request.context?.title?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
-  val source = request.sourcePageUrl ?: request.url
-  request.title?.trim()
-    ?.takeIf { it.isNotBlank() && !it.startsWith("http://") && !it.startsWith("https://") && it != source }
-    ?.let { return it }
-  return source.toUri().host?.removePrefix("www.")?.uppercase(Locale.ENGLISH) ?: "GIZTV PLAYER"
-}
-
-/** Season and episode for a show, or the release year for a film. */
-private fun playbackSubtitle(request: HlsStreamRequest): String? =
-  request.context?.subtitle?.trim()?.takeIf { it.isNotBlank() }
-    ?: request.subtitle?.trim()?.takeIf { it.isNotBlank() }
-
-/** TMDB-style vote average for the overlay, or null when there is nothing worth showing. */
-internal fun formatPlaybackRating(rating: Double?): String? =
-  rating?.takeIf { it > 0.0 }?.let { "★ ${String.format(Locale.US, "%.1f", it)}" }
-
-internal fun seekTargetPosition(currentPositionMs: Long, deltaMs: Long, durationMs: Long): Long {
-  val upperBound = durationMs.takeIf { it != C.TIME_UNSET && it > 0L } ?: Long.MAX_VALUE
-  return (currentPositionMs.coerceAtLeast(0L) + deltaMs).coerceIn(0L, upperBound)
-}
-
-internal fun formatPlayerTime(positionMs: Long): String {
-  val totalSeconds = positionMs.coerceAtLeast(0L) / 1_000L
-  val hours = totalSeconds / 3_600L
-  val minutes = (totalSeconds % 3_600L) / 60L
-  val seconds = totalSeconds % 60L
-  return if (hours > 0L) "%d:%02d:%02d".format(Locale.ENGLISH, hours, minutes, seconds)
-  else "%02d:%02d".format(Locale.ENGLISH, minutes, seconds)
-}
-
-private tailrec fun Context.findActivity(): Activity? =
-  when (this) {
-    is Activity -> this
-    is ContextWrapper -> baseContext.findActivity()
-    else -> null
-  }
-
-@androidx.annotation.OptIn(UnstableApi::class)
-@Composable
-private fun CastRouteButton(modifier: Modifier = Modifier) {
-  AndroidView(
-    factory = { context ->
-      MediaRouteButton(context).apply {
-        contentDescription = "Cast video with subtitles"
-        minimumWidth = 0
-        minimumHeight = 0
-        MediaRouteButtonFactory.setUpMediaRouteButton(context, this)
-      }
-    },
-    modifier = modifier,
-  )
-}
-
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
 private fun SubtitleSyncMiniOverlay(
@@ -3722,6 +3443,7 @@ private fun PlayerControlDialogOverlay(
   selectedQuality: VideoQualityOption,
   audioOptions: List<AudioTrackOption>,
   selectedAudio: AudioTrackOption,
+  audioPassthroughMode: AudioPassthroughMode = AudioPassthroughMode.AUTO,
   subtitleOptions: List<SubtitleTrackOption>,
   selectedSubtitle: SubtitleTrackOption,
   serverOptions: List<PlaybackServerOption>,
@@ -3736,6 +3458,7 @@ private fun PlayerControlDialogOverlay(
   isCasting: Boolean,
   onQualitySelected: (VideoQualityOption) -> Unit,
   onAudioSelected: (AudioTrackOption) -> Unit,
+  onAudioPassthroughSelected: (AudioPassthroughMode) -> Unit = {},
   onSubtitleSelected: (SubtitleTrackOption) -> Unit,
   onServerSelected: (PlaybackServerOption) -> Unit,
   onSubtitleSizeSelected: (SubtitleSizeOption) -> Unit,
@@ -3745,6 +3468,7 @@ private fun PlayerControlDialogOverlay(
   onPlaybackSpeedSelected: (Float) -> Unit,
   onResizeSelected: (VideoResizeOption) -> Unit,
   onCompatibilityModeSelected: (Boolean) -> Unit,
+  onOpenCustomSubtitle: () -> Unit = {},
   onClose: () -> Unit,
 ) {
   if (dialog == PlayerControlDialog.SUBTITLE_SYNC) {
@@ -3767,6 +3491,7 @@ private fun PlayerControlDialogOverlay(
     when (dialog) {
       PlayerControlDialog.SUBTITLES -> "Subtitles"
       PlayerControlDialog.SUBTITLE_SYNC -> "Subtitle sync"
+      PlayerControlDialog.CUSTOM_SUBTITLE -> "Custom Subtitle"
       PlayerControlDialog.AUDIO -> "Audio"
       PlayerControlDialog.QUALITY -> "Quality"
       PlayerControlDialog.SERVER -> "Server"
@@ -3778,6 +3503,7 @@ private fun PlayerControlDialogOverlay(
     when (dialog) {
       PlayerControlDialog.SUBTITLES -> Icons.Filled.ClosedCaption
       PlayerControlDialog.SUBTITLE_SYNC -> Icons.Filled.ClosedCaption
+      PlayerControlDialog.CUSTOM_SUBTITLE -> Icons.Filled.ClosedCaption
       PlayerControlDialog.AUDIO -> Icons.AutoMirrored.Filled.VolumeUp
       PlayerControlDialog.QUALITY -> Icons.Filled.HighQuality
       PlayerControlDialog.SERVER -> Icons.Filled.Dns
@@ -3801,6 +3527,13 @@ private fun PlayerControlDialogOverlay(
               onSelected = { label -> subtitleOptions.firstOrNull { it.label == label }?.let(onSubtitleSelected) },
               firstChoiceModifier = Modifier.focusRequester(firstChoiceFocus),
             )
+            CatalogActionButton(
+              label = "+ Add Custom Subtitle (URL / File)",
+              icon = Icons.Filled.Add,
+              showLabel = true,
+              onClick = onOpenCustomSubtitle,
+              modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            )
             DialogChoiceSection(
               title = "Size",
               options = SubtitleSizeOption.entries.map { it.label },
@@ -3820,13 +3553,21 @@ private fun PlayerControlDialogOverlay(
               onSelected = { label -> SubtitleStyleOption.entries.firstOrNull { it.label == label }?.let(onSubtitleStyleSelected) },
             )
           }
-          PlayerControlDialog.AUDIO ->
-            DialogOptionList(
+          PlayerControlDialog.AUDIO -> {
+            DialogChoiceSection(
+              title = "Track",
               options = audioOptions.map { it.label },
               selected = selectedAudio.label,
               onSelected = { label -> audioOptions.firstOrNull { it.label == label }?.let(onAudioSelected) },
               firstChoiceModifier = Modifier.focusRequester(firstChoiceFocus),
             )
+            DialogChoiceSection(
+              title = "Passthrough",
+              options = AudioPassthroughMode.entries.map { it.label },
+              selected = audioPassthroughMode.label,
+              onSelected = { label -> AudioPassthroughMode.entries.firstOrNull { it.label == label }?.let(onAudioPassthroughSelected) },
+            )
+          }
           PlayerControlDialog.QUALITY ->
             DialogOptionList(
               options = qualityOptions.map { it.label },
@@ -3862,7 +3603,8 @@ private fun PlayerControlDialogOverlay(
               onSelected = { onCompatibilityModeSelected(it == "TV compatible") },
               firstChoiceModifier = Modifier.focusRequester(firstChoiceFocus),
             )
-      PlayerControlDialog.SUBTITLE_SYNC -> Unit
+      PlayerControlDialog.SUBTITLE_SYNC,
+      PlayerControlDialog.CUSTOM_SUBTITLE -> Unit
     }
   }
 }
@@ -4369,6 +4111,7 @@ internal fun lowestDataVideoFormatIndex(formats: List<Format>): Int? {
   return dataSaverVideoFormatOrder(formats).firstOrNull()
 }
 
+@androidx.annotation.OptIn(UnstableApi::class)
 internal fun dataSaverVideoFormatOrder(formats: List<Format>): List<Int> {
   return formats.indices.sortedWith(
     compareBy<Int> {
@@ -4703,6 +4446,7 @@ internal fun createHlsPlayer(
   /** Phones use a faster restart profile; televisions retain the deeper safety buffer. */
   isTelevision: Boolean =
     context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK),
+  passthroughMode: AudioPassthroughMode = AudioPassthroughMode.AUTO,
 ): ExoPlayer {
   val bandwidthMeter = DefaultBandwidthMeter.getSingletonInstance(context)
   val trackSelector =
@@ -4751,7 +4495,7 @@ internal fun createHlsPlayer(
       .setPrioritizeTimeOverSizeThresholdsForStreaming(true)
       .build()
   val renderersFactory =
-    OffsetSubtitleRenderersFactory(context, subtitleOffset)
+    OffsetSubtitleRenderersFactory(context, subtitleOffset, passthroughMode)
       .setEnableDecoderFallback(true)
       .apply {
         if (compatibilityMode) setMediaCodecSelector(MediaCodecSelector.PREFER_SOFTWARE)
@@ -4848,6 +4592,7 @@ internal fun createHlsMediaSource(
   return mediaSourceFactory.createMediaSource(mediaItem)
 }
 
+@androidx.annotation.OptIn(UnstableApi::class)
 internal fun reliableHlsLoadErrorPolicy(
   retryCount: Int = RELIABLE_HLS_RETRY_COUNT,
 ): DefaultLoadErrorHandlingPolicy = DefaultLoadErrorHandlingPolicy(retryCount)
@@ -4936,6 +4681,7 @@ internal fun isHlsTrackMappingFailure(error: Throwable): Boolean =
     cause.javaClass.simpleName == "SampleQueueMappingException"
   }
 
+@androidx.annotation.OptIn(UnstableApi::class)
 internal fun isBehindLiveWindowFailure(error: Throwable): Boolean =
   generateSequence(error) { it.cause }.any { cause -> cause is BehindLiveWindowException }
 

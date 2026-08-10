@@ -17,8 +17,10 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ForwardingRenderer
 import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.RendererConfiguration
+import androidx.media3.exoplayer.audio.AudioCapabilities
 import androidx.media3.exoplayer.audio.AudioRendererEventListener
 import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.MediaCodecAudioRenderer
 import androidx.media3.exoplayer.mediacodec.MediaCodecAdapter
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
@@ -29,17 +31,44 @@ import java.util.concurrent.atomic.AtomicLong
 
 
 /**
- * Gives every text renderer a clock that can move independently of the picture and sound.
- *
- * Subtitle parsing normally happens while media is loaded. Changing a parser offset after that is
- * too late because buffered cues already contain their final timestamps. Moving the text renderer's
- * clock instead applies to embedded and separate subtitles on the very next render pass.
+ * Gives every text renderer a clock that can move independently of the picture and sound,
+ * and configures digital audio passthrough capabilities for AV receivers and soundbars.
  */
 @OptIn(UnstableApi::class)
 internal class OffsetSubtitleRenderersFactory(
   context: Context,
   private val offsetMs: AtomicLong,
+  private val passthroughMode: AudioPassthroughMode = AudioPassthroughMode.AUTO,
 ) : DefaultRenderersFactory(context) {
+  @Suppress("DEPRECATION")
+  override fun buildAudioSink(
+    context: Context,
+    enableFloatOutput: Boolean,
+    enableAudioTrackPlaybackParams: Boolean,
+  ): AudioSink? {
+    val capabilities =
+      when (passthroughMode) {
+        AudioPassthroughMode.DISABLED -> AudioCapabilities.DEFAULT_AUDIO_CAPABILITIES
+        AudioPassthroughMode.ALWAYS ->
+          AudioCapabilities(
+            intArrayOf(
+              C.ENCODING_AC3,
+              C.ENCODING_E_AC3,
+              C.ENCODING_E_AC3_JOC,
+              C.ENCODING_DTS,
+              C.ENCODING_DTS_HD,
+            ),
+            8,
+          )
+        AudioPassthroughMode.AUTO -> AudioCapabilities.getCapabilities(context)
+      }
+
+    return DefaultAudioSink.Builder(context)
+      .setAudioCapabilities(capabilities)
+      .setEnableFloatOutput(enableFloatOutput)
+      .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+      .build()
+  }
   override fun buildTextRenderers(
     context: Context,
     output: TextOutput,

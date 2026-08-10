@@ -1,3 +1,5 @@
+@file:Suppress("UnsafeOptInUsageError")
+
 package com.example.auroratv.ui.player
 
 import androidx.compose.animation.core.Animatable

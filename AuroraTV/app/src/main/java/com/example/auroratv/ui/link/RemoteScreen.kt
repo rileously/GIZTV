@@ -355,12 +355,13 @@ private fun ForgetTelevision(name: String, onForget: () -> Unit) {
   if (!asking) return
   AlertDialog(
     onDismissRequest = { asking = false },
+    modifier = Modifier.fillMaxWidth(0.95f),
     containerColor = NightSurface,
     titleContentColor = SoftWhite,
     textContentColor = MutedBlue,
-    title = { Text("Forget $name?") },
+    title = { Text("FORGET $name?", fontWeight = FontWeight.Black, fontSize = 17.sp, letterSpacing = 1.1.sp) },
     text = {
-      Text("This phone will need the code shown on the television to pair with it again.")
+      Text("This phone will need the code shown on the television to pair with it again.", fontSize = 13.sp, lineHeight = 18.sp)
     },
     confirmButton = {
       TextButton(
@@ -369,7 +370,7 @@ private fun ForgetTelevision(name: String, onForget: () -> Unit) {
           onForget()
         }
       ) {
-        Text("Forget", color = AuroraMint, fontWeight = FontWeight.Bold)
+        Text("FORGET", color = AuroraMint, fontWeight = FontWeight.Bold)
       }
     },
     dismissButton = {

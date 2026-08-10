@@ -1,5 +1,6 @@
 package com.example.auroratv.link
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.PendingIntent
 import android.app.Service
@@ -152,6 +153,7 @@ internal class RemoteMediaService : Service() {
     showNotification(state, title)
   }
 
+  @SuppressLint("MissingPermission")
   private fun showNotification(state: LinkEvent.State, title: String) {
     NotificationManagerCompat.from(this)
       .createNotificationChannel(
