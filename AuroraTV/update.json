@@ -3,5 +3,5 @@
   "versionName": "1.52.0",
   "apkUrl": "https://github.com/rileously/GIZTV/releases/download/v1.52.0/app-release.apk",
   "sha256": "1e48cd3e74ad79bd708a51ffc55b07fe2421527b48eb473238b9dd5b521bfcff",
-  "releaseNotes": "GIZTV v1.52.0: Modularized UI architecture, Coil 3 image pipeline, ExoPlayer episode pre-queueing, custom subtitles (.vtt/.srt), and Digital Audio Passthrough (AC-3 / Atmos)."
+  "releaseNotes": "IMPORTANT NOTICE FOR EXISTING USERS (v1.51.0 & older):\nWe have upgraded GIZTV to a permanent signing key for 1-click future updates!\n\nTo update to v1.52.0:\n1. Uninstall your current GIZTV app once.\n2. Download & install v1.52.0.\n\nAll future updates will then auto-install seamlessly!\n\nNew Features in v1.52.0:\n• Coil 3 Image Loader\n• ExoPlayer Episode Pre-queueing\n• Custom Subtitles (.vtt / .srt)\n• Digital Audio Passthrough (AC-3 / Atmos)"
 }
