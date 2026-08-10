@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: AuroraTV
+        working-directory: GIZTV
     # No ANDROID_KEYSTORE_* here on purpose. The secret keystore predates the permanent key and
     # signs with a different certificate, so a release built from it cannot install over v1.52.0.
     # Leaving those unset makes the build fall back to app/giztv.keystore, the permanent key every

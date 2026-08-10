@@ -1,0 +1,129 @@
+package com.giztv.tv
+
+import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
+import android.content.Intent
+import android.os.Bundle
+import androidx.activity.compose.setContent
+import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.runtime.mutableStateOf
+import androidx.core.net.toUri
+import com.giztv.tv.data.flushHttpResponseCache
+import com.giztv.tv.data.installHttpResponseCache
+import com.giztv.tv.home.EXTRA_RESUME_PAGE_URL
+import com.giztv.tv.home.refreshHomeSurfaces
+import com.giztv.tv.home.isTelevision
+import com.giztv.tv.link.LinkHost
+import com.giztv.tv.link.PhoneLink
+import com.giztv.tv.link.RemoteControl
+import com.giztv.tv.theme.GizTvTheme
+import com.giztv.tv.ui.GizTvRoot
+import com.giztv.tv.update.UpdateCheckWorker
+
+class MainActivity : AppCompatActivity() {
+  /**
+   * The title a home screen, a widget or a phone has asked for.
+   *
+   * Held as state rather than read once, because with a single instance the request now arrives at
+   * an activity that is already running: tearing the activity down to deliver it was what closed
+   * the remote's socket every time a film was handed over.
+   */
+  private val resumeRequest = mutableStateOf<String?>(null)
+
+  override fun onCreate(savedInstanceState: Bundle?) {
+    installHttpResponseCache(this)
+    requestedOrientation =
+      gizTvOrientation(
+        isTelevision = packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK),
+        playerActive = false,
+      )
+    super.onCreate(savedInstanceState)
+    UpdateCheckWorker.schedule(this)
+    // Also on the way in, not only on the way out. A television asks the viewer to approve the row
+    // the first time it is offered one, and that question belongs in front of someone who has just
+    // opened GIZTV rather than behind someone who has just left it.
+    refreshHomeSurfaces(applicationContext)
+    val launchStreamUrl =
+      intent?.data?.toString()?.takeIf {
+        (it.startsWith("https://") || it.startsWith("http://")) && it.contains(".m3u8", ignoreCase = true)
+      }
+    val launchBrowserUrl =
+      intent?.data?.toString()?.takeIf {
+        val uri = it.toUri()
+        launchStreamUrl == null && uri.scheme == "https" &&
+          (uri.host.equals("skyflix.to", ignoreCase = true) || uri.host.equals("www.skyflix.to", ignoreCase = true))
+      }
+    resumeRequest.value = intent?.getStringExtra(EXTRA_RESUME_PAGE_URL)
+    setContent {
+      GizTvTheme {
+        GizTvRoot(
+          initialStreamUrl = launchStreamUrl,
+          initialBrowserUrl = launchBrowserUrl,
+          initialResumePageUrl = resumeRequest.value,
+        )
+      }
+    }
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    intent.getStringExtra(EXTRA_RESUME_PAGE_URL)?.let { resumeRequest.value = it }
+  }
+
+  override fun onStart() {
+    super.onStart()
+    // Only a television takes this up; on a phone it returns having done nothing.
+    LinkHost.start(this)
+    // And the other way about: a phone that has a television reaches for it now rather than when
+    // the remote is opened, so it is already there when it is wanted.
+    if (!isTelevision() && PhoneLink.hasTelevision(this)) {
+      PhoneLink.client(this).ensureConnected()
+      PhoneLink.watchForMediaSession(this)
+    }
+  }
+
+  override fun onResume() {
+    super.onResume()
+    // Keys and typing sent from a phone are handed to whichever window is actually in front.
+    RemoteControl.attachActivity(this)
+  }
+
+  override fun onPause() {
+    super.onPause()
+    RemoteControl.detachActivity(this)
+  }
+
+  override fun onStop() {
+    super.onStop()
+    flushHttpResponseCache()
+    // Whatever was watched this time round changes what the home screens should be offering. Doing
+    // it on the way out rather than on every progress tick keeps one write per visit to the app.
+    refreshHomeSurfaces(applicationContext)
+  }
+
+  override fun onDestroy() {
+    super.onDestroy()
+    // A phone holding the remote loses it when the app it is pointing at is gone, rather than
+    // sitting on a socket that answers for nothing.
+    if (isFinishing) LinkHost.stop()
+  }
+}
+
+/**
+ * Which way up the app sits.
+ *
+ * A television is always landscape. A phone turns landscape to give a widescreen picture the whole
+ * display, but a short drama is shot 9:16 — rotating for it would letterbox a portrait video inside
+ * a landscape window and waste most of the screen, so [verticalVideo] keeps it upright.
+ */
+internal fun gizTvOrientation(
+  isTelevision: Boolean,
+  playerActive: Boolean,
+  verticalVideo: Boolean = false,
+): Int =
+  if (isTelevision || (playerActive && !verticalVideo)) {
+    ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+  } else {
+    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+  }
