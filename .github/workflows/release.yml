@@ -57,26 +57,22 @@ jobs:
 
       - name: Create update metadata
         env:
-          # v1.53.0 moved applicationId from com.example.auroratv to com.giztv.tv. Android will not
-          # install it over an older GIZTV, and the updater in v1.52.1 stops with "The downloaded
-          # update belongs to a different app." These notes are shown on the update screen before
-          # that happens, so they are the only warning an existing install ever gets. Trim this back
-          # to a normal changelog once the crossover is done.
+          # 1.53.0 changed applicationId, so anything older than it still cannot be updated over
+          # and has to be reinstalled by hand. From 1.53.0 onwards updates install themselves, so
+          # this says both things. Drop the second half once 1.52.x is gone.
           RELEASE_NOTES: |
-            GIZTV 1.53.0 is a fresh install, not an update.
+            What changed:
+            - DaddyLive plays again.
+            - Short dramas now list every source chartdrama carries, not just DramaBox.
+            - Titles that turn out not to play are no longer offered again.
+            - Posters and artwork load throughout the app.
 
-            This build has a new app identity, so Android will not install it over your current
-            GIZTV. Updating from inside the app stops with "The downloaded update belongs to a
-            different app."
+            Already on 1.53.0? This installs itself as usual.
 
-            To move across:
-            1. Uninstall your current GIZTV.
-            2. Download the APK from this release page and install it.
-
-            Watch history, My List, and resume positions do not carry over. Updates after this one
-            install themselves as usual.
-
-            Also in this release: posters and artwork load again throughout the app.
+            On 1.52.1 or older? 1.53.0 changed the app's identity, so Android will not install this
+            over your copy and the in-app update stops with "The downloaded update belongs to a
+            different app." Uninstall GIZTV once, then install this build from the release page.
+            Watch history does not carry across that one reinstall. Updates after it are automatic.
         run: |
           APK_SOURCE="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' ! -name '*unsigned*' -print -quit)"
           test -n "$APK_SOURCE"
