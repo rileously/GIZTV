@@ -62,8 +62,10 @@ internal object ShortDramaRepository {
     return searches.get(trimmed.lowercase()) {
       chartDramaRequest(
         path = "series",
-        // The listing refuses to answer without something to search for.
-        params = mapOf("source" to DRAMABOX_SOURCE, "q" to trimmed, "limit" to "24"),
+        // Every provider chartdrama carries rather than DramaBox alone: the same endpoint on the
+        // main host answers across all of them, and the entries are shaped identically. The
+        // listing still refuses to answer without something to search for.
+        params = mapOf("q" to trimmed, "limit" to "24"),
         parse = ::parseShortDramas,
       )
     }
@@ -91,10 +93,7 @@ internal object ShortDramaRepository {
 internal val DEFAULT_DRAMA_KEYWORDS =
   listOf("Love", "Billionaire", "Revenge", "Secret", "CEO", "Marriage")
 
-/** DramaBox is source 5 in chartdrama's catalogue. */
-private const val DRAMABOX_SOURCE = "5"
-
-private const val CHART_DRAMA_HOST = "dramabox.chartdrama.com"
+private const val CHART_DRAMA_HOST = "chartdrama.com"
 private const val CHART_DRAMA_ORIGIN = "https://$CHART_DRAMA_HOST"
 
 /** Kept modest: a catalogue is browsed, not harvested. */
