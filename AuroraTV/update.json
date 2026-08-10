@@ -2,6 +2,6 @@
   "versionCode": 107,
   "versionName": "1.52.0",
   "apkUrl": "https://github.com/rileously/GIZTV/releases/download/v1.52.0/app-release.apk",
-  "sha256": "a70917536dc824c035f3372614092eed4109f89435388ae3ce48ea79579969d8",
+  "sha256": "1e48cd3e74ad79bd708a51ffc55b07fe2421527b48eb473238b9dd5b521bfcff",
   "releaseNotes": "GIZTV v1.52.0: Modularized UI architecture, Coil 3 image pipeline, ExoPlayer episode pre-queueing, custom subtitles (.vtt/.srt), and Digital Audio Passthrough (AC-3 / Atmos)."
 }

@@ -226,7 +226,7 @@ internal object AppUpdateService {
     val archiveCertificates = archiveWithSigs?.signingCertificateDigests().orEmpty()
     if (installedCertificates.isNotEmpty() && archiveCertificates.isNotEmpty()) {
       check(installedCertificates.any(archiveCertificates::contains)) {
-        "The downloaded update is not signed by this app."
+        "Signature mismatch with installed version. Please uninstall older GIZTV once to upgrade to v1.52.0."
       }
     }
   }

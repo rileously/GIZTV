@@ -51,12 +51,17 @@ android {
     }
 
     signingConfigs {
-        if (hasReleaseSigning) {
-            create("release") {
+        create("release") {
+            if (hasReleaseSigning) {
                 storeFile = file(releaseKeystorePath)
                 storePassword = releaseKeystorePassword
                 keyAlias = releaseKeyAlias
                 keyPassword = releaseKeyPassword
+            } else {
+                storeFile = file("giztv.keystore")
+                storePassword = "giztv123456"
+                keyAlias = "giztv_release"
+                keyPassword = "giztv123456"
             }
         }
     }
@@ -64,7 +69,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = if (hasReleaseSigning) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
