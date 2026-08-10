@@ -1,7 +1,7 @@
 {
-  "versionCode": 107,
-  "versionName": "1.52.0",
-  "apkUrl": "https://github.com/rileously/GIZTV/releases/download/v1.52.0/app-release.apk",
-  "sha256": "1e48cd3e74ad79bd708a51ffc55b07fe2421527b48eb473238b9dd5b521bfcff",
-  "releaseNotes": "IMPORTANT NOTICE FOR EXISTING USERS (v1.51.0 & older):\nWe have upgraded GIZTV to a permanent signing key for 1-click future updates!\n\nTo update to v1.52.0:\n1. Uninstall your current GIZTV app once.\n2. Download & install v1.52.0.\n\nAll future updates will then auto-install seamlessly!\n\nNew Features in v1.52.0:\n• Coil 3 Image Loader\n• ExoPlayer Episode Pre-queueing\n• Custom Subtitles (.vtt / .srt)\n• Digital Audio Passthrough (AC-3 / Atmos)"
+  "versionCode": 109,
+  "versionName": "1.53.0",
+  "apkUrl": "https://github.com/rileously/GIZTV/releases/download/v1.53.0/GIZTV-v1.53.0.apk",
+  "sha256": "ffe59d7820067d789947d8639a6d5fb7d37ad833012c3f1ef544247cb8ece97e",
+  "releaseNotes": "GIZTV 1.53.0 is a fresh install, not an update.\n\nThis build has a new app identity, so Android will not install it over your current\nGIZTV. Updating from inside the app stops with \"The downloaded update belongs to a\ndifferent app.\"\n\nTo move across:\n1. Uninstall your current GIZTV.\n2. Download the APK from this release page and install it.\n\nWatch history, My List, and resume positions do not carry over. Updates after this one\ninstall themselves as usual.\n\nAlso in this release: posters and artwork load again throughout the app.\n"
 }
