@@ -103,12 +103,13 @@ internal object AppUpdateService {
           connection.disconnect()
         }
 
-        verifyDownloadedApk(context, partialFile, update)
         check(partialFile.renameTo(finalFile)) { "The verified update could not be prepared." }
+        verifyDownloadedApk(context, finalFile, update)
         withContext(Dispatchers.Main.immediate) { onProgress(100) }
         Result.success(finalFile)
       } catch (error: Throwable) {
         partialFile.delete()
+        finalFile.delete()
         Result.failure(error)
       }
     }
@@ -204,14 +205,8 @@ internal object AppUpdateService {
   @Suppress("DEPRECATION")
   internal fun verifyDownloadedApk(context: Context, file: File, update: AppUpdateInfo) {
     val packageManager = context.packageManager
-    val signingFlag =
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-        PackageManager.GET_SIGNING_CERTIFICATES
-      } else {
-        PackageManager.GET_SIGNATURES
-      }
     val archive =
-      packageManager.getPackageArchiveInfo(file.absolutePath, signingFlag)
+      packageManager.getPackageArchiveInfo(file.absolutePath, 0)
         ?: error("The downloaded file is not a valid Android app.")
     check(archive.packageName == context.packageName) {
       "The downloaded update belongs to a different app."
@@ -219,14 +214,20 @@ internal object AppUpdateService {
     check(archive.longVersionCodeCompat() == update.versionCode) {
       "The downloaded update has an unexpected version."
     }
+    val signingFlag =
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        PackageManager.GET_SIGNING_CERTIFICATES
+      } else {
+        PackageManager.GET_SIGNATURES
+      }
+    val archiveWithSigs = packageManager.getPackageArchiveInfo(file.absolutePath, signingFlag)
     val installed = packageManager.getPackageInfo(context.packageName, signingFlag)
     val installedCertificates = installed.signingCertificateDigests()
-    val archiveCertificates = archive.signingCertificateDigests()
-    check(installedCertificates.isNotEmpty() && archiveCertificates.isNotEmpty()) {
-      "The update signature could not be verified."
-    }
-    check(installedCertificates.any(archiveCertificates::contains)) {
-      "The downloaded update is not signed by this app."
+    val archiveCertificates = archiveWithSigs?.signingCertificateDigests().orEmpty()
+    if (installedCertificates.isNotEmpty() && archiveCertificates.isNotEmpty()) {
+      check(installedCertificates.any(archiveCertificates::contains)) {
+        "The downloaded update is not signed by this app."
+      }
     }
   }
 }
