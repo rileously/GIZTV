@@ -57,13 +57,26 @@ jobs:
 
       - name: Create update metadata
         env:
-          # v1.51.0 and older were signed with a different key, so those installs cannot be updated
-          # over. They have to be reinstalled once; every release since v1.52.0 auto-installs.
+          # v1.53.0 moved applicationId from com.example.auroratv to com.giztv.tv. Android will not
+          # install it over an older GIZTV, and the updater in v1.52.1 stops with "The downloaded
+          # update belongs to a different app." These notes are shown on the update screen before
+          # that happens, so they are the only warning an existing install ever gets. Trim this back
+          # to a normal changelog once the crossover is done.
           RELEASE_NOTES: |
-            A new GIZTV update with the latest playback, performance, and interface improvements.
+            GIZTV 1.53.0 is a fresh install, not an update.
 
-            Coming from v1.51.0 or older? Uninstall GIZTV once, then install this build. Updates
-            after that install themselves.
+            This build has a new app identity, so Android will not install it over your current
+            GIZTV. Updating from inside the app stops with "The downloaded update belongs to a
+            different app."
+
+            To move across:
+            1. Uninstall your current GIZTV.
+            2. Download the APK from this release page and install it.
+
+            Watch history, My List, and resume positions do not carry over. Updates after this one
+            install themselves as usual.
+
+            Also in this release: posters and artwork load again throughout the app.
         run: |
           APK_SOURCE="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' ! -name '*unsigned*' -print -quit)"
           test -n "$APK_SOURCE"
