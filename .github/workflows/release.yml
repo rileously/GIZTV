@@ -62,14 +62,11 @@ jobs:
           # this says both things. Drop the second half once 1.52.x is gone.
           RELEASE_NOTES: |
             What changed:
-            - The short drama swipe now moves the picture with your finger, with the next drama's
-              cover following straight behind it.
-            - Short dramas fill the phone screen instead of sitting between black bands. The
-              Picture control still cycles if you want them fitted.
-            - Swiping onto a drama you have already started picks up at your last episode rather
-              than starting it again, and says so before it opens.
-            - A drama reached by a swipe keeps its cover on screen while the stream opens, instead
-              of cutting to the loading page.
+            - A "Skip intro" button now appears over openings and title sequences in films, series
+              and anime, and becomes "Next episode" over the closing credits. It never skips on its
+              own, and it only shows where someone has submitted the times.
+            - Fixed an episode resumed from Continue watching, the home row or the widget stopping
+              at its own credits instead of rolling into the next one.
 
             Already on 1.53.0 or newer? This installs itself as usual.
 
