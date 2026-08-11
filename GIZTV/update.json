@@ -1,7 +1,7 @@
 {
-  "versionCode": 109,
-  "versionName": "1.53.0",
-  "apkUrl": "https://github.com/rileously/GIZTV/releases/download/v1.53.0/GIZTV-v1.53.0.apk",
-  "sha256": "ffe59d7820067d789947d8639a6d5fb7d37ad833012c3f1ef544247cb8ece97e",
-  "releaseNotes": "GIZTV 1.53.0 is a fresh install, not an update.\n\nThis build has a new app identity, so Android will not install it over your current\nGIZTV. Updating from inside the app stops with \"The downloaded update belongs to a\ndifferent app.\"\n\nTo move across:\n1. Uninstall your current GIZTV.\n2. Download the APK from this release page and install it.\n\nWatch history, My List, and resume positions do not carry over. Updates after this one\ninstall themselves as usual.\n\nAlso in this release: posters and artwork load again throughout the app.\n"
+  "versionCode": 112,
+  "versionName": "1.55.0",
+  "apkUrl": "https://github.com/rileously/GIZTV/releases/download/v1.55.0/GIZTV-v1.55.0.apk",
+  "sha256": "2c113727de33f486b5064133c6a3ea7bc9c599713d77eed93503472f047b6f4d",
+  "releaseNotes": "What changed:\n- New Anime section, on the home row and in the phone footer. Browse by trending,\n  top airing, popular, top rated, latest or newest, filter to TV, movies, ONA, OVA\n  or specials, and search the catalogue.\n- Every anime has a landing page with its facts, synopsis and full episode list,\n  with filler episodes marked.\n- Pick dub or sub per title; your choice is remembered for the next one.\n- Anime episodes join watch history and the continue watching row like anything else.\n\nAlready on 1.53.0 or newer? This installs itself as usual.\n\nOn 1.52.1 or older? 1.53.0 changed the app's identity, so Android will not install this\nover your copy and the in-app update stops with \"The downloaded update belongs to a\ndifferent app.\" Uninstall GIZTV once, then install this build from the release page.\nWatch history does not carry across that one reinstall. Updates after it are automatic.\n"
 }
