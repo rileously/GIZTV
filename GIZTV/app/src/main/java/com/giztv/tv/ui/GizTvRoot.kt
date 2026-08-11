@@ -45,7 +45,9 @@ import com.giztv.tv.ui.browser.streamMimeType
 import com.giztv.tv.ui.catalog.CatalogScreen
 import com.giztv.tv.ui.catalog.STREAM_PROVIDER_COUNT
 import com.giztv.tv.ui.catalog.catalogTargetOf
+import androidx.compose.runtime.key
 import com.giztv.tv.ui.catalog.nextProviderPageUrl
+import com.giztv.tv.ui.catalog.playbackServerOptions
 import com.giztv.tv.ui.catalog.providerIdOf
 import com.giztv.tv.ui.catalog.providerIndexOf
 import com.giztv.tv.ui.catalog.providerPageUrl
@@ -238,6 +240,8 @@ fun GizTvRoot(
   var prefetched by remember { mutableStateOf<Pair<String, HlsStreamRequest>?>(null) }
   val streamCache = remember(appContext) { StreamCacheStore(appContext) }
   var streamFailoverAttempts by remember { mutableIntStateOf(0) }
+  /** Bumped to rebuild the browser when a server is chosen by hand rather than by failover. */
+  var browserReloadToken by remember { mutableIntStateOf(0) }
   // In-app mini player: the HLS session stays composed while browse destinations sit underneath.
   var playerMinimized by remember { mutableStateOf(false) }
   // Phone bottom-nav Search: expand/focus search in the current searchable section.
@@ -867,17 +871,37 @@ fun GizTvRoot(
                 onOpenMovies = { destination = Destination.CATALOG },
               )
             Destination.BROWSER ->
-              BrowserScreen(
-                initialUrl = browserUrl,
-                onUrlChanged = { browserUrl = it },
-                playback = pendingContext,
-                onExit = { destination = browserReturnDestination },
-                onStreamDetected = { request ->
-                  playerMinimized = false
-                  streamRequest = request.copy(context = pendingContext)
-                  destination = Destination.PLAYER
-                },
-              )
+              // Keyed so that choosing a server actually reloads: the page is only loaded when the
+              // web view is built, so changing the address of a browser already on screen would
+              // otherwise do nothing.
+              key(browserReloadToken) {
+                BrowserScreen(
+                  initialUrl = browserUrl,
+                  onUrlChanged = { browserUrl = it },
+                  playback = pendingContext,
+                  onExit = { destination = browserReturnDestination },
+                  onStreamDetected = { request ->
+                    playerMinimized = false
+                    streamRequest = request.copy(context = pendingContext)
+                    destination = Destination.PLAYER
+                  },
+                  // Movies and series only. Providers are addressed by TMDB id, so a title that is
+                  // not one of those has no second server to offer, and playbackServerOptions
+                  // answers empty for every other kind — sports, short dramas, anime, IPTV.
+                  servers =
+                    pendingContext
+                      ?.let { playbackServerOptions(it.pageUrl, sourceCount = 1) }
+                      .orEmpty(),
+                  onSelectServer = { index ->
+                    val canonical = pendingContext?.pageUrl ?: return@BrowserScreen
+                    // Kept in step with the automatic run so that a hand-picked server is where
+                    // the automatic failover carries on from, rather than starting over at SR1.
+                    streamFailoverAttempts = index
+                    browserUrl = nextProviderPageUrl(canonical, index) ?: canonical
+                    browserReloadToken += 1
+                  },
+                )
+              }
             Destination.PLAYER -> {
               if (streamRequest == null) {
                 // Its own key, deliberately. The catalog above is provided under

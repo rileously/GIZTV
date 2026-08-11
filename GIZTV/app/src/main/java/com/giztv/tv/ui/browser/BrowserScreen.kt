@@ -85,6 +85,7 @@ import androidx.core.net.toUri
 import androidx.media3.common.MimeTypes
 import com.giztv.tv.ui.catalog.STREAM_PROVIDER_HOSTS
 import com.giztv.tv.ui.catalog.providerIdOf
+import com.giztv.tv.ui.catalog.PlaybackServerOption
 import com.giztv.tv.ui.catalog.providerIndexOf
 import com.giztv.tv.ui.catalog.serverLabelFor
 import androidx.tv.material3.Text
@@ -101,7 +102,9 @@ import com.giztv.tv.theme.DeepSpace
 import com.giztv.tv.theme.MutedBlue
 import com.giztv.tv.theme.NightSurface
 import com.giztv.tv.theme.SoftWhite
+import androidx.compose.foundation.horizontalScroll
 import com.giztv.tv.ui.catalog.CatalogButton
+import com.giztv.tv.ui.catalog.ChipRow
 import com.giztv.tv.ui.catalog.GizTvMark
 import com.giztv.tv.ui.catalog.TmdbArtwork
 import com.giztv.tv.ui.catalog.TmdbPlaybackDetails
@@ -298,6 +301,9 @@ internal fun BrowserScreen(
   onUrlChanged: (String) -> Unit,
   onExit: () -> Unit,
   onStreamDetected: (HlsStreamRequest) -> Unit,
+  /** Servers the preparing page can be switched between; empty hides the control. */
+  servers: List<PlaybackServerOption> = emptyList(),
+  onSelectServer: (Int) -> Unit = {},
 ) {
   val context = LocalContext.current
   val latestUrlChanged = rememberUpdatedState(onUrlChanged)
@@ -524,6 +530,8 @@ internal fun BrowserScreen(
         currentUrl = currentUrl,
         stage = stage,
         failed = preparationFailed,
+        servers = servers,
+        onSelectServer = onSelectServer,
         onRetry = {
           preparationFailed = false
           preparationAttempt += 1
@@ -590,6 +598,9 @@ private fun PreparingOverlay(
   currentUrl: String,
   stage: PreparationStage,
   failed: Boolean,
+  /** Every server this title can be asked for, so one can be chosen rather than waited for. */
+  servers: List<PlaybackServerOption>,
+  onSelectServer: (Int) -> Unit,
   onRetry: () -> Unit,
   onShowPage: () -> Unit,
   onCancel: () -> Unit,
@@ -717,6 +728,12 @@ private fun PreparingOverlay(
           )
           Spacer(Modifier.height(16.dp))
           PreparationFailureActions(onRetry, onShowPage, onCancel)
+          PreparationServerRow(
+            servers = servers,
+            currentUrl = currentUrl,
+            onSelectServer = onSelectServer,
+            heading = "Or try another server",
+          )
         } else {
           Column(
             modifier =
@@ -744,6 +761,15 @@ private fun PreparingOverlay(
             Spacer(Modifier.height(12.dp))
             PreparationStageTrack(stage = stage, sweep = sweep)
           }
+          // Offered while it is still working, not only after it gives up: a server that is going
+          // to fail usually spends the whole timeout doing it, and waiting that out to be allowed
+          // to try the next one is the slow way round.
+          PreparationServerRow(
+            servers = servers,
+            currentUrl = currentUrl,
+            onSelectServer = onSelectServer,
+            heading = "Don't wait — switch server",
+          )
           Spacer(Modifier.height(12.dp))
           Text("Press Back to cancel", color = MutedBlue.copy(alpha = .8f), fontSize = 11.sp)
         }
@@ -775,6 +801,36 @@ private fun PreparingOverlay(
       }
     }
   }
+}
+
+/**
+ * The servers this title can be asked for, offered as a row that can be picked from at any point.
+ *
+ * Hidden entirely when there is nothing to choose between — sports pages, short dramas and a bare
+ * browser find have one way in, and a row of one is just furniture.
+ */
+@Composable
+private fun PreparationServerRow(
+  servers: List<PlaybackServerOption>,
+  currentUrl: String,
+  onSelectServer: (Int) -> Unit,
+  heading: String,
+) {
+  if (servers.size < 2) return
+  val selected = providerIndexOf(currentUrl)
+  val firstChipFocusRequester = remember { FocusRequester() }
+  Spacer(Modifier.height(14.dp))
+  Text(heading, color = GizMint, fontWeight = FontWeight.Black, fontSize = 10.sp, letterSpacing = 1.4.sp)
+  Spacer(Modifier.height(7.dp))
+  ChipRow(
+    labels = servers.map(PlaybackServerOption::label),
+    selectedIndex = servers.indexOfFirst { it.index == selected },
+    onSelect = { position -> servers.getOrNull(position)?.let { onSelectServer(it.index) } },
+    firstChipFocusRequester = firstChipFocusRequester,
+    semanticsRole = Role.Tab,
+    compactChips = true,
+    modifier = Modifier.horizontalScroll(rememberScrollState()),
+  )
 }
 
 /** Gives the failure actions an explicit TV focus path instead of leaving focus in the WebView. */
