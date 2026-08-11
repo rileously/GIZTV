@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SettingsRemote
+import androidx.compose.material.icons.filled.Animation
 import androidx.compose.material.icons.filled.SportsBasketball
 import androidx.compose.material.icons.filled.SportsSoccer
 import androidx.compose.material.icons.filled.Theaters
@@ -79,6 +80,7 @@ internal fun CatalogTopBar(
   showDestinationActions: Boolean,
   onOpenWeb: () -> Unit,
   onOpenShortDramas: () -> Unit,
+  onOpenAnime: () -> Unit,
   onOpenSports: () -> Unit,
   onOpenDlhdSoccer: () -> Unit,
   onOpenIptv: () -> Unit,
@@ -87,6 +89,7 @@ internal fun CatalogTopBar(
   onCloseSearch: (() -> Unit)? = null,
   openWebModifier: Modifier,
   shortDramasModifier: Modifier,
+  animeModifier: Modifier,
   sportsModifier: Modifier,
   soccerModifier: Modifier,
   iptvModifier: Modifier,
@@ -127,6 +130,13 @@ internal fun CatalogTopBar(
           showLabel = labelled,
           onClick = onOpenShortDramas,
           modifier = shortDramasModifier,
+        )
+        CatalogActionButton(
+          label = "Anime",
+          icon = Icons.Filled.Animation,
+          showLabel = labelled,
+          onClick = onOpenAnime,
+          modifier = animeModifier,
         )
         CatalogActionButton(
           label = "Open web",

@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Animation
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Search
@@ -55,11 +56,13 @@ internal enum class PhoneBottomTab(
   val label: String,
   val icon: ImageVector,
 ) {
-  // Search sits in a center slot (3rd of 6) for thumb reach; destinations fill either side.
+  // Search sits in a center slot for thumb reach; destinations fill either side. Anime made it a
+  // seventh, so it is no longer exactly centred — the alternative was dropping a destination.
   MOVIES("Movies", Icons.Filled.VideoLibrary),
   SPORTS("Sports", Icons.Filled.SportsBasketball),
   SEARCH("Search", Icons.Filled.Search),
   SHORTS("Shorts", Icons.Filled.Theaters),
+  ANIME("Anime", Icons.Filled.Animation),
   WEB("Web", Icons.Filled.Language),
   IPTV("IPTV", Icons.Filled.LiveTv),
 }

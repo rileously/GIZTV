@@ -227,6 +227,7 @@ internal fun CatalogScreen(
   onOpenShow: (TmdbShow) -> Unit,
   onOpenWeb: () -> Unit,
   onOpenShortDramas: () -> Unit,
+  onOpenAnime: () -> Unit,
   onOpenSports: () -> Unit,
   onOpenDlhdSoccer: () -> Unit = {},
   onOpenIptv: () -> Unit,
@@ -259,6 +260,7 @@ internal fun CatalogScreen(
   val keyboardController = LocalSoftwareKeyboardController.current
   val openWebFocusRequester = remember { FocusRequester() }
   val shortDramasFocusRequester = remember { FocusRequester() }
+  val animeFocusRequester = remember { FocusRequester() }
   val sportsFocusRequester = remember { FocusRequester() }
   val soccerFocusRequester = remember { FocusRequester() }
   val iptvFocusRequester = remember { FocusRequester() }
@@ -929,6 +931,7 @@ internal fun CatalogScreen(
         showDestinationActions = showTopDestinationActions,
         onOpenWeb = { dismissKeyboard(); onOpenWeb() },
         onOpenShortDramas = { dismissKeyboard(); onOpenShortDramas() },
+        onOpenAnime = { dismissKeyboard(); onOpenAnime() },
         onOpenSports = { dismissKeyboard(); onOpenSports() },
         onOpenDlhdSoccer = { dismissKeyboard(); onOpenDlhdSoccer() },
         onOpenIptv = { dismissKeyboard(); onOpenIptv() },
@@ -953,12 +956,18 @@ internal fun CatalogScreen(
           },
         openWebModifier =
           Modifier.focusRequester(openWebFocusRequester).focusProperties {
-            left = shortDramasFocusRequester
+            left = animeFocusRequester
             down = chromeDown
           },
         shortDramasModifier =
           Modifier.focusRequester(shortDramasFocusRequester).focusProperties {
             left = iptvFocusRequester
+            right = animeFocusRequester
+            down = chromeDown
+          },
+        animeModifier =
+          Modifier.focusRequester(animeFocusRequester).focusProperties {
+            left = shortDramasFocusRequester
             right = openWebFocusRequester
             down = chromeDown
           },

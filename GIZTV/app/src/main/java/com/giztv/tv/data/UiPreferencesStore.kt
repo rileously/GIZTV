@@ -6,6 +6,7 @@ private const val UI_PREFERENCES = "giztv_ui_preferences"
 private const val KEY_LAST_TAB = "last_tab"
 private const val KEY_LAST_CATEGORY_PREFIX = "last_category_"
 private const val KEY_LAST_SEASON_PREFIX = "last_season_"
+private const val KEY_ANIME_LANGUAGE = "anime_language"
 
 /** Small bits of "where was I" state: the tab, the category, and each show's season. */
 internal class UiPreferencesStore(context: Context) {
@@ -29,5 +30,17 @@ internal class UiPreferencesStore(context: Context) {
 
   fun setLastSeason(showId: Int, seasonNumber: Int) {
     preferences.edit().putInt(KEY_LAST_SEASON_PREFIX + showId, seasonNumber).apply()
+  }
+
+  /**
+   * Dub or sub, as a language code.
+   *
+   * Anime is watched one way or the other and almost never both, so the choice is remembered across
+   * titles rather than asked again on each one.
+   */
+  fun animeLanguage(): String? = preferences.getString(KEY_ANIME_LANGUAGE, null)
+
+  fun setAnimeLanguage(code: String) {
+    preferences.edit().putString(KEY_ANIME_LANGUAGE, code).apply()
   }
 }

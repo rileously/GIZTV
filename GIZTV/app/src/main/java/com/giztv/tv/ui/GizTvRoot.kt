@@ -54,6 +54,10 @@ import com.giztv.tv.ui.catalog.TmdbShow
 import com.giztv.tv.ui.catalog.MovieDetailScreen
 import com.giztv.tv.ui.catalog.PersonDetailScreen
 import com.giztv.tv.ui.catalog.TvShowDetailScreen
+import com.giztv.tv.ui.anime.Anime
+import com.giztv.tv.ui.anime.AnimeBrowseState
+import com.giztv.tv.ui.anime.AnimeDetailScreen
+import com.giztv.tv.ui.anime.AnimeScreen
 import com.giztv.tv.ui.drama.ShortDrama
 import com.giztv.tv.ui.drama.ShortDramaDetailScreen
 import com.giztv.tv.ui.drama.ShortDramaScreen
@@ -127,6 +131,8 @@ private enum class Destination {
   SHOW_DETAIL,
   SHORT_DRAMAS,
   DRAMA_DETAIL,
+  ANIME,
+  ANIME_DETAIL,
   SPORTS,
   DLHD_SOCCER,
   IPTV,
@@ -152,6 +158,7 @@ private fun Destination.showsPhoneBottomNav(): Boolean =
   when (this) {
     Destination.CATALOG,
     Destination.SHORT_DRAMAS,
+    Destination.ANIME,
     Destination.SPORTS,
     Destination.DLHD_SOCCER,
     Destination.IPTV,
@@ -167,6 +174,7 @@ private fun Destination.toPhoneBottomTab(): PhoneBottomTab? =
     Destination.DLHD_SOCCER,
     -> PhoneBottomTab.SPORTS
     Destination.SHORT_DRAMAS -> PhoneBottomTab.SHORTS
+    Destination.ANIME -> PhoneBottomTab.ANIME
     Destination.WEB_HOME -> PhoneBottomTab.WEB
     Destination.IPTV -> PhoneBottomTab.IPTV
     else -> null
@@ -212,6 +220,8 @@ fun GizTvRoot(
   var selectedShow by remember { mutableStateOf<TmdbShow?>(null) }
   var catalogDetailBackStack by remember { mutableStateOf<List<CatalogDetailRoute>>(emptyList()) }
   var selectedDrama by remember { mutableStateOf<ShortDrama?>(null) }
+  var selectedAnime by remember { mutableStateOf<Anime?>(null) }
+  var animeBrowseState by remember { mutableStateOf(AnimeBrowseState()) }
   // Held while the browser resolves a stream, then attached to the request the player receives.
   var pendingContext by remember { mutableStateOf(initialResume) }
   var streamRequest by remember {
@@ -294,6 +304,8 @@ fun GizTvRoot(
     enabled =
       destination == Destination.SHORT_DRAMAS ||
         destination == Destination.DRAMA_DETAIL ||
+        destination == Destination.ANIME ||
+        destination == Destination.ANIME_DETAIL ||
         destination == Destination.SPORTS ||
         destination == Destination.DLHD_SOCCER ||
         destination == Destination.IPTV ||
@@ -302,6 +314,7 @@ fun GizTvRoot(
     destination =
       when (destination) {
         Destination.DRAMA_DETAIL -> Destination.SHORT_DRAMAS
+        Destination.ANIME_DETAIL -> Destination.ANIME
         Destination.DLHD_SOCCER -> Destination.SPORTS
         else -> Destination.CATALOG
       }
@@ -397,6 +410,10 @@ fun GizTvRoot(
         requestSectionSearch = false
         destination = Destination.SHORT_DRAMAS
       }
+      PhoneBottomTab.ANIME -> {
+        requestSectionSearch = false
+        destination = Destination.ANIME
+      }
       PhoneBottomTab.WEB -> {
         requestSectionSearch = false
         destination = Destination.WEB_HOME
@@ -412,6 +429,7 @@ fun GizTvRoot(
           Destination.SPORTS,
           Destination.DLHD_SOCCER,
           Destination.SHORT_DRAMAS,
+          Destination.ANIME,
           Destination.IPTV,
           -> requestSectionSearch = true
           else -> {
@@ -480,6 +498,7 @@ fun GizTvRoot(
       },
       onOpenWeb = { destination = Destination.WEB_HOME },
       onOpenShortDramas = { destination = Destination.SHORT_DRAMAS },
+      onOpenAnime = { destination = Destination.ANIME },
       onOpenSports = { destination = Destination.SPORTS },
       onOpenDlhdSoccer = { destination = Destination.DLHD_SOCCER },
       onOpenIptv = { destination = Destination.IPTV },
@@ -570,6 +589,7 @@ fun GizTvRoot(
                   Destination.SHOW_DETAIL,
                   Destination.PERSON_DETAIL,
                   Destination.DRAMA_DETAIL,
+                  Destination.ANIME_DETAIL,
                   Destination.PLAYER,
                   Destination.BROWSER,
                 )
@@ -666,6 +686,42 @@ fun GizTvRoot(
                   drama = drama,
                   onPlayEpisode = { context -> openForPlayback(context, Destination.DRAMA_DETAIL) },
                   onBack = { destination = Destination.SHORT_DRAMAS },
+                )
+              } else {
+                Catalog()
+              }
+            }
+            Destination.ANIME ->
+              AnimeScreen(
+                onOpenAnime = { anime ->
+                  selectedAnime = anime
+                  destination = Destination.ANIME_DETAIL
+                },
+                onBack = { destination = Destination.CATALOG },
+                browseState = animeBrowseState,
+                onBrowseStateChanged = { animeBrowseState = it },
+                hideBackButton = showPhoneBottomNav,
+                requestSearchFocus = requestSectionSearch,
+                onSearchFocusHandled = { requestSectionSearch = false },
+              )
+            Destination.ANIME_DETAIL -> {
+              val anime = selectedAnime
+              if (anime != null) {
+                AnimeDetailScreen(
+                  anime = anime,
+                  // The episode resolves to a plain HLS playlist on this site, so it goes straight
+                  // to the player the way an IPTV channel does rather than through the browser.
+                  onPlayEpisode = { request ->
+                    streamFailoverAttempts = 0
+                    pendingContext = request.context
+                    browserReturnDestination = Destination.ANIME_DETAIL
+                    iptvPlaybackSources = emptyList()
+                    iptvPlaybackSourceIndex = 0
+                    playerMinimized = false
+                    streamRequest = request
+                    destination = Destination.PLAYER
+                  },
+                  onBack = { destination = Destination.ANIME },
                 )
               } else {
                 Catalog()
