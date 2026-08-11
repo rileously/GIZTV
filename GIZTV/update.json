@@ -1,7 +1,7 @@
 {
-  "versionCode": 114,
-  "versionName": "1.57.0",
-  "apkUrl": "https://github.com/rileously/GIZTV/releases/download/v1.57.0/GIZTV-v1.57.0.apk",
-  "sha256": "9e8c70f2b50e51ec58788838d41ffff4e1710d7db93d1f8a4381317c8d512765",
-  "releaseNotes": "What changed:\n- Short dramas play like a reel on a phone: swipe up for the next drama, down for the\n  one before it, and left for the synopsis and every episode. Brightness and volume\n  still live on the left and right edges.\n- Fixed the sub or dub you picked being thrown away when an anime episode ended and the\n  next one started — it used to fall back to the English dub.\n- The loading page now lets you pick another server instead of waiting for the current\n  one to give up. Movies and series only.\n- Fixed brightness and volume swipes stopping halfway on anything with subtitles.\n\nAlready on 1.53.0 or newer? This installs itself as usual.\n\nOn 1.52.1 or older? 1.53.0 changed the app's identity, so Android will not install this\nover your copy and the in-app update stops with \"The downloaded update belongs to a\ndifferent app.\" Uninstall GIZTV once, then install this build from the release page.\nWatch history does not carry across that one reinstall. Updates after it are automatic.\n"
+  "versionCode": 115,
+  "versionName": "1.58.0",
+  "apkUrl": "https://github.com/rileously/GIZTV/releases/download/v1.58.0/GIZTV-v1.58.0.apk",
+  "sha256": "01578da938897b4cd6f9f44c6779bc87f72cd38578c348c48165ac936f33b777",
+  "releaseNotes": "What changed:\n- The short drama swipe now moves the picture with your finger, with the next drama's\n  cover following straight behind it.\n- Short dramas fill the phone screen instead of sitting between black bands. The\n  Picture control still cycles if you want them fitted.\n- Swiping onto a drama you have already started picks up at your last episode rather\n  than starting it again, and says so before it opens.\n- A drama reached by a swipe keeps its cover on screen while the stream opens, instead\n  of cutting to the loading page.\n\nAlready on 1.53.0 or newer? This installs itself as usual.\n\nOn 1.52.1 or older? 1.53.0 changed the app's identity, so Android will not install this\nover your copy and the in-app update stops with \"The downloaded update belongs to a\ndifferent app.\" Uninstall GIZTV once, then install this build from the release page.\nWatch history does not carry across that one reinstall. Updates after it are automatic.\n"
 }
