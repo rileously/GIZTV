@@ -62,10 +62,14 @@ jobs:
           # this says both things. Drop the second half once 1.52.x is gone.
           RELEASE_NOTES: |
             What changed:
-            - Adult titles are filtered out of every anime listing and search.
-            - Anime listings keep going as you scroll instead of stopping after the first page.
-            - Fixed anime search showing "The coroutine scope left the composition" and an empty
-              grid while you were still typing.
+            - Short dramas play like a reel on a phone: swipe up for the next drama, down for the
+              one before it, and left for the synopsis and every episode. Brightness and volume
+              still live on the left and right edges.
+            - Fixed the sub or dub you picked being thrown away when an anime episode ended and the
+              next one started — it used to fall back to the English dub.
+            - The loading page now lets you pick another server instead of waiting for the current
+              one to give up. Movies and series only.
+            - Fixed brightness and volume swipes stopping halfway on anything with subtitles.
 
             Already on 1.53.0 or newer? This installs itself as usual.
 
