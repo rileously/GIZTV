@@ -62,11 +62,13 @@ jobs:
           # this says both things. Drop the second half once 1.52.x is gone.
           RELEASE_NOTES: |
             What changed:
-            - Live TV keeps favourites. Star a channel and it pins to the front of the guide.
-            - A Recent row remembers the channels you last watched.
-            - A channel the playlist lists several times now shows once, and that one card
-              carries every mirror as a backup link.
-            - Searching the guide keeps up with your typing.
+            - New Anime section, on the home row and in the phone footer. Browse by trending,
+              top airing, popular, top rated, latest or newest, filter to TV, movies, ONA, OVA
+              or specials, and search the catalogue.
+            - Every anime has a landing page with its facts, synopsis and full episode list,
+              with filler episodes marked.
+            - Pick dub or sub per title; your choice is remembered for the next one.
+            - Anime episodes join watch history and the continue watching row like anything else.
 
             Already on 1.53.0 or newer? This installs itself as usual.
 
