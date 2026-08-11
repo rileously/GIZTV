@@ -1,7 +1,7 @@
 {
-  "versionCode": 113,
-  "versionName": "1.56.0",
-  "apkUrl": "https://github.com/rileously/GIZTV/releases/download/v1.56.0/GIZTV-v1.56.0.apk",
-  "sha256": "17a4e142f91a1762da9b572c89a0b86025c1c32f7e690c9e6fb960c13e480156",
-  "releaseNotes": "What changed:\n- Adult titles are filtered out of every anime listing and search.\n- Anime listings keep going as you scroll instead of stopping after the first page.\n- Fixed anime search showing \"The coroutine scope left the composition\" and an empty\n  grid while you were still typing.\n\nAlready on 1.53.0 or newer? This installs itself as usual.\n\nOn 1.52.1 or older? 1.53.0 changed the app's identity, so Android will not install this\nover your copy and the in-app update stops with \"The downloaded update belongs to a\ndifferent app.\" Uninstall GIZTV once, then install this build from the release page.\nWatch history does not carry across that one reinstall. Updates after it are automatic.\n"
+  "versionCode": 114,
+  "versionName": "1.57.0",
+  "apkUrl": "https://github.com/rileously/GIZTV/releases/download/v1.57.0/GIZTV-v1.57.0.apk",
+  "sha256": "9e8c70f2b50e51ec58788838d41ffff4e1710d7db93d1f8a4381317c8d512765",
+  "releaseNotes": "What changed:\n- Short dramas play like a reel on a phone: swipe up for the next drama, down for the\n  one before it, and left for the synopsis and every episode. Brightness and volume\n  still live on the left and right edges.\n- Fixed the sub or dub you picked being thrown away when an anime episode ended and the\n  next one started — it used to fall back to the English dub.\n- The loading page now lets you pick another server instead of waiting for the current\n  one to give up. Movies and series only.\n- Fixed brightness and volume swipes stopping halfway on anything with subtitles.\n\nAlready on 1.53.0 or newer? This installs itself as usual.\n\nOn 1.52.1 or older? 1.53.0 changed the app's identity, so Android will not install this\nover your copy and the in-app update stops with \"The downloaded update belongs to a\ndifferent app.\" Uninstall GIZTV once, then install this build from the release page.\nWatch history does not carry across that one reinstall. Updates after it are automatic.\n"
 }
