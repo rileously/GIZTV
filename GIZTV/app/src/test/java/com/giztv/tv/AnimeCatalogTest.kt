@@ -120,6 +120,22 @@ class AnimeCatalogTest {
   }
 
   @Test
+  fun theRatingGate_catchesExplicitTitlesAndLeavesOrdinaryOnesAlone() {
+    fun rated(rating: String) =
+      parseAnimeDetails("<dl><dt>Rating</dt><dd>$rating</dd></dl>")
+
+    // The one explicit grade on the site's scale, taken from a real adult title's facts panel.
+    assertTrue(rated("Rx - Hentai").isAdult)
+    // Violence and nudity in ordinary shows: these must keep playing.
+    assertFalse(rated("R - 17+ (violence &amp; profanity)").isAdult)
+    assertFalse(rated("R+ - Mild Nudity").isAdult)
+    assertFalse(rated("PG-13 - Teens 13 or older").isAdult)
+    assertFalse(rated("G - All Ages").isAdult)
+    // A title whose page states no rating is not evidence of anything.
+    assertFalse(parseAnimeDetails("<dl><dt>Type</dt><dd>TV</dd></dl>").isAdult)
+  }
+
+  @Test
   fun episodeList_keepsNumberingAndFillerMarks() {
     val episodes =
       parseAnimeEpisodes(

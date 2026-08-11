@@ -7,8 +7,14 @@ import com.giztv.tv.ui.drama.DramaBoxRateLimiter
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import android.util.Log
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
@@ -43,8 +49,29 @@ internal data class AnimeDetails(
   fun fact(name: String): String? =
     facts.firstOrNull { it.first.equals(name, ignoreCase = true) }?.second
 
+  /**
+   * Pornography, by the content rating the site states on the title itself.
+   *
+   * This is the second gate. The listing is already filtered against the site's adult genres, but
+   * that depends on a title being filed under one; the rating is stated per title and so catches
+   * anything that is not. "Rx" is the explicit grade — "R" and "R+" are violence and nudity in
+   * ordinary shows and are left alone.
+   */
+  val isAdult: Boolean
+    get() = fact("Rating")?.trim()?.startsWith("Rx", ignoreCase = true) == true
+
   companion object {
     val EMPTY = AnimeDetails(synopsis = "", facts = emptyList())
+  }
+}
+
+/** One page of a listing, and whether asking for the next one is worth a request. */
+internal data class AnimePage(
+  val titles: List<Anime>,
+  val hasMore: Boolean,
+) {
+  companion object {
+    val EMPTY = AnimePage(titles = emptyList(), hasMore = false)
   }
 }
 
@@ -88,6 +115,69 @@ internal const val ANIDB_ORIGIN = "https://$ANIDB_HOST"
 private val anidbRateLimiter = DramaBoxRateLimiter(maxRequests = 20, windowMs = 60_000L)
 
 /**
+ * The genres whose titles are pornography, by the site's own filing.
+ *
+ * Hentai and Erotica only. Ecchi is deliberately not one of them: it is fanservice rather than
+ * pornography and is worn by a great many ordinary shows, so excluding it would quietly cut the
+ * catalogue down. Boys Love and Girls Love are romance genres and have nothing to do with this —
+ * naming them here is the obvious wrong turn and this is the note saying not to take it.
+ */
+private val ADULT_GENRE_IDS = listOf(15, 17)
+
+/** Enough for both genres several times over; a stop so a paging change cannot loop forever. */
+private const val ADULT_GENRE_MAX_PAGES = 8
+private val ADULT_LIST_TTL_MS = TimeUnit.HOURS.toMillis(12)
+
+/**
+ * Which titles are pornography, worked out once from the site's own genre pages.
+ *
+ * There is nothing on a listing card that says so — a card carries a type and a score and no
+ * rating — and asking each of a page's titles for its rating would be a request per card. The two
+ * adult genres are small enough to enumerate whole instead: around fifty titles across three
+ * pages, held for [ADULT_LIST_TTL_MS] and then refreshed.
+ *
+ * A refresh that fails keeps the set it already had rather than emptying it, because an empty set
+ * is an unfiltered catalogue and a network blip should not be what puts porn back on the grid.
+ */
+private object AdultTitles {
+  private val guard = Mutex()
+  @Volatile private var slugs: Set<String> = emptySet()
+  @Volatile private var fetchedAtMs = 0L
+
+  suspend fun slugs(): Set<String> {
+    val now = System.currentTimeMillis()
+    if (fetchedAtMs != 0L && now - fetchedAtMs < ADULT_LIST_TTL_MS) return slugs
+    return guard.withLock {
+      val moment = System.currentTimeMillis()
+      if (fetchedAtMs != 0L && moment - fetchedAtMs < ADULT_LIST_TTL_MS) return@withLock slugs
+      runCatching { fetchAll() }
+        .onSuccess {
+          slugs = it
+          fetchedAtMs = moment
+        }
+        .onFailure { Log.w("GizTvAnime", "Adult title list unavailable; keeping ${slugs.size} known", it) }
+      slugs
+    }
+  }
+
+  private suspend fun fetchAll(): Set<String> = coroutineScope {
+    ADULT_GENRE_IDS.map { genreId -> async { fetchGenre(genreId) } }.awaitAll().flatten().toSet()
+  }
+
+  private suspend fun fetchGenre(genreId: Int): List<String> = buildList {
+    for (page in 1..ADULT_GENRE_MAX_PAGES) {
+      val params = buildMap {
+        put("genres", genreId.toString())
+        if (page > 1) put("page", page.toString())
+      }
+      val titles = parseAnimeCards(anidbPage("browse", params))
+      if (titles.isEmpty()) break
+      addAll(titles.map(Anime::slug))
+    }
+  }
+}
+
+/**
  * The anidb.app catalogue.
  *
  * Browsing and searching are server-rendered pages and have to be read out of the markup, but
@@ -98,7 +188,7 @@ private val anidbRateLimiter = DramaBoxRateLimiter(maxRequests = 20, windowMs = 
  * Answers are cached across navigation, because reopening a title should not cost a round trip.
  */
 internal object AnimeRepository {
-  private val listings = DramaBoxCache<List<Anime>>(TimeUnit.MINUTES.toMillis(10))
+  private val listings = DramaBoxCache<AnimePage>(TimeUnit.MINUTES.toMillis(10))
   private val details = DramaBoxCache<AnimeDetails>(TimeUnit.HOURS.toMillis(6))
   private val episodes = DramaBoxCache<List<AnimeEpisode>>(TimeUnit.MINUTES.toMillis(30))
   private val languages = DramaBoxCache<List<AnimeLanguage>>(TimeUnit.MINUTES.toMillis(30))
@@ -108,17 +198,31 @@ internal object AnimeRepository {
     kind: AnimeKind = AnimeKind.ALL,
     genreId: Int? = null,
     query: String = "",
-  ): List<Anime> {
+    page: Int = 1,
+  ): AnimePage {
     val trimmed = query.trim()
-    val key = "${sort.value}|${kind.value}|$genreId|${trimmed.lowercase()}"
+    val key = "${sort.value}|${kind.value}|$genreId|${trimmed.lowercase()}|$page"
     return listings.get(key) {
       val params = buildMap {
         put("sort", sort.value)
         kind.value?.let { put("type", it) }
         genreId?.let { put("genres", it.toString()) }
         if (trimmed.isNotEmpty()) put("q", trimmed)
+        // The site renders no page links, but it honours the parameter; leaving it off page one
+        // keeps the address the same as a viewer's own would be.
+        if (page > 1) put("page", page.toString())
       }
-      parseAnimeCards(anidbPage("browse", params))
+      // Every listing and every search comes through here, so this is the one place the filter has
+      // to hold for the grid to stay clean.
+      val blocked = AdultTitles.slugs()
+      val found = parseAnimeCards(anidbPage("browse", params))
+      AnimePage(
+        titles = found.filterNot { it.slug in blocked },
+        // Judged on what the page held, not on what survived the filter: a page that was entirely
+        // adult titles filters down to nothing, and reading that as the end of the listing would
+        // stop paging early.
+        hasMore = found.isNotEmpty(),
+      )
     }
   }
 

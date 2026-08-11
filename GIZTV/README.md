@@ -30,6 +30,8 @@ GIZTV is an Android phone and TV app built with Kotlin and Compose. It browses a
 - Ad-host filtering, popup/alert blocking, and cosmetic ad cleanup
 - Automatic `.m3u8` detection with cookies, referrer, and user-agent forwarding
 - Anime catalogue from anidb.app with Trending / Top airing / Popular / Top rated / Latest / Newest ordering, TV / Movie / ONA / OVA / Special filters, and title search
+- Anime listings continue as they are browsed rather than stopping at the first page
+- Adult titles filtered out of every anime listing and search, by the source's own Hentai and Erotica genres plus the per-title Rx content rating
 - Anime landing page carrying the site's own facts panel and synopsis, a numbered episode grid with filler marked, and a dub/sub choice remembered across titles
 - Anime episodes resolve to a plain HLS playlist and play natively through Media3, with watch history and the continue-watching row treating them like any other episode
 - Built-in M3U IPTV guide with group filters, channel search, artwork, and per-stream request headers

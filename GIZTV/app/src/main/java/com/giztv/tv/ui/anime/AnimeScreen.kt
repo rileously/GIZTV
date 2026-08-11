@@ -7,6 +7,7 @@ import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -29,7 +30,9 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -65,7 +68,11 @@ import com.giztv.tv.ui.catalog.GizTvMark
 import com.giztv.tv.ui.catalog.PosterCard
 import com.giztv.tv.ui.catalog.StatusPanel
 import com.giztv.tv.ui.catalog.remoteFocusNavigation
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+
+/** How close to the last card the grid gets before the next page is asked for. */
+private const val APPEND_AHEAD_ITEMS = 5
 
 /** Where the viewer had got to in the catalogue, kept across a trip into a title and back. */
 internal data class AnimeBrowseState(
@@ -108,6 +115,11 @@ internal fun AnimeScreen(
 
   var anime by remember { mutableStateOf<List<Anime>>(emptyList()) }
   var loading by remember { mutableStateOf(true) }
+  var loadingMore by remember { mutableStateOf(false) }
+  var hasMore by remember { mutableStateOf(false) }
+  var nextPage by remember { mutableIntStateOf(2) }
+  /** Bumped when a fresh first page lands, so appending one does not send the grid back to the top. */
+  var listingGeneration by remember { mutableIntStateOf(0) }
   var errorMessage by remember { mutableStateOf<String?>(null) }
   var searchExpanded by rememberSaveable { mutableStateOf(false) }
   val sort = browseState.sort
@@ -127,25 +139,80 @@ internal fun AnimeScreen(
   }
 
   // Keyed on the whole browse state: every one of its fields is a different request to the site.
+  //
+  // try/catch rather than runCatching, and the cancellation rethrown: a keystroke supersedes the
+  // effect the one before it started, and runCatching treats that cancellation as a failed load.
+  // The superseded effect then wrote its "error" over the state the live one had just cleared,
+  // which is how typing a search ended on an empty grid reading "The coroutine scope left the
+  // composition".
   LaunchedEffect(sort, kind, query) {
     loading = true
     errorMessage = null
-    runCatching { AnimeRepository.browse(sort = sort, kind = kind, query = query) }
-      .onSuccess { anime = it }
-      .onFailure {
-        Log.e("GizTvAnime", "Anime listing failed", it)
-        errorMessage = it.message ?: "The anime catalogue could not be loaded."
-        anime = emptyList()
-      }
+    try {
+      val page = AnimeRepository.browse(sort = sort, kind = kind, query = query, page = 1)
+      anime = page.titles
+      hasMore = page.hasMore
+      nextPage = 2
+      listingGeneration += 1
+    } catch (cancellation: CancellationException) {
+      throw cancellation
+    } catch (failure: Exception) {
+      Log.e("GizTvAnime", "Anime listing failed", failure)
+      errorMessage = failure.message ?: "The anime catalogue could not be loaded."
+      anime = emptyList()
+      hasMore = false
+    }
     loading = false
   }
 
-  // Keyed on the loaded listing rather than folded into the load above: at the end of that effect
-  // the grid is still the one the previous filter left behind — often scrolled, and for a shorter
-  // list — so a scroll issued there lands on the old content and the new listing opens part way
-  // down. Waiting for the items to be the ones on screen is what makes the top the top.
-  LaunchedEffect(anime) {
-    if (anime.isNotEmpty()) gridState.scrollToItem(0)
+  // Keyed on a fresh listing rather than folded into the load above: at the end of that effect the
+  // grid is still the one the previous filter left behind — often scrolled, and for a shorter list
+  // — so a scroll issued there lands on the old content and the new listing opens part way down.
+  // Waiting for the items to be the ones on screen is what makes the top the top.
+  LaunchedEffect(listingGeneration) {
+    if (listingGeneration > 0 && anime.isNotEmpty()) gridState.scrollToItem(0)
+  }
+
+  // The site publishes no page links but honours ?page=, so the listing continues as it is walked
+  // rather than ending at the first twenty-eight. Appending on approach suits a d-pad better than
+  // a page control: there is nothing extra to aim at.
+  val nearEnd by remember {
+    derivedStateOf {
+      val info = gridState.layoutInfo
+      val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: return@derivedStateOf false
+      info.totalItemsCount > 0 && lastVisible >= info.totalItemsCount - APPEND_AHEAD_ITEMS
+    }
+  }
+
+  // Deliberately run on the screen's own scope rather than inside the effect below. The effect's
+  // keys include the flags this sets, so doing the work there cancelled the request the moment it
+  // started — and runCatching read that cancellation as a failed page and stopped paging for good.
+  fun loadMore() {
+    if (loadingMore || !hasMore || loading) return
+    val page = nextPage
+    loadingMore = true
+    scope.launch {
+      try {
+        val loaded = AnimeRepository.browse(sort = sort, kind = kind, query = query, page = page)
+        // Distinct by slug because a listing can repeat a title across pages, and a lazy grid
+        // handed the same key twice brings the screen down. A page filtered away to nothing leaves
+        // the list unchanged, which leaves the grid at its end and asking for the page after it —
+        // which is what should happen.
+        anime = (anime + loaded.titles).distinctBy(Anime::slug)
+        hasMore = loaded.hasMore
+        nextPage = page + 1
+      } catch (cancellation: CancellationException) {
+        throw cancellation
+      } catch (failure: Exception) {
+        Log.w("GizTvAnime", "Anime listing page $page failed", failure)
+        hasMore = false
+      }
+      loadingMore = false
+    }
+  }
+
+  LaunchedEffect(nearEnd, hasMore, loading, loadingMore) {
+    if (nearEnd) loadMore()
   }
 
   fun runSearch() {
@@ -358,7 +425,13 @@ internal fun AnimeScreen(
                   )
                   Spacer(Modifier.width(10.dp))
                   Text(
-                    if (anime.size == 1) "1 title" else "${anime.size} titles",
+                    when {
+                      // "so far" because the listing keeps going as it is walked; a bare count
+                      // would read as the whole of it.
+                      hasMore -> "${anime.size} titles so far"
+                      anime.size == 1 -> "1 title"
+                      else -> "${anime.size} titles"
+                    },
                     color = GizMint,
                     fontWeight = FontWeight.Bold,
                     fontSize = 11.sp,
@@ -384,6 +457,21 @@ internal fun AnimeScreen(
                   if (title.slug == anime.first().slug) Modifier.focusRequester(gridFocusRequester)
                   else Modifier,
               )
+            }
+            if (loadingMore) {
+              item(span = { GridItemSpan(maxLineSpan) }) {
+                Box(
+                  modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                  contentAlignment = Alignment.Center,
+                ) {
+                  Text(
+                    "Loading more…",
+                    color = MutedBlue,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
+                  )
+                }
+              }
             }
           }
       }

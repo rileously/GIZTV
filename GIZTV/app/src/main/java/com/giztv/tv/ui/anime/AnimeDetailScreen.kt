@@ -221,6 +221,10 @@ internal fun AnimeDetailScreen(
     val episodeSection: @Composable (Modifier) -> Unit = { sectionModifier ->
       when {
         loading -> StatusPanel("Loading episodes…", sectionModifier, loading = true)
+        // Reached only when the listing filter missed it, which means the title is not filed under
+        // an adult genre but states the rating itself. Nothing is offered to play.
+        details.isAdult ->
+          StatusPanel("This title is adult-rated and is not available here.", sectionModifier)
         episodes.isEmpty() ->
           StatusPanel(
             message = errorMessage ?: "No episodes listed for this title.",
