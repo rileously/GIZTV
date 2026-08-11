@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -44,6 +45,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -98,6 +100,17 @@ private const val REEL_TITLE_SWIPE_FRACTION = .16f
 /** The same, across. Shorter, because there is less width than height on a phone in portrait. */
 private const val REEL_PANEL_SWIPE_FRACTION = .18f
 
+/**
+ * How much a drag moves the picture when there is nothing that way, and how far it may get.
+ *
+ * The end of a reel should feel like the end of one rather than like a swipe that went unnoticed,
+ * so the screen gives a little and springs back instead of either following the finger into
+ * nothing or refusing to move at all.
+ */
+private const val REEL_RUBBER_BAND = .32f
+
+private const val REEL_RUBBER_BAND_LIMIT = .1f
+
 /** How long the first-run gesture hint stays up. */
 internal const val REEL_HINT_VISIBLE_MS = 5_000L
 
@@ -145,6 +158,35 @@ internal fun reelSwipeTarget(playback: PlaybackContext?, swipe: ReelSwipe): Reel
   when (swipe) {
     ReelSwipe.NEXT_TITLE -> playback?.nextReelTitle
     ReelSwipe.PREVIOUS_TITLE -> playback?.previousReelTitle
+  }
+
+/**
+ * How far the incoming drama has been pulled across the picture, in pixels.
+ *
+ * The swipe has to be visible while the finger is still down — a gesture that does nothing until it
+ * is released cannot be learned, and cannot be abandoned half way either. Negative is upward, which
+ * is the direction the next drama arrives from.
+ */
+internal fun reelSlideOffset(totalDragY: Float, heightPx: Int, hasTarget: Boolean): Float {
+  if (heightPx <= 0) return 0f
+  val limit = heightPx.toFloat()
+  if (!hasTarget) {
+    val give = limit * REEL_RUBBER_BAND_LIMIT
+    return (totalDragY * REEL_RUBBER_BAND).coerceIn(-give, give)
+  }
+  return totalDragY.coerceIn(-limit, limit)
+}
+
+/**
+ * Where the top of the incoming cover sits, given how far the drag has got.
+ *
+ * It starts a whole screen away in the direction it is coming from and arrives at zero, so that
+ * releasing a completed swipe leaves it exactly filling the screen.
+ */
+internal fun reelCoverTopOffset(swipe: ReelSwipe, slidePx: Float, heightPx: Int): Float =
+  when (swipe) {
+    ReelSwipe.NEXT_TITLE -> heightPx + slidePx
+    ReelSwipe.PREVIOUS_TITLE -> -heightPx + slidePx
   }
 
 internal enum class ReelPanelSwipe {
@@ -236,44 +278,92 @@ private fun episodeLabel(episodeNumber: Int?, episodeCount: Int): String =
     else -> "Episode $episodeNumber"
   }
 
-/** Says which drama a vertical drag is about to land on, while the finger is still down. */
+/**
+ * The drama being swiped onto, following the finger across the picture.
+ *
+ * Its cover is what a viewer sees for the whole swipe and for as long afterwards as the stream
+ * takes to open, which is why the same cover fills the preparing page: nothing flashes, nothing is
+ * replaced, and the swipe reads as instant even when the resolve is not.
+ */
 @Composable
-internal fun ReelSwipeIntentOverlay(
-  swipe: ReelSwipe,
-  title: String,
+internal fun ReelSwipeCover(
+  title: ReelTitle,
+  /** Where this drama will pick up, which is not episode one once it has been started. */
+  episode: Int,
   modifier: Modifier = Modifier,
 ) {
+  Box(modifier = modifier.background(Color.Black)) {
+    TmdbArtwork(
+      url = title.posterUrl,
+      contentDescription = "${title.title} cover",
+      modifier = Modifier.fillMaxSize(),
+      fallbackLabel = title.title,
+    )
+    // The art is a portrait cover cropped to a portrait screen, so the words need their own ground
+    // to stand on rather than whatever happens to be behind them.
+    Box(
+      Modifier.align(Alignment.BottomCenter).fillMaxWidth().fillMaxHeight(.42f)
+        .background(
+          Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = .85f)))
+        )
+    )
+    Column(
+      modifier = Modifier.align(Alignment.BottomStart).padding(start = 20.dp, end = 20.dp, bottom = 92.dp)
+    ) {
+      Text(
+        title.title,
+        color = SoftWhite,
+        fontWeight = FontWeight.Black,
+        fontSize = 22.sp,
+        maxLines = 3,
+        overflow = TextOverflow.Ellipsis,
+        lineHeight = 26.sp,
+      )
+      Spacer(Modifier.height(4.dp))
+      Text(
+        // Saying "Resume" is the point: a drama that is being come back to should say so before it
+        // opens, not surprise the viewer by starting in the middle.
+        if (episode > 1) "Resume · ${episodeLabel(episode, title.episodeCount)}"
+        else episodeLabel(1, title.episodeCount),
+        color = if (episode > 1) GizMint else MutedBlue,
+        fontWeight = if (episode > 1) FontWeight.Bold else FontWeight.Normal,
+        fontSize = 12.sp,
+      )
+    }
+  }
+}
+
+/**
+ * What letting go would do, said while the swipe is still under way.
+ *
+ * Anchored to the screen rather than to the cover: the cover's own words are at its foot, which for
+ * most of an upward swipe is still below the bottom of the screen, and a cue nobody can see during
+ * the gesture it describes is no cue at all.
+ */
+@Composable
+internal fun ReelSwipeCue(swipe: ReelSwipe, committed: Boolean, modifier: Modifier = Modifier) {
   Row(
     modifier =
-      modifier.clip(RoundedCornerShape(20.dp)).background(Color.Black.copy(alpha = .72f))
-        .padding(horizontal = 16.dp, vertical = 10.dp),
+      modifier.clip(RoundedCornerShape(20.dp))
+        .background(if (committed) GizMint else Color.Black.copy(alpha = .66f))
+        .padding(horizontal = 14.dp, vertical = 7.dp),
     verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(8.dp),
+    horizontalArrangement = Arrangement.spacedBy(4.dp),
   ) {
     Icon(
       if (swipe == ReelSwipe.NEXT_TITLE) Icons.Filled.KeyboardArrowUp
       else Icons.Filled.KeyboardArrowDown,
       contentDescription = null,
-      tint = GizMint,
-      modifier = Modifier.size(19.dp),
+      tint = if (committed) DeepSpace else GizMint,
+      modifier = Modifier.size(16.dp),
     )
-    Column {
-      Text(
-        if (swipe == ReelSwipe.NEXT_TITLE) "Next drama" else "Previous drama",
-        color = MutedBlue,
-        fontWeight = FontWeight.Bold,
-        fontSize = 10.sp,
-      )
-      Text(
-        title,
-        color = SoftWhite,
-        fontWeight = FontWeight.Black,
-        fontSize = 14.sp,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.widthIn(max = 240.dp),
-      )
-    }
+    Text(
+      if (committed) "Release to play" else "Keep pulling",
+      color = if (committed) DeepSpace else SoftWhite,
+      fontWeight = FontWeight.Black,
+      fontSize = 11.sp,
+      letterSpacing = 1.sp,
+    )
   }
 }
 

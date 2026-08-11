@@ -42,7 +42,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -525,25 +527,40 @@ internal fun BrowserScreen(
 
     // The page still has to load and run its scripts, but the viewer never has to look at it.
     if (playback != null && !pageRevealed) {
-      PreparingOverlay(
-        playback = playback,
-        currentUrl = currentUrl,
-        stage = stage,
-        failed = preparationFailed,
-        servers = servers,
-        onSelectServer = onSelectServer,
-        onRetry = {
-          preparationFailed = false
-          preparationAttempt += 1
-          // Asking by hand earns a fresh set of automatic attempts.
-          automaticRetries = 0
-          stage = PreparationStage.OPENING
-          attemptStartedAtMs = SystemClock.elapsedRealtime()
-          webView?.reloadIgnoringCache(initialUrl)
-        },
-        onShowPage = { pageRevealed = true },
-        onCancel = onExit,
-      )
+      val retry: () -> Unit = {
+        preparationFailed = false
+        preparationAttempt += 1
+        // Asking by hand earns a fresh set of automatic attempts.
+        automaticRetries = 0
+        stage = PreparationStage.OPENING
+        attemptStartedAtMs = SystemClock.elapsedRealtime()
+        webView?.reloadIgnoringCache(initialUrl)
+      }
+      // A short drama arrives here from a swipe that has just carried its cover across the screen.
+      // Cutting from that to a poster in a card would undo the whole gesture, so the cover simply
+      // stays where the swipe left it and the resolve happens behind it.
+      if (playback.shortForm) {
+        ReelPreparingOverlay(
+          playback = playback,
+          stage = stage,
+          failed = preparationFailed,
+          onRetry = retry,
+          onShowPage = { pageRevealed = true },
+          onCancel = onExit,
+        )
+      } else {
+        PreparingOverlay(
+          playback = playback,
+          currentUrl = currentUrl,
+          stage = stage,
+          failed = preparationFailed,
+          servers = servers,
+          onSelectServer = onSelectServer,
+          onRetry = retry,
+          onShowPage = { pageRevealed = true },
+          onCancel = onExit,
+        )
+      }
     }
 
     if (showBookmarks) {
@@ -576,6 +593,93 @@ internal fun BrowserScreen(
         destroy()
       }
       webView = null
+    }
+  }
+}
+
+/**
+ * The wait, for a drama that is being watched as a reel.
+ *
+ * Its cover fills the screen, exactly as the swipe left it, with a line across the bottom to say
+ * that something is happening. No card, no poster inset, no stage names: this is a two-minute
+ * episode reached by a flick of a thumb, and the loading page a film gets would be longer to read
+ * than the wait it describes.
+ */
+@Composable
+private fun ReelPreparingOverlay(
+  playback: PlaybackContext,
+  stage: PreparationStage,
+  failed: Boolean,
+  onRetry: () -> Unit,
+  onShowPage: () -> Unit,
+  onCancel: () -> Unit,
+) {
+  val pulse = rememberInfiniteTransition(label = "reel prepare pulse")
+  val sweep by
+    pulse.animateFloat(
+      initialValue = 0f,
+      targetValue = 1f,
+      animationSpec = infiniteRepeatable(tween(1_100, easing = LinearEasing), RepeatMode.Restart),
+      label = "reel prepare sweep",
+    )
+  Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+    TmdbArtwork(
+      url = playback.posterUrl,
+      contentDescription = "${playback.title} cover",
+      modifier = Modifier.fillMaxSize(),
+      fallbackLabel = playback.title,
+    )
+    Box(
+      Modifier.align(Alignment.BottomCenter).fillMaxWidth().fillMaxHeight(.5f)
+        .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = .9f))))
+    )
+    Column(
+      modifier =
+        Modifier.align(Alignment.BottomStart)
+          .padding(start = 20.dp, end = 20.dp, bottom = 64.dp)
+    ) {
+      Text(
+        if (failed) "Couldn't start this one" else stage.label,
+        color = GizMint,
+        fontWeight = FontWeight.Black,
+        fontSize = 11.sp,
+        letterSpacing = 1.4.sp,
+      )
+      Spacer(Modifier.height(7.dp))
+      Text(
+        playback.title,
+        color = SoftWhite,
+        fontWeight = FontWeight.Black,
+        fontSize = 23.sp,
+        maxLines = 3,
+        overflow = TextOverflow.Ellipsis,
+        lineHeight = 27.sp,
+      )
+      playback.subtitle?.takeIf(String::isNotBlank)?.let {
+        Spacer(Modifier.height(5.dp))
+        Text(it, color = MutedBlue, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
+      }
+      Spacer(Modifier.height(16.dp))
+      if (failed) {
+        PreparationFailureActions(onRetry, onShowPage, onCancel)
+      } else {
+        // One thin line rather than a panel of stages: the only question worth answering here is
+        // whether anything is still happening.
+        BoxWithConstraints(
+          Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp))
+            .background(SoftWhite.copy(alpha = .18f))
+        ) {
+          val segment = maxWidth * .34f
+          Box(
+            Modifier.width(segment)
+              .offset(x = (maxWidth + segment) * sweep - segment)
+              .fillMaxHeight()
+              .background(GizMint)
+          )
+        }
+        Spacer(Modifier.height(10.dp))
+        Text("Press Back to cancel", color = MutedBlue.copy(alpha = .8f), fontSize = 11.sp)
+      }
     }
   }
 }

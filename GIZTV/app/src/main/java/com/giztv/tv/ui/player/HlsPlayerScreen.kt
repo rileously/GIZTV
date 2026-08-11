@@ -14,6 +14,9 @@ import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -89,6 +92,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.media3.common.text.CueGroup
@@ -101,6 +105,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -173,6 +178,7 @@ import androidx.tv.material3.Text
 import com.giztv.tv.BuildConfig
 import com.giztv.tv.data.PlaybackContext
 import com.giztv.tv.data.ReelTitle
+import com.giztv.tv.ui.drama.resumeEpisodeFor
 import com.giztv.tv.data.WatchHistoryStore
 import com.giztv.tv.link.GROUP_AUDIO
 import com.giztv.tv.link.GROUP_QUALITY
@@ -204,6 +210,7 @@ import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 internal data class HlsStreamRequest(
   val url: String,
@@ -887,7 +894,21 @@ internal fun HlsPlayerScreen(
   // Shared with the text renderer, which reads it on every render pass.
   val subtitleOffset = remember(subtitleSyncKey) { AtomicLong(subtitleOffsetMs) }
   var playbackSpeed by remember(request) { mutableStateOf(playerPreferences.playbackSpeed()) }
-  var videoResize by remember(request) { mutableStateOf(VideoResizeOption.FIT) }
+  /**
+   * How the picture is fitted to the screen.
+   *
+   * A short drama on a phone fills it. The video is 9:16 and a phone is taller still, so fitting it
+   * leaves a black band above and below — which is not only worse to watch but is what a swipe
+   * exposes as a gap between one drama and the next. Cropping the sides costs a little width and
+   * makes the reel read as one continuous strip. The Picture control still cycles from here.
+   */
+  var videoResize by
+    remember(request) {
+      mutableStateOf(
+        if (request.context?.shortForm == true && !isTelevision) VideoResizeOption.ZOOM
+        else VideoResizeOption.FIT
+      )
+    }
   var isCasting by remember(request) { mutableStateOf(false) }
   var videoSize by remember(request) { mutableStateOf(VideoSize.UNKNOWN) }
   var inPictureInPicture by remember { mutableStateOf(false) }
@@ -985,9 +1006,18 @@ internal fun HlsPlayerScreen(
    */
   val reelMode = shortForm && !isTelevision
   var reelPanelOpen by remember(request.context?.reelId) { mutableStateOf(false) }
-  /** Which way a vertical drag is currently leaning, so the viewer sees where it lands. */
-  var reelIntent by remember(request) { mutableStateOf<ReelSwipe?>(null) }
   var reelHintVisible by remember { mutableStateOf(false) }
+  /**
+   * The swipe under way and the drama it is pulling in, or null when no drag is in progress.
+   *
+   * Held apart from the offset so the cover keeps its place through the release animation, which
+   * outlives the finger.
+   */
+  var reelSwipe by remember(request) { mutableStateOf<Pair<ReelSwipe, ReelTitle>?>(null) }
+  /** How far the incoming cover has come across, in pixels. Negative is upward. */
+  val reelSlide = remember(request) { Animatable(0f) }
+  var reelCommitted by remember(request) { mutableStateOf(false) }
+  val reelScope = rememberCoroutineScope()
 
   // Read by the drag detector as they stand rather than keying it, so that a caption appearing
   // part-way through a swipe cannot restart the detector and abandon the gesture in progress.
@@ -1148,6 +1178,32 @@ internal fun HlsPlayerScreen(
     reelHintVisible = false
     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
     onPlayReelTitle(target)
+  }
+
+  /**
+   * Finishes a swipe once the finger comes off.
+   *
+   * A completed one carries the cover the rest of the way and only then asks for the drama, so the
+   * picture never jumps back to what was playing before being replaced. An abandoned one springs
+   * back and leaves nothing behind.
+   */
+  fun settleReelSwipe(completed: ReelSwipe?, heightPx: Int) {
+    val target = completed?.let { reelSwipeTarget(request.context, it) }
+    if (completed == null || target == null) {
+      reelCommitted = false
+      reelScope.launch {
+        reelSlide.animateTo(0f, spring(dampingRatio = .82f, stiffness = 900f))
+        reelSwipe = null
+      }
+      return
+    }
+    reelSwipe = completed to target
+    reelCommitted = true
+    reelScope.launch {
+      val settled = if (completed == ReelSwipe.NEXT_TITLE) -heightPx.toFloat() else heightPx.toFloat()
+      reelSlide.animateTo(settled, tween(durationMillis = 190, easing = FastOutSlowInEasing))
+      jumpToReelTitle(completed)
+    }
   }
 
   // Pre-queue next episode in background as soon as current episode playback is steady
@@ -1994,12 +2050,17 @@ internal fun HlsPlayerScreen(
               change.consume()
               totalDragPx += dragAmount
               totalAcrossPx += change.position.x - change.previousPosition.x
-              // Only ever announced when there is somewhere to go, so the pill never promises a
-              // drama that is not there.
-              reelIntent =
-                reelTitleSwipe(totalAcrossPx, totalDragPx, size.height)?.takeIf { swipe ->
-                  reelSwipeTarget(request.context, swipe) != null
-                }
+              // Which way the drag is leaning, rather than whether it has gone far enough: the
+              // cover has to start coming in from the first pixel, and only what it says changes
+              // once the swipe is far enough along to count.
+              val leaning =
+                if (totalDragPx < 0f) ReelSwipe.NEXT_TITLE else ReelSwipe.PREVIOUS_TITLE
+              val target = reelSwipeTarget(request.context, leaning)
+              reelSwipe = target?.let { leaning to it }
+              reelCommitted = reelTitleSwipe(totalAcrossPx, totalDragPx, size.height) != null
+              reelScope.launch {
+                reelSlide.snapTo(reelSlideOffset(totalDragPx, size.height, target != null))
+              }
               return@detectVerticalDragGestures
             }
             val control = activeControl ?: return@detectVerticalDragGestures
@@ -2028,18 +2089,17 @@ internal fun HlsPlayerScreen(
               subtitleDragPadding = null
             }
             if (navigatingReel) {
-              reelTitleSwipe(totalAcrossPx, totalDragPx, size.height)?.let(::jumpToReelTitle)
+              settleReelSwipe(reelTitleSwipe(totalAcrossPx, totalDragPx, size.height), size.height)
             }
             draggingSubtitles = false
             navigatingReel = false
-            reelIntent = null
             activeControl = null
             swipeInProgress = false
           },
           onDragCancel = {
+            if (navigatingReel) settleReelSwipe(null, size.height)
             draggingSubtitles = false
             navigatingReel = false
-            reelIntent = null
             activeControl = null
             subtitleDragPadding = null
             swipeInProgress = false
@@ -2072,7 +2132,13 @@ internal fun HlsPlayerScreen(
           bottomPaddingOverride = subtitleDragPadding,
         )
       },
-      modifier = Modifier.fillMaxSize(),
+      // The picture travels with the swipe. The incoming cover starts exactly one screen below it,
+      // so the two move as one strip and the gesture reads as scrolling a feed rather than as
+      // something being pulled over the top of what was playing.
+      modifier =
+        Modifier.fillMaxSize().graphicsLayer {
+          translationY = if (reelMode) reelSlide.value else 0f
+        },
     )
 
     val showPauseTip =
@@ -2204,7 +2270,7 @@ internal fun HlsPlayerScreen(
         val playbackContext = request.context
         // The caption stands in for the controls while they are down, which for a two-minute
         // episode is nearly all of the time.
-        if (playbackContext != null && !controlsVisible && reelIntent == null) {
+        if (playbackContext != null && !controlsVisible && reelSwipe == null) {
           ReelCaption(
             title = playbackContext.title,
             episodeNumber = playbackContext.episodeNumber,
@@ -2214,23 +2280,42 @@ internal fun HlsPlayerScreen(
               reelHintVisible = false
               reelPanelOpen = true
             },
-            modifier = Modifier.align(Alignment.BottomStart).padding(start = 16.dp, bottom = 108.dp),
+            modifier =
+              Modifier.align(Alignment.BottomStart).padding(start = 16.dp, bottom = 108.dp)
+                // Belongs to the picture it names, so it goes wherever that goes.
+                .graphicsLayer { translationY = reelSlide.value },
           )
-        }
-
-        reelIntent?.let { intent ->
-          reelSwipeTarget(playbackContext, intent)?.let { target ->
-            ReelSwipeIntentOverlay(
-              swipe = intent,
-              title = target.title,
-              modifier = Modifier.align(Alignment.Center),
-            )
-          }
         }
 
         if (reelHintVisible) {
           ReelGestureHint(
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 168.dp)
+          )
+        }
+      }
+
+      // The drama being swiped onto, following the finger and then carrying on to fill the screen.
+      // Drawn last of the reel pieces so it covers the caption it is replacing.
+      if (reelMode && !reelPanelOpen) {
+        reelSwipe?.let { (swipe, target) ->
+          // Read once per drama rather than on every frame of the drag: this is disk, and a swipe
+          // is sixty recompositions a second.
+          val resumeEpisode =
+            remember(target.id) {
+              resumeEpisodeFor(target.id, target.episodeCount, historyStore.all())
+            }
+          ReelSwipeCover(
+            title = target,
+            episode = resumeEpisode,
+            modifier =
+              Modifier.fillMaxSize().graphicsLayer {
+                translationY = reelCoverTopOffset(swipe, reelSlide.value, size.height.toInt())
+              },
+          )
+          ReelSwipeCue(
+            swipe = swipe,
+            committed = reelCommitted,
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = 78.dp),
           )
         }
       }

@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import com.giztv.tv.data.PlaybackContext
 import com.giztv.tv.data.CachedSubtitle
 import com.giztv.tv.data.StreamCacheStore
+import com.giztv.tv.data.WatchHistoryStore
 import com.giztv.tv.data.streamStillLive
 import com.giztv.tv.home.isTelevision
 import com.giztv.tv.home.resumeContextFor
@@ -66,6 +67,7 @@ import com.giztv.tv.ui.anime.resolveAnimeEpisode
 import com.giztv.tv.ui.drama.ShortDrama
 import com.giztv.tv.ui.drama.ShortDramaDetailScreen
 import com.giztv.tv.ui.drama.ShortDramaScreen
+import com.giztv.tv.ui.drama.resumeEpisodeFor
 import com.giztv.tv.ui.drama.shortDramaPlayback
 import com.giztv.tv.ui.main.GizTvApp
 import com.giztv.tv.ui.iptv.IptvBrowseState
@@ -970,11 +972,16 @@ fun GizTvRoot(
         onPlayNext = { next -> openForPlayback(next, browserReturnDestination) },
         onPrepareNext = { next -> prefetchTarget = next },
         // A reel swipe onto the drama beside this one. The reel travels with the title being
-        // played, so the run keeps its neighbours however many dramas the viewer swipes through.
+        // played, so the run keeps its neighbours however many dramas the viewer swipes through,
+        // and a drama already part-watched opens where it was left rather than back at episode one.
         onPlayReelTitle = { target ->
           val reel = activeRequest.context?.reel.orEmpty()
           openForPlayback(
-            target.shortDramaPlayback(reel),
+            target.shortDramaPlayback(
+              reel = reel,
+              episode =
+                resumeEpisodeFor(target.id, target.episodeCount, WatchHistoryStore(appContext).all()),
+            ),
             // Back out of the drama that was swiped onto and the listing is the honest place to
             // land: the detail page belongs to whichever drama was opened by hand.
             Destination.SHORT_DRAMAS,
