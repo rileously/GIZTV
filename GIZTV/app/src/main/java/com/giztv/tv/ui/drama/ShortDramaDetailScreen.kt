@@ -53,7 +53,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import com.giztv.tv.data.PlaybackContext
-import com.giztv.tv.data.PlaylistEntry
 import com.giztv.tv.data.WatchHistoryEntry
 import com.giztv.tv.data.WatchHistoryStore
 import com.giztv.tv.theme.GizMint
@@ -77,6 +76,12 @@ internal fun ShortDramaDetailScreen(
   drama: ShortDrama,
   onPlayEpisode: (PlaybackContext) -> Unit,
   onBack: () -> Unit,
+  /**
+   * The run this drama was picked out of, so the player can swipe on to the next one.
+   *
+   * Empty is fine: a drama on its own is simply a reel of one and the swipe finds nothing.
+   */
+  listing: List<ShortDrama> = emptyList(),
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -94,32 +99,12 @@ internal fun ShortDramaDetailScreen(
   val synopsis = drama.synopsis
   val coverUrl = drama.coverUrl
 
-  // Built once so the player's next-episode prompt can roll through the whole drama.
-  val playlist =
-    remember(drama.slug, episodeCount) {
-      episodes.map {
-        PlaylistEntry(
-          episodeNumber = it,
-          name = "Episode $it",
-          pageUrl = chartDramaEpisodeUrl(drama.slug, it),
-        )
-      }
-    }
+  // Built once so the player's next-episode prompt can roll through the whole drama, and so a reel
+  // swipe has the neighbouring dramas to hand without coming back here for them.
+  val reel = remember(drama.slug, listing) { reelAround(drama, listing) }
+  val self = remember(drama.slug, episodeCount) { drama.toReelTitle() }
 
-  fun playbackContextFor(episode: Int): PlaybackContext =
-    PlaybackContext(
-      pageUrl = chartDramaEpisodeUrl(drama.slug, episode),
-      title = drama.title,
-      subtitle = "Episode $episode",
-      posterUrl = coverUrl,
-      overview = synopsis.takeIf(String::isNotBlank),
-      genres = tags,
-      // A chartdrama slug is not a TMDB id, so it never becomes a showId; short dramas have no
-      // seasons either, which is why only the episode number is carried.
-      episodeNumber = episode,
-      playlist = playlist,
-      shortForm = true,
-    )
+  fun playbackContextFor(episode: Int): PlaybackContext = self.shortDramaPlayback(reel, episode)
 
   BoxWithConstraints(
     modifier =

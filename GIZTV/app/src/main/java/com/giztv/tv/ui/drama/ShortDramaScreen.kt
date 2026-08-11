@@ -84,7 +84,8 @@ import kotlinx.coroutines.launch
  */
 @Composable
 internal fun ShortDramaScreen(
-  onOpenDrama: (ShortDrama) -> Unit,
+  /** The drama that was picked, and the run it was picked out of — see [reelAround]. */
+  onOpenDrama: (ShortDrama, List<ShortDrama>) -> Unit,
   onResume: (PlaybackContext) -> Unit,
   onBack: () -> Unit,
   /** Phone footer already provides navigation; hide the redundant Back control. */
@@ -317,7 +318,7 @@ internal fun ShortDramaScreen(
               item(span = { GridItemSpan(maxLineSpan) }) {
                 ContinueWatchingSection(
                   entries = continueWatching,
-                  onResume = { entry -> onResume(entry.toShortDramaPlayback()) },
+                  onResume = { entry -> onResume(entry.toShortDramaPlayback(dramas)) },
                   firstCardFocusRequester = continueRowFocusRequester,
                   up = searchButtonFocusRequester,
                   down = gridFocusRequester,
@@ -357,7 +358,7 @@ internal fun ShortDramaScreen(
                 rating = 0.0,
                 posterUrl = drama.coverUrl,
                 actionLabel = "Open ${drama.title}",
-                onClick = { dismissKeyboard(); onOpenDrama(drama) },
+                onClick = { dismissKeyboard(); onOpenDrama(drama, dramas) },
                 modifier =
                   if (drama.slug == dramas.first().slug) {
                     Modifier.focusRequester(gridFocusRequester)
@@ -376,12 +377,22 @@ internal fun ShortDramaScreen(
 /**
  * Rebuilds enough context to drop back into a half-watched episode.
  *
- * The playlist that carried the run is gone once the player is left, so resuming plays the one
- * episode; the drama's own page is where the rest of the run is picked up again. [shortForm] has to
- * survive, or the player would turn a phone on its side for a portrait picture.
+ * History remembers the one episode and nothing about the run it belongs to. When the drama is
+ * still in [listing] the whole run can be rebuilt from it — which is what gives a resumed episode
+ * the rest of its drama to roll into, and its neighbours to swipe onto. Otherwise it is the single
+ * episode it always was, and the drama's own page is where the rest is picked up again. [shortForm]
+ * has to survive either way, or the player would turn a phone on its side for a portrait picture.
  */
-private fun WatchHistoryEntry.toShortDramaPlayback(): PlaybackContext =
-  PlaybackContext(
+private fun WatchHistoryEntry.toShortDramaPlayback(listing: List<ShortDrama>): PlaybackContext {
+  val slug = chartDramaSlugOf(pageUrl)
+  val drama = slug?.let { id -> listing.firstOrNull { it.slug == id } }
+  if (drama != null) {
+    return drama.toReelTitle().shortDramaPlayback(
+      reel = reelAround(drama, listing),
+      episode = episodeNumber ?: 1,
+    )
+  }
+  return PlaybackContext(
     pageUrl = pageUrl,
     title = title,
     subtitle = subtitle,
@@ -389,6 +400,7 @@ private fun WatchHistoryEntry.toShortDramaPlayback(): PlaybackContext =
     episodeNumber = episodeNumber,
     shortForm = true,
   )
+}
 
 /** Keyword chips and the search box share one line, matching the movie catalog. */
 @Composable

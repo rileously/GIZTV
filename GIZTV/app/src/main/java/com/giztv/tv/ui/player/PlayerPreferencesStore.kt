@@ -11,6 +11,7 @@ private const val KEY_SUBTITLE_POSITION = "subtitle_position"
 private const val KEY_SUBTITLE_STYLE = "subtitle_style"
 private const val KEY_STABLE_PLAYBACK = "stable_playback"
 private const val KEY_AUDIO_PASSTHROUGH = "audio_passthrough"
+private const val KEY_REEL_HINT_SEEN = "reel_hint_seen"
 
 internal const val SUBTITLES_OFF_LABEL = "Off"
 internal const val AUTO_SUBTITLE_LABEL = "Auto English"
@@ -79,6 +80,13 @@ internal class PlayerPreferencesStore(context: Context) {
     read(KEY_SUBTITLE_STYLE, SubtitleStyleOption.OUTLINE, SubtitleStyleOption::valueOf)
 
   fun setSubtitleStyle(option: SubtitleStyleOption) = write(KEY_SUBTITLE_STYLE, option.name)
+
+  /** Whether the reel swipes have been explained. Said once, on the first short drama ever played. */
+  fun reelHintSeen(): Boolean = preferences.getBoolean(KEY_REEL_HINT_SEEN, false)
+
+  fun setReelHintSeen() {
+    preferences.edit().putBoolean(KEY_REEL_HINT_SEEN, true).apply()
+  }
 
   fun audioPassthrough(): AudioPassthroughMode =
     read(KEY_AUDIO_PASSTHROUGH, AudioPassthroughMode.AUTO, AudioPassthroughMode::valueOf)

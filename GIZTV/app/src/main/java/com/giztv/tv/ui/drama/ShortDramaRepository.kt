@@ -94,7 +94,7 @@ internal val DEFAULT_DRAMA_KEYWORDS =
   listOf("Love", "Billionaire", "Revenge", "Secret", "CEO", "Marriage")
 
 private const val CHART_DRAMA_HOST = "chartdrama.com"
-private const val CHART_DRAMA_ORIGIN = "https://$CHART_DRAMA_HOST"
+internal const val CHART_DRAMA_ORIGIN = "https://$CHART_DRAMA_HOST"
 
 /** Kept modest: a catalogue is browsed, not harvested. */
 private val chartDramaRateLimiter = DramaBoxRateLimiter(maxRequests = 20, windowMs = 60_000L)

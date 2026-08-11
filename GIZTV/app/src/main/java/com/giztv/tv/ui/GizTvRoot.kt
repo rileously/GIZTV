@@ -66,6 +66,7 @@ import com.giztv.tv.ui.anime.resolveAnimeEpisode
 import com.giztv.tv.ui.drama.ShortDrama
 import com.giztv.tv.ui.drama.ShortDramaDetailScreen
 import com.giztv.tv.ui.drama.ShortDramaScreen
+import com.giztv.tv.ui.drama.shortDramaPlayback
 import com.giztv.tv.ui.main.GizTvApp
 import com.giztv.tv.ui.iptv.IptvBrowseState
 import com.giztv.tv.ui.iptv.IptvScreen
@@ -225,6 +226,8 @@ fun GizTvRoot(
   var selectedShow by remember { mutableStateOf<TmdbShow?>(null) }
   var catalogDetailBackStack by remember { mutableStateOf<List<CatalogDetailRoute>>(emptyList()) }
   var selectedDrama by remember { mutableStateOf<ShortDrama?>(null) }
+  // The grid a drama was opened from, which is the reel the player swipes along.
+  var dramaListing by remember { mutableStateOf<List<ShortDrama>>(emptyList()) }
   var selectedAnime by remember { mutableStateOf<Anime?>(null) }
   var animeBrowseState by remember { mutableStateOf(AnimeBrowseState()) }
   // Held while the browser resolves a stream, then attached to the request the player receives.
@@ -715,8 +718,9 @@ fun GizTvRoot(
             }
             Destination.SHORT_DRAMAS ->
               ShortDramaScreen(
-                onOpenDrama = { drama ->
+                onOpenDrama = { drama, listing ->
                   selectedDrama = drama
+                  dramaListing = listing
                   destination = Destination.DRAMA_DETAIL
                 },
                 onResume = { context -> openForPlayback(context, Destination.SHORT_DRAMAS) },
@@ -732,6 +736,7 @@ fun GizTvRoot(
                   drama = drama,
                   onPlayEpisode = { context -> openForPlayback(context, Destination.DRAMA_DETAIL) },
                   onBack = { destination = Destination.SHORT_DRAMAS },
+                  listing = dramaListing,
                 )
               } else {
                 Catalog()
@@ -964,6 +969,17 @@ fun GizTvRoot(
         onDismissMini = { clearPlayerSession() },
         onPlayNext = { next -> openForPlayback(next, browserReturnDestination) },
         onPrepareNext = { next -> prefetchTarget = next },
+        // A reel swipe onto the drama beside this one. The reel travels with the title being
+        // played, so the run keeps its neighbours however many dramas the viewer swipes through.
+        onPlayReelTitle = { target ->
+          val reel = activeRequest.context?.reel.orEmpty()
+          openForPlayback(
+            target.shortDramaPlayback(reel),
+            // Back out of the drama that was swiped onto and the listing is the honest place to
+            // land: the detail page belongs to whichever drama was opened by hand.
+            Destination.SHORT_DRAMAS,
+          )
+        },
         onHandedOver = {
           clearPlayerSession()
           destination = Destination.REMOTE

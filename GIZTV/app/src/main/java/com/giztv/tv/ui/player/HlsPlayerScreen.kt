@@ -172,6 +172,7 @@ import androidx.core.net.toUri
 import androidx.tv.material3.Text
 import com.giztv.tv.BuildConfig
 import com.giztv.tv.data.PlaybackContext
+import com.giztv.tv.data.ReelTitle
 import com.giztv.tv.data.WatchHistoryStore
 import com.giztv.tv.link.GROUP_AUDIO
 import com.giztv.tv.link.GROUP_QUALITY
@@ -779,6 +780,13 @@ internal fun HlsPlayerScreen(
   onPlayNext: (PlaybackContext) -> Unit = {},
   /** Said once the episode is over, while the countdown is the only thing left to wait for. */
   onPrepareNext: (PlaybackContext) -> Unit = {},
+  /**
+   * A swipe onto a neighbouring title in the reel.
+   *
+   * Only the host knows how to turn one back into something playable, since a reel entry carries
+   * the source's own identifier and nothing about where its stream comes from.
+   */
+  onPlayReelTitle: (ReelTitle) -> Unit = {},
   /** Said once a title has been handed to the television, so this screen can step aside. */
   onHandedOver: () -> Unit = {},
   /**
@@ -969,6 +977,36 @@ internal fun HlsPlayerScreen(
   val nextPromptVisible = playbackFinished && nextEntry != null
 
   /**
+   * Whether this is watched as a feed.
+   *
+   * Short dramas only, and phones only: a remote has no swipe to give, and the reel a drama sits in
+   * is assembled by the listing that opened it, so a title arriving from anywhere else simply has
+   * no neighbours and navigates nowhere.
+   */
+  val reelMode = shortForm && !isTelevision
+  var reelPanelOpen by remember(request.context?.reelId) { mutableStateOf(false) }
+  /** Which way a vertical drag is currently leaning, so the viewer sees where it lands. */
+  var reelIntent by remember(request) { mutableStateOf<ReelSwipe?>(null) }
+  var reelHintVisible by remember { mutableStateOf(false) }
+
+  // Read by the drag detector as they stand rather than keying it, so that a caption appearing
+  // part-way through a swipe cannot restart the detector and abandon the gesture in progress.
+  val liveSubtitlePosition by rememberUpdatedState(subtitlePosition)
+  /**
+   * Whether a drag beginning on the caption line should reposition captions.
+   *
+   * Ordinarily a chosen track is enough, because a track that is selected is expected to produce
+   * text. A reel cannot afford that assumption: the caption band is a fifth of the height and,
+   * raised, it sits across the middle of the picture — exactly where the swipe to the next drama
+   * begins. Short dramas carry their words burned into the video and no track at all, so what is
+   * actually on screen is the only honest test, and it leaves the swipe alone.
+   */
+  val subtitlesGrabbable by
+    rememberUpdatedState(
+      if (reelMode) subtitlesRendering else !selectedSubtitle.disabled || subtitlesRendering
+    )
+
+  /**
    * Moves the Auto ceiling and starts the settle window.
    *
    * Every rendition change has to fetch a segment the player does not hold yet, so the buffering it
@@ -1092,6 +1130,26 @@ internal fun HlsPlayerScreen(
     seekBurst = null
   }
 
+  // The swipes are the whole point of the reel and nothing on screen announces them, so they are
+  // said once — on the first short drama a phone ever plays — and never again.
+  LaunchedEffect(reelMode, hasStartedPlayback) {
+    if (!reelMode || !hasStartedPlayback || playerPreferences.reelHintSeen()) return@LaunchedEffect
+    reelHintVisible = true
+    delay(REEL_HINT_VISIBLE_MS)
+    reelHintVisible = false
+    playerPreferences.setReelHintSeen()
+  }
+
+  /** Leaves this drama for the one either side of it, saving where this one got to first. */
+  fun jumpToReelTitle(swipe: ReelSwipe) {
+    val target = reelSwipeTarget(request.context, swipe) ?: return
+    savePlaybackProgress()
+    reelPanelOpen = false
+    reelHintVisible = false
+    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+    onPlayReelTitle(target)
+  }
+
   // Pre-queue next episode in background as soon as current episode playback is steady
   LaunchedEffect(isVideoPlaying, nextEntry) {
     if (!isVideoPlaying || nextEntry == null) return@LaunchedEffect
@@ -1134,6 +1192,11 @@ internal fun HlsPlayerScreen(
 
   // While floating over the catalog, Back belongs to the browse destination underneath.
   BackHandler(enabled = !minimized) {
+    // The episodes panel is the topmost thing on screen while it is up, so it goes first.
+    if (reelPanelOpen) {
+      reelPanelOpen = false
+      return@BackHandler
+    }
     when (playerBackAction(settingsOpen, controlsVisible, canMinimize = canMinimize)) {
       PlayerBackAction.CLOSE_SETTINGS -> closeSettings()
       PlayerBackAction.HIDE_CONTROLS -> {
@@ -1704,6 +1767,8 @@ internal fun HlsPlayerScreen(
     if (!inPictureInPicture) return@LaunchedEffect
     activeDialog = null
     controlsVisible = false
+    reelPanelOpen = false
+    reelHintVisible = false
   }
 
   val revealControlsKeys =
@@ -1769,7 +1834,10 @@ internal fun HlsPlayerScreen(
         }
       }
       .focusable(enabled = !controlsVisible && !settingsOpen)
-      .pointerInput(isTelevision, settingsOpen, player) {
+      .pointerInput(isTelevision, settingsOpen, reelPanelOpen, player) {
+        // The panel is drawn over the picture and owns everything that lands on it.
+        if (reelPanelOpen) return@pointerInput
+
         fun toggleControls() {
           if (settingsOpen) return
           controlsVisible = !controlsVisible
@@ -1824,44 +1892,86 @@ internal fun HlsPlayerScreen(
           },
         )
       }
-      .pointerInput(
-        isTelevision,
-        settingsOpen,
-        inPictureInPicture,
-        player,
-        subtitlePosition,
-        selectedSubtitle.disabled,
-        subtitlesRendering,
-      ) {
-        if (isTelevision || settingsOpen || inPictureInPicture) return@pointerInput
+      // Across the picture, a short drama on a phone pulls the episodes panel in. Registered ahead
+      // of the vertical gesture so whichever axis a swipe leans on is the one that claims it: the
+      // first detector past its own slop consumes the drag and the other stands down.
+      .pointerInput(reelMode, settingsOpen, inPictureInPicture, reelPanelOpen) {
+        if (!reelMode || settingsOpen || inPictureInPicture || reelPanelOpen) return@pointerInput
+
+        var totalDragX = 0f
+        var totalDragY = 0f
+        detectHorizontalDragGestures(
+          onDragStart = {
+            totalDragX = 0f
+            totalDragY = 0f
+          },
+          onHorizontalDrag = { change, dragAmount ->
+            change.consume()
+            totalDragX += dragAmount
+            totalDragY += change.position.y - change.previousPosition.y
+          },
+          onDragEnd = {
+            if (reelPanelSwipe(totalDragX, totalDragY, size.width) != ReelPanelSwipe.OPEN) return@detectHorizontalDragGestures
+            reelHintVisible = false
+            controlsVisible = false
+            reelPanelOpen = true
+          },
+        )
+      }
+      // Keyed only on what changes whether this gesture exists at all. Captions arriving and
+      // leaving used to be keys here, which tore the detector down in the middle of a drag and
+      // dropped the gesture on the floor — the swipe simply stopped halfway with nothing to show
+      // for it. They are read as they stand instead.
+      .pointerInput(isTelevision, settingsOpen, inPictureInPicture, reelMode, reelPanelOpen, player) {
+        if (isTelevision || settingsOpen || inPictureInPicture || reelPanelOpen) return@pointerInput
 
         var activeControl: PlayerSwipeControl? = null
         var draggingSubtitles = false
+        // A reel swipe: the middle of a short drama's picture goes to another drama rather than to
+        // brightness or volume, which keep the outer edges they have always had.
+        var navigatingReel = false
         var startLevel = 0f
-        var startSubtitlePadding = subtitlePosition.bottomPadding
+        var startSubtitlePadding = liveSubtitlePosition.bottomPadding
         var totalDragPx = 0f
+        var totalAcrossPx = 0f
         detectVerticalDragGestures(
           onDragStart = { start ->
             totalDragPx = 0f
+            totalAcrossPx = 0f
             controlsInteractionVersion++
             val grabSubtitles =
               isSubtitleDragTouch(
                 touchY = start.y,
                 heightPx = size.height,
-                bottomPaddingFraction = subtitlePosition.bottomPadding,
-                subtitlesEnabled = !selectedSubtitle.disabled || subtitlesRendering,
+                bottomPaddingFraction = liveSubtitlePosition.bottomPadding,
+                subtitlesEnabled = subtitlesGrabbable,
               )
             if (grabSubtitles) {
               draggingSubtitles = true
+              navigatingReel = false
               activeControl = null
-              startSubtitlePadding = subtitlePosition.bottomPadding
+              startSubtitlePadding = liveSubtitlePosition.bottomPadding
               subtitleDragPadding = startSubtitlePadding
               swipeInProgress = true
               swipeFeedback = null
               return@detectVerticalDragGestures
             }
             draggingSubtitles = false
-            val control = playerSwipeControl(start.x, size.width)
+            val zone = if (reelMode) reelGestureZone(start.x, size.width) else null
+            if (zone == ReelGestureZone.NAVIGATE) {
+              navigatingReel = true
+              activeControl = null
+              swipeInProgress = true
+              swipeFeedback = null
+              return@detectVerticalDragGestures
+            }
+            navigatingReel = false
+            val control =
+              when (zone) {
+                ReelGestureZone.BRIGHTNESS -> PlayerSwipeControl.BRIGHTNESS
+                ReelGestureZone.VOLUME -> PlayerSwipeControl.VOLUME
+                else -> playerSwipeControl(start.x, size.width)
+              }
             activeControl = control
             startLevel =
               when (control) {
@@ -1878,6 +1988,18 @@ internal fun HlsPlayerScreen(
               totalDragPx += dragAmount
               subtitleDragPadding =
                 subtitlePaddingAfterDrag(startSubtitlePadding, totalDragPx, size.height)
+              return@detectVerticalDragGestures
+            }
+            if (navigatingReel) {
+              change.consume()
+              totalDragPx += dragAmount
+              totalAcrossPx += change.position.x - change.previousPosition.x
+              // Only ever announced when there is somewhere to go, so the pill never promises a
+              // drama that is not there.
+              reelIntent =
+                reelTitleSwipe(totalAcrossPx, totalDragPx, size.height)?.takeIf { swipe ->
+                  reelSwipeTarget(request.context, swipe) != null
+                }
               return@detectVerticalDragGestures
             }
             val control = activeControl ?: return@detectVerticalDragGestures
@@ -1898,19 +2020,26 @@ internal fun HlsPlayerScreen(
           onDragEnd = {
             if (draggingSubtitles) {
               val snapped = nearestSubtitlePosition(subtitleDragPadding ?: startSubtitlePadding)
-              if (snapped != subtitlePosition) {
+              if (snapped != liveSubtitlePosition) {
                 haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
               }
               subtitlePosition = snapped
               playerPreferences.setSubtitlePosition(snapped)
               subtitleDragPadding = null
             }
+            if (navigatingReel) {
+              reelTitleSwipe(totalAcrossPx, totalDragPx, size.height)?.let(::jumpToReelTitle)
+            }
             draggingSubtitles = false
+            navigatingReel = false
+            reelIntent = null
             activeControl = null
             swipeInProgress = false
           },
           onDragCancel = {
             draggingSubtitles = false
+            navigatingReel = false
+            reelIntent = null
             activeControl = null
             subtitleDragPadding = null
             swipeInProgress = false
@@ -1971,7 +2100,7 @@ internal fun HlsPlayerScreen(
     }
 
     AnimatedVisibility(
-      visible = controlsVisible && !settingsOpen && !inPictureInPicture,
+      visible = controlsVisible && !settingsOpen && !inPictureInPicture && !reelPanelOpen,
       enter = fadeIn(),
       exit = fadeOut(),
     ) {
@@ -2071,6 +2200,41 @@ internal fun HlsPlayerScreen(
         }
       }
 
+      if (reelMode && !reelPanelOpen && error == null) {
+        val playbackContext = request.context
+        // The caption stands in for the controls while they are down, which for a two-minute
+        // episode is nearly all of the time.
+        if (playbackContext != null && !controlsVisible && reelIntent == null) {
+          ReelCaption(
+            title = playbackContext.title,
+            episodeNumber = playbackContext.episodeNumber,
+            episodeCount = playbackContext.playlist.size,
+            genres = playbackContext.currentReelTitle?.genres.orEmpty().ifEmpty { playbackContext.genres },
+            onOpenEpisodes = {
+              reelHintVisible = false
+              reelPanelOpen = true
+            },
+            modifier = Modifier.align(Alignment.BottomStart).padding(start = 16.dp, bottom = 108.dp),
+          )
+        }
+
+        reelIntent?.let { intent ->
+          reelSwipeTarget(playbackContext, intent)?.let { target ->
+            ReelSwipeIntentOverlay(
+              swipe = intent,
+              title = target.title,
+              modifier = Modifier.align(Alignment.Center),
+            )
+          }
+        }
+
+        if (reelHintVisible) {
+          ReelGestureHint(
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 168.dp)
+          )
+        }
+      }
+
       // Sits under the swipe pill in the file so a burst never paints over a level being dragged.
       seekBurst?.let { burst ->
         PlayerSeekBurstOverlay(
@@ -2120,6 +2284,35 @@ internal fun HlsPlayerScreen(
           modifier = Modifier.align(Alignment.TopEnd),
         )
       }
+    }
+
+    request.context?.takeIf { reelMode }?.let { playbackContext ->
+      // The strip of picture left beside the panel dismisses it, the way a sheet's scrim does.
+      AnimatedVisibility(visible = reelPanelOpen, enter = fadeIn(), exit = fadeOut()) {
+        Box(
+          Modifier.fillMaxSize().background(Color.Black.copy(alpha = .45f)).pointerInput(Unit) {
+            detectTapGestures { reelPanelOpen = false }
+          }
+        )
+      }
+      ReelDetailsPanel(
+        playback = playbackContext,
+        visible = reelPanelOpen,
+        onSelectEpisode = { entry ->
+          reelPanelOpen = false
+          if (entry.pageUrl != playbackContext.pageUrl) {
+            savePlaybackProgress()
+            onPlayNext(playbackContext.advanceTo(entry))
+          }
+        },
+        onSelectTitle = { target ->
+          savePlaybackProgress()
+          reelPanelOpen = false
+          onPlayReelTitle(target)
+        },
+        onClose = { reelPanelOpen = false },
+        modifier = Modifier.align(Alignment.CenterEnd),
+      )
     }
 
     activeDialog?.let { dialog ->
