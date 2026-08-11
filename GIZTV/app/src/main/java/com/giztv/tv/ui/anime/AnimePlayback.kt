@@ -3,6 +3,7 @@ package com.giztv.tv.ui.anime
 import android.content.Context
 import android.util.Log
 import com.giztv.tv.data.PlaybackContext
+import com.giztv.tv.data.PlaylistEntry
 import com.giztv.tv.data.UiPreferencesStore
 import com.giztv.tv.ui.player.HlsStreamRequest
 
@@ -43,6 +44,16 @@ internal fun List<AnimeLanguage>.preferring(code: String?): AnimeLanguage? =
     ?: firstOrNull(AnimeLanguage::isSubtitled)
     ?: firstOrNull()
 
+/** Every episode the site lists, as the run the player rolls through. */
+internal fun animePlaylist(slug: String, episodes: List<AnimeEpisode>): List<PlaylistEntry> =
+  episodes.map {
+    PlaylistEntry(
+      episodeNumber = it.number,
+      name = "Episode ${it.number}",
+      pageUrl = animeEpisodeIdentity(slug, it.number),
+    )
+  }
+
 internal fun animePlaybackRequest(
   streamUrl: String,
   slug: String,
@@ -77,8 +88,9 @@ internal suspend fun resolveAnimeEpisode(
   playback: PlaybackContext,
 ): HlsStreamRequest? {
   val ref = animeEpisodeRef(playback.pageUrl) ?: return null
+  val listed = AnimeRepository.episodes(ref.animeId)
   val episode =
-    AnimeRepository.episodes(ref.animeId).firstOrNull { it.number == ref.episodeNumber }
+    listed.firstOrNull { it.number == ref.episodeNumber }
       ?: run {
         Log.w("GizTvAnime", "Episode ${ref.episodeNumber} is not listed for ${ref.slug}")
         return null
@@ -96,6 +108,11 @@ internal suspend fun resolveAnimeEpisode(
     title = playback.title,
     episodeNumber = ref.episodeNumber,
     language = language,
-    playbackContext = playback,
+    // The run is built from the list already in hand rather than fetched again. An episode reached
+    // from Continue watching or the home row arrives knowing only itself, and without the rest of
+    // the anime it would stop at its own ending instead of rolling into the next one.
+    playbackContext =
+      if (playback.playlist.isNotEmpty()) playback
+      else playback.copy(playlist = animePlaylist(ref.slug, listed)),
   )
 }

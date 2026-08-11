@@ -1019,6 +1019,17 @@ internal fun HlsPlayerScreen(
   var reelCommitted by remember(request) { mutableStateOf(false) }
   val reelScope = rememberCoroutineScope()
 
+  /**
+   * Intro and credit times for what is playing, once anyone knows any.
+   *
+   * Asked for after playback starts rather than while the stream is still being resolved, because
+   * the anime database wants the episode length and both are beside the point until there is a
+   * picture to skip through.
+   */
+  var skipSegments by remember(request) { mutableStateOf(SkipSegments()) }
+  /** Polled rather than derived: nothing else on screen needs the playhead this often. */
+  var skipPositionMs by remember(request) { mutableLongStateOf(0L) }
+
   // Read by the drag detector as they stand rather than keying it, so that a caption appearing
   // part-way through a swipe cannot restart the detector and abandon the gesture in progress.
   val liveSubtitlePosition by rememberUpdatedState(subtitlePosition)
@@ -1737,6 +1748,22 @@ internal fun HlsPlayerScreen(
     }
   }
 
+  // Live streams have no intro to skip and no end to run into, and a title nobody has submitted
+  // times for simply comes back empty and is never asked about again.
+  LaunchedEffect(request, hasStartedPlayback, isLiveContent) {
+    if (!hasStartedPlayback || isLiveContent) return@LaunchedEffect
+    val durationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: 0L
+    skipSegments = SkipSegmentRepository.forPlayback(request.context, durationMs)
+  }
+
+  LaunchedEffect(player, skipSegments) {
+    if (skipSegments.isEmpty) return@LaunchedEffect
+    while (true) {
+      skipPositionMs = player.currentPosition.coerceAtLeast(0L)
+      delay(500L)
+    }
+  }
+
   LaunchedEffect(controlsVisible, isVideoPlaying, settingsOpen, controlsInteractionVersion) {
     if (controlsVisible && isVideoPlaying && !settingsOpen) {
       delay(playerControllerTimeoutMs(isTelevision).toLong())
@@ -2332,6 +2359,39 @@ internal fun HlsPlayerScreen(
               .fillMaxWidth(PLAYER_DOUBLE_TAP_EDGE_FRACTION),
         )
       }
+    }
+
+    // The offer to step over an intro or a set of credits. Only ever a button: these times come
+    // from a community database timed against the official release, while what is playing is some
+    // provider's own encode, so a press that lands a few seconds out costs a press — an automatic
+    // skip would cost a scene.
+    val activeSkip =
+      skipSegments
+        .takeIf { error == null && !settingsOpen && !inPictureInPicture && !reelPanelOpen && !playbackFinished }
+        ?.at(skipPositionMs, player.duration.takeIf { it != C.TIME_UNSET } ?: 0L)
+    activeSkip?.let { segment ->
+      val playbackContext = request.context
+      val next = nextEntry
+      SkipSegmentButton(
+        label = segment.label(hasNextEpisode = segment.kind == SkipKind.CREDITS && next != null),
+        isTelevision = isTelevision,
+        onClick = {
+          controlsInteractionVersion++
+          if (segment.kind == SkipKind.CREDITS && next != null && playbackContext != null) {
+            savePlaybackProgress()
+            onPlayNext(playbackContext.advanceTo(next))
+          } else {
+            player.seekTo(segment.skipTargetMs(player.duration.coerceAtLeast(0L)))
+          }
+        },
+        modifier =
+          Modifier.align(Alignment.BottomEnd)
+            .padding(
+              end = if (isTelevision) 44.dp else 22.dp,
+              // Clear of the controls when they are up, so it never sits on the timeline.
+              bottom = if (controlsVisible) (if (isTelevision) 150.dp else 132.dp) else 46.dp,
+            ),
+      )
     }
 
     // Nothing to offer when the next episode is already starting; the card would only flash.

@@ -31,6 +31,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.unit.dp
+import com.giztv.tv.BuildConfig
 import com.giztv.tv.data.PlaybackContext
 import com.giztv.tv.data.CachedSubtitle
 import com.giztv.tv.data.StreamCacheStore
@@ -54,6 +55,8 @@ import com.giztv.tv.ui.catalog.providerIndexOf
 import com.giztv.tv.ui.catalog.providerPageUrl
 import com.giztv.tv.ui.catalog.TmdbMovie
 import com.giztv.tv.ui.catalog.TmdbShow
+import com.giztv.tv.ui.catalog.TmdbTvRepository
+import com.giztv.tv.ui.catalog.seasonPlaylist
 import com.giztv.tv.ui.catalog.MovieDetailScreen
 import com.giztv.tv.ui.catalog.PersonDetailScreen
 import com.giztv.tv.ui.catalog.TvShowDetailScreen
@@ -409,6 +412,21 @@ fun GizTvRoot(
    */
   fun openForPlayback(context: PlaybackContext, returnTo: Destination) {
     if (animeEpisodeRef(context.pageUrl) == null) {
+      // An episode resumed from Continue watching, the home row or the widget knows nothing about
+      // the season it belongs to, so it used to stop dead at its own credits. The rest of the
+      // season is fetched before the provider is asked — one cached TMDB call in front of a
+      // resolve that takes seconds — so that the episode after this one is there to roll into.
+      val target = catalogTargetOf(context.pageUrl)
+      if (context.playlist.isEmpty() && target?.isEpisode == true) {
+        scope.launch {
+          val season =
+            runCatching { TmdbTvRepository(BuildConfig.TMDB_API_KEY).episodes(target.tmdbId, requireNotNull(target.seasonNumber)) }
+              .onFailure { Log.w("GizTvRoot", "Season could not be rebuilt for ${context.pageUrl}", it) }
+              .getOrDefault(emptyList())
+          openStreamProviderPlayback(context.copy(playlist = seasonPlaylist(target.tmdbId, season)), returnTo)
+        }
+        return
+      }
       openStreamProviderPlayback(context, returnTo)
       return
     }

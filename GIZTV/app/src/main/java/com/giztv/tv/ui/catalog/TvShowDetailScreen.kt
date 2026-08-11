@@ -83,6 +83,26 @@ import kotlinx.coroutines.launch
  * Selecting a season swaps the episode list in place, so a viewer reaches any episode with at most
  * one horizontal move and one vertical move.
  */
+/**
+ * A season turned into the run the player rolls through.
+ *
+ * Shared with the resume path: an episode reached from Continue watching, the home row or the
+ * widget arrives knowing only itself, and rebuilding its season here is what lets it roll into the
+ * next one rather than stopping at its own credits.
+ */
+internal fun seasonPlaylist(showId: Int, episodes: List<TmdbEpisode>): List<PlaylistEntry> =
+  episodes.map {
+    PlaylistEntry(
+      episodeNumber = it.episodeNumber,
+      name = it.name,
+      pageUrl = vidfastEpisodeUrl(showId, it.seasonNumber, it.episodeNumber),
+      overview = it.overview,
+      runtimeMinutes = it.runtimeMinutes,
+      airDate = it.airDate,
+      rating = it.voteAverage.takeIf { rating -> rating > 0.0 },
+    )
+  }
+
 @Composable
 internal fun TvShowDetailScreen(
   show: TmdbShow,
@@ -160,20 +180,7 @@ internal fun TvShowDetailScreen(
 
   BackHandler(onBack = onBack)
 
-  val playlist =
-    remember(episodes) {
-      episodes.map {
-        PlaylistEntry(
-          episodeNumber = it.episodeNumber,
-          name = it.name,
-          pageUrl = vidfastEpisodeUrl(show.id, it.seasonNumber, it.episodeNumber),
-          overview = it.overview,
-          runtimeMinutes = it.runtimeMinutes,
-          airDate = it.airDate,
-          rating = it.voteAverage.takeIf { rating -> rating > 0.0 },
-        )
-      }
-    }
+  val playlist = remember(episodes) { seasonPlaylist(show.id, episodes) }
 
   BoxWithConstraints(
     modifier =
