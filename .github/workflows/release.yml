@@ -62,14 +62,14 @@ jobs:
           # this says both things. Drop the second half once 1.52.x is gone.
           RELEASE_NOTES: |
             What changed:
-            - Short dramas play like a reel on a phone: swipe up for the next drama, down for the
-              one before it, and left for the synopsis and every episode. Brightness and volume
-              still live on the left and right edges.
-            - Fixed the sub or dub you picked being thrown away when an anime episode ended and the
-              next one started — it used to fall back to the English dub.
-            - The loading page now lets you pick another server instead of waiting for the current
-              one to give up. Movies and series only.
-            - Fixed brightness and volume swipes stopping halfway on anything with subtitles.
+            - The short drama swipe now moves the picture with your finger, with the next drama's
+              cover following straight behind it.
+            - Short dramas fill the phone screen instead of sitting between black bands. The
+              Picture control still cycles if you want them fitted.
+            - Swiping onto a drama you have already started picks up at your last episode rather
+              than starting it again, and says so before it opens.
+            - A drama reached by a swipe keeps its cover on screen while the stream opens, instead
+              of cutting to the loading page.
 
             Already on 1.53.0 or newer? This installs itself as usual.
 
