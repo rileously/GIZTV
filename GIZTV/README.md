@@ -30,6 +30,8 @@ GIZTV is an Android phone and TV app built with Kotlin and Compose. It browses a
 - Ad-host filtering, popup/alert blocking, and cosmetic ad cleanup
 - Automatic `.m3u8` detection with cookies, referrer, and user-agent forwarding
 - Built-in M3U IPTV guide with group filters, channel search, artwork, and per-stream request headers
+- Favourites and a recently watched row pinned to the front of the IPTV categories, kept across playlist refreshes
+- Repeated listings of the same channel collapsed to one card that inherits every mirror as a backup source
 - Native HLS, DASH, MPEG-TS, ClearKey, and Widevine IPTV playback through Media3
 - Native Media3 HLS playback with adaptive quality and a 15–60 second buffer window
 - Automatic TV decoder recovery with hardware fallback, software-first compatibility retry, and a 720p/5 Mbps ceiling

@@ -21,6 +21,12 @@ import android.util.Log
 
 internal const val ALL_IPTV_CHANNELS = "All channels"
 internal const val ALL_IPTV_GROUPS = "All providers"
+/**
+ * Pinned categories. They are held by the viewer rather than by the playlist, so the strip prepends
+ * them and they never take part in [IPTV_CATEGORY_ORDER].
+ */
+internal const val IPTV_CATEGORY_FAVORITES = "Favorites"
+internal const val IPTV_CATEGORY_RECENT = "Recent"
 internal const val IPTV_CATEGORY_DADDYLIVE = "DaddyLive"
 internal const val IPTV_CATEGORY_SPORTS = "Sports"
 internal const val IPTV_CATEGORY_NEWS = "News"
@@ -61,10 +67,22 @@ private val IPTV_CATEGORY_ORDER =
     IPTV_CATEGORY_OTHER,
   )
 
+/** Hoisted: the key is read several times per channel, and the playlist runs to five figures. */
+private val whitespaceRun = Regex("\\s+")
+
 internal data class IptvPlaylist(
   val channels: List<IptvChannel>,
   val epgUrl: String? = null,
-)
+) {
+  /**
+   * Browsing keys worked out once.
+   *
+   * The public playlist runs to five figures, and deriving a category plus four lowercase forms for
+   * every channel on every keystroke left search lagging a line behind the typing. The repository
+   * warms this on its background thread before the screen ever reads it.
+   */
+  val browseIndex: IptvBrowseIndex by lazy { IptvBrowseIndex.of(channels) }
+}
 
 internal data class IptvCategory(
   val label: String,
@@ -97,6 +115,23 @@ internal data class IptvChannel(
    */
   val resolveViaBrowser: Boolean = false,
 ) {
+  /**
+   * What identifies this channel across playlist reloads.
+   *
+   * The generated [id] carries the position in the file, which moves whenever the upstream playlist
+   * is re-cut, so it cannot anchor a favourite. A guide id, or failing that the name within its
+   * group, survives that. It doubles as the key the repeated listings of a channel are pooled and
+   * collapsed on in [IptvBrowseIndex].
+   */
+  val key: String
+    get() {
+      val guideId = tvgId?.trim()?.substringBefore('@')?.lowercase(Locale.ENGLISH)
+      if (!guideId.isNullOrBlank()) return "guide:$guideId"
+      val normalizedName = name.trim().lowercase(Locale.ENGLISH).replace(whitespaceRun, " ")
+      if (normalizedName.length >= 5) return "name:${group.lowercase(Locale.ENGLISH)}:$normalizedName"
+      return "url:$url"
+    }
+
   val formatLabel: String
     get() =
       when {
@@ -158,7 +193,6 @@ internal object IptvRepository {
           context.assets.open(BUNDLED_PLAYLIST).bufferedReader().use(::parseIptvPlaylist)
         }
       val parsed = remotePlaylist ?: staleDiskPlaylist ?: bundledPlaylist.value
-      val resilient = parsed.withMatchingBackupSources()
       // DaddyLive's grid is optional: a failure there must not blank the rest of IPTV.
       val daddyLive =
         runCatching {
@@ -168,10 +202,13 @@ internal object IptvRepository {
           .getOrDefault(emptyList())
       val merged =
         if (daddyLive.isEmpty()) {
-          resilient
+          parsed
         } else {
-          resilient.copy(channels = daddyLive + resilient.channels)
+          parsed.copy(channels = daddyLive + parsed.channels)
         }
+      // Built here rather than on first use: this is the background thread, and the screen reads it
+      // from the frame that shows the guide.
+      merged.browseIndex
       cached = merged
       cachedAtEpochMs = now
       merged
@@ -243,31 +280,6 @@ private fun cachePlaylist(file: File, source: String) {
       temporary.delete()
     }
   }
-}
-
-private fun IptvPlaylist.withMatchingBackupSources(): IptvPlaylist {
-  val matchingChannels = channels.mapNotNull { channel -> channel.backupIdentity()?.let { it to channel } }.groupBy({ it.first }, { it.second })
-  return copy(
-    channels =
-      channels.map { channel ->
-        val alternatives =
-          matchingChannels[channel.backupIdentity()]
-            .orEmpty()
-            .flatMap(IptvChannel::playbackSources)
-        val sources =
-          (channel.playbackSources + alternatives)
-            .distinctBy { source -> source.url to source.headers }
-            .take(MAX_PLAYBACK_SOURCES)
-        channel.copy(backupSources = sources.drop(1))
-      }
-  )
-}
-
-private fun IptvChannel.backupIdentity(): String? {
-  val guideId = tvgId?.trim()?.substringBefore('@')?.lowercase(Locale.ENGLISH)
-  if (!guideId.isNullOrBlank()) return "guide:$guideId"
-  val normalizedName = name.trim().lowercase(Locale.ENGLISH).replace(Regex("\\s+"), " ")
-  return normalizedName.takeIf { it.length >= 5 }?.let { "name:${group.lowercase(Locale.ENGLISH)}:$it" }
 }
 
 internal fun parseIptvPlaylist(reader: Reader): IptvPlaylist {
@@ -363,6 +375,108 @@ internal fun parseIptvPlaylist(reader: Reader): IptvPlaylist {
   return IptvPlaylist(channels = channels, epgUrl = epgUrl)
 }
 
+/**
+ * A playlist arranged for browsing: sorted once, with the category and the lowercase forms search
+ * compares against already derived, and with the repeated listings of a channel collapsed to one.
+ */
+internal class IptvBrowseIndex private constructor(private val entries: List<Entry>) {
+  private class Entry(
+    val channel: IptvChannel,
+    val category: String,
+    val name: String,
+    val group: String,
+    val guideId: String,
+  )
+
+  val categories: List<IptvCategory> by lazy {
+    val counts =
+      entries.groupBy(Entry::category).mapValues { (_, group) -> group.distinctChannelCount() }
+    buildList {
+      add(IptvCategory(ALL_IPTV_CHANNELS, entries.distinctChannelCount()))
+      IPTV_CATEGORY_ORDER.forEach { category ->
+        counts[category]?.takeIf { it > 0 }?.let { add(IptvCategory(category, it)) }
+      }
+    }
+  }
+
+  // Reversed so the surviving listing is the same one browsing shows: associateBy keeps the last
+  // entry it sees, and the collapse in distinctChannels keeps the first.
+  private val byKey: Map<String, IptvChannel> by lazy {
+    entries.asReversed().associateBy({ it.channel.key }, { it.channel })
+  }
+
+  /** The largest groups first: a category of hundreds is unusable filtered by its stragglers. */
+  fun groups(category: String?): List<String> =
+    listOf(ALL_IPTV_GROUPS) +
+      entries
+        .filter { it.matchesCategory(category) }
+        .groupBy(Entry::group)
+        .values
+        .sortedWith(compareByDescending<List<Entry>> { it.size }.thenBy { it.first().group })
+        .map { it.first().channel.group }
+
+  fun visible(category: String?, group: String?, query: String): List<IptvChannel> {
+    val selectedGroup = group?.takeUnless { it == ALL_IPTV_GROUPS || it == ALL_IPTV_CHANNELS }?.lowercase(Locale.ENGLISH)
+    val needle = query.trim().lowercase(Locale.ENGLISH)
+    return entries
+      .filter { entry ->
+        entry.matchesCategory(category) &&
+          (selectedGroup == null || entry.group == selectedGroup) &&
+          (needle.isEmpty() || entry.matches(needle))
+      }
+      .distinctChannels()
+  }
+
+  /** Resolves stored channel keys, keeping the order they were given in and dropping the stale. */
+  fun find(keys: List<String>): List<IptvChannel> = keys.mapNotNull(byKey::get)
+
+  private fun Entry.matchesCategory(selected: String?): Boolean =
+    selected == null || selected == ALL_IPTV_CHANNELS || category.equals(selected, ignoreCase = true)
+
+  private fun Entry.matches(needle: String): Boolean =
+    name.contains(needle) ||
+      group.contains(needle) ||
+      guideId.contains(needle) ||
+      category.contains(needle, ignoreCase = true)
+
+  private fun List<Entry>.distinctChannels(): List<IptvChannel> =
+    distinctBy { it.channel.key }.map(Entry::channel)
+
+  private fun List<Entry>.distinctChannelCount(): Int = distinctBy { it.channel.key }.size
+
+  companion object {
+    fun of(channels: List<IptvChannel>): IptvBrowseIndex {
+      // Every listing gets the addresses all of its twins hold, because collapsing them is about to
+      // drop all but one, and the ones dropped are exactly what the player falls back to. Only the
+      // sources are pooled: each listing keeps its own name, group, and artwork, so a channel filed
+      // under two categories still reads correctly under each.
+      val pooledSources =
+        channels.groupBy(IptvChannel::key).mapValues { (_, copies) ->
+          copies.flatMap(IptvChannel::playbackSources)
+        }
+      return IptvBrowseIndex(
+        channels
+          .map { channel ->
+            val sources =
+              (channel.playbackSources + pooledSources.getValue(channel.key))
+                .distinctBy { source -> source.url to source.headers }
+                .take(MAX_PLAYBACK_SOURCES)
+            Entry(
+              channel = channel.copy(backupSources = sources.drop(1)),
+              category = iptvCategoryFor(channel),
+              name = channel.name.lowercase(Locale.ENGLISH),
+              group = channel.group.lowercase(Locale.ENGLISH),
+              guideId = channel.tvgId?.lowercase(Locale.ENGLISH).orEmpty(),
+            )
+          }
+          // Sorted once here so that filtering, which happens per keystroke, only ever has to
+          // preserve the order rather than rebuild it.
+          .sortedWith(compareBy(Entry::name, Entry::group))
+      )
+    }
+  }
+}
+
 internal fun iptvGroups(channels: List<IptvChannel>): List<String> =
   buildList {
     add(ALL_IPTV_CHANNELS)
@@ -372,36 +486,13 @@ internal fun iptvGroups(channels: List<IptvChannel>): List<String> =
     }
   }
 
-internal fun iptvCategories(channels: List<IptvChannel>): List<IptvCategory> {
-  val counts = channels.groupingBy(::iptvCategoryFor).eachCount()
-  return buildList {
-    add(IptvCategory(ALL_IPTV_CHANNELS, channels.size))
-    IPTV_CATEGORY_ORDER.forEach { category ->
-      counts[category]?.takeIf { it > 0 }?.let { add(IptvCategory(category, it)) }
-    }
-  }
-}
+internal fun iptvCategories(channels: List<IptvChannel>): List<IptvCategory> =
+  IptvBrowseIndex.of(channels).categories
 
 internal fun iptvGroupsForCategory(
   channels: List<IptvChannel>,
   category: String?,
-): List<String> {
-  val categoryChannels =
-    category
-      ?.takeUnless { it == ALL_IPTV_CHANNELS }
-      ?.let { selected -> channels.filter { iptvCategoryFor(it).equals(selected, ignoreCase = true) } }
-      ?: channels
-  val groups =
-    categoryChannels
-      .groupBy { it.group.lowercase(Locale.ENGLISH) }
-      .values
-      .sortedWith(
-        compareByDescending<List<IptvChannel>> { it.size }
-          .thenBy { it.first().group.lowercase(Locale.ENGLISH) }
-      )
-      .map { it.first().group }
-  return listOf(ALL_IPTV_GROUPS) + groups
-}
+): List<String> = IptvBrowseIndex.of(channels).groups(category)
 
 internal fun iptvCategoryFor(channel: IptvChannel): String =
   iptvCategoryFor(group = channel.group, channelName = channel.name)
@@ -482,28 +573,7 @@ internal fun visibleIptvChannels(
   category: String?,
   group: String?,
   query: String,
-): List<IptvChannel> {
-  val selectedCategory = category?.takeUnless { it == ALL_IPTV_CHANNELS }
-  val selectedGroup = group?.takeUnless { it == ALL_IPTV_GROUPS || it == ALL_IPTV_CHANNELS }
-  val needle = query.trim()
-  return channels
-    .filter { channel ->
-      val channelCategory = iptvCategoryFor(channel)
-      val inCategory =
-        selectedCategory == null || channelCategory.equals(selectedCategory, ignoreCase = true)
-      val inGroup = selectedGroup == null || channel.group.equals(selectedGroup, ignoreCase = true)
-      val matches =
-        needle.isBlank() || channel.name.contains(needle, ignoreCase = true) ||
-          channel.group.contains(needle, ignoreCase = true) ||
-          channelCategory.contains(needle, ignoreCase = true) ||
-          channel.tvgId?.contains(needle, ignoreCase = true) == true
-      inCategory && inGroup && matches
-    }
-    .sortedWith(
-      compareBy<IptvChannel> { it.name.lowercase(Locale.ENGLISH) }
-        .thenBy { it.group.lowercase(Locale.ENGLISH) }
-    )
-}
+): List<IptvChannel> = IptvBrowseIndex.of(channels).visible(category, group, query)
 
 private data class PendingChannel(
   val name: String,

@@ -34,6 +34,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -68,6 +71,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
+import com.giztv.tv.data.IptvChannelStore
 import com.giztv.tv.theme.GizMint
 import com.giztv.tv.theme.DeepSpace
 import com.giztv.tv.theme.MutedBlue
@@ -81,7 +85,10 @@ import com.giztv.tv.ui.catalog.GizTvMark
 import com.giztv.tv.ui.catalog.StatusPanel
 import com.giztv.tv.ui.catalog.TmdbArtwork
 import com.giztv.tv.ui.catalog.remoteFocusNavigation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+private const val SEARCH_DEBOUNCE_MS = 180L
 
 internal data class IptvBrowseState(
   val selectedCategory: String = ALL_IPTV_CHANNELS,
@@ -115,6 +122,9 @@ internal fun IptvScreen(
   val gridState = rememberLazyGridState()
 
   var playlist by remember { mutableStateOf<IptvPlaylist?>(null) }
+  val channelStore = remember(context) { IptvChannelStore(context) }
+  var favoriteKeys by remember { mutableStateOf(emptyList<String>()) }
+  var recentKeys by remember { mutableStateOf(emptyList<String>()) }
   val selectedCategory = browseState.selectedCategory
   val selectedGroup = browseState.selectedGroup
   val query = browseState.query
@@ -170,27 +180,58 @@ internal fun IptvScreen(
   BackHandler(enabled = hideBackButton && searchExpanded) { collapseSearchUi() }
 
   LaunchedEffect(Unit) {
+    favoriteKeys = channelStore.favorites()
+    recentKeys = channelStore.recents()
     load(refresh = false)
     if (!hideBackButton) backFocusRequester.requestFocus()
   }
 
+  // Typing runs ahead of a five-figure playlist. Holding the last keystroke briefly keeps the field
+  // responsive and spends one filtering pass on the word rather than one per letter.
+  var appliedQuery by remember { mutableStateOf(query) }
+  LaunchedEffect(query) {
+    if (query.isBlank()) {
+      appliedQuery = ""
+      return@LaunchedEffect
+    }
+    delay(SEARCH_DEBOUNCE_MS)
+    appliedQuery = query
+  }
+
+  val index = playlist?.browseIndex
   val channels = playlist?.channels.orEmpty()
-  val categories = remember(channels) { iptvCategories(channels) }
+  val favorites = remember(index, favoriteKeys) { index?.find(favoriteKeys).orEmpty() }
+  val recents = remember(index, recentKeys) { index?.find(recentKeys).orEmpty() }
+  val categories =
+    remember(index, favorites, recents) {
+      buildList {
+        if (favorites.isNotEmpty()) add(IptvCategory(IPTV_CATEGORY_FAVORITES, favorites.size))
+        if (recents.isNotEmpty()) add(IptvCategory(IPTV_CATEGORY_RECENT, recents.size))
+        addAll(index?.categories.orEmpty())
+      }
+    }
   val activeCategory = selectedCategory.takeIf { selected -> categories.any { it.label == selected } }
     ?: ALL_IPTV_CHANNELS
-  val groups = remember(channels, activeCategory) { iptvGroupsForCategory(channels, activeCategory) }
+  val pinnedCategory = activeCategory == IPTV_CATEGORY_FAVORITES || activeCategory == IPTV_CATEGORY_RECENT
+  val groups =
+    remember(index, activeCategory) {
+      if (pinnedCategory) listOf(ALL_IPTV_GROUPS) else index?.groups(activeCategory).orEmpty()
+    }
   val activeGroup = selectedGroup.takeIf(groups::contains) ?: ALL_IPTV_GROUPS
-  val searching = query.isNotBlank()
+  val searching = appliedQuery.isNotBlank()
   val visible =
-    remember(channels, activeCategory, activeGroup, query) {
-      if (query.isNotBlank()) {
-        visibleIptvChannels(channels, category = null, group = null, query = query)
-      } else {
-        visibleIptvChannels(channels, activeCategory, activeGroup, query)
+    remember(index, activeCategory, activeGroup, appliedQuery, favorites, recents) {
+      when {
+        // Search deliberately ignores the pinned and category filters: the point of reaching for it
+        // in a guide this size is to stop narrowing by hand.
+        appliedQuery.isNotBlank() -> index?.visible(null, null, appliedQuery).orEmpty()
+        activeCategory == IPTV_CATEGORY_FAVORITES -> favorites
+        activeCategory == IPTV_CATEGORY_RECENT -> recents
+        else -> index?.visible(activeCategory, activeGroup, "").orEmpty()
       }
     }
 
-  LaunchedEffect(activeCategory, activeGroup, query, loading) {
+  LaunchedEffect(activeCategory, activeGroup, appliedQuery, loading) {
     if (!loading && gridState.layoutInfo.totalItemsCount > 0) gridState.scrollToItem(0)
   }
 
@@ -241,7 +282,10 @@ internal fun IptvScreen(
           )
           if (!narrow && channels.isNotEmpty()) {
             Text(
-              "${channels.size} channels · ${categories.size - 1} clear categories",
+              // The playlist's own categories, and its count of distinct channels rather than of
+              // listings, so the figure here matches what All channels actually shows.
+              "${index?.categories?.first()?.channelCount ?: channels.size}" +
+                " channels · ${(index?.categories?.size ?: 1) - 1} clear categories",
               color = GizMint.copy(alpha = .8f),
               fontWeight = FontWeight.Bold,
               fontSize = 9.sp,
@@ -383,10 +427,15 @@ internal fun IptvScreen(
         visible.isEmpty() ->
           StatusPanel(
             message =
-              if (query.isNotBlank()) "No channels match “${query.trim()}”."
-              else "There are no channels in this category.",
+              when {
+                searching -> "No channels match “${appliedQuery.trim()}”."
+                activeCategory == IPTV_CATEGORY_FAVORITES ->
+                  "No favourites yet. Star a channel to keep it here."
+                activeCategory == IPTV_CATEGORY_RECENT -> "Nothing watched yet."
+                else -> "There are no channels in this category."
+              },
             modifier = Modifier.weight(1f),
-            actionLabel = if (query.isNotBlank()) "Clear search" else "All channels",
+            actionLabel = if (searching) "Clear search" else "All channels",
             onAction = { onBrowseStateChanged(IptvBrowseState()) },
           )
         else ->
@@ -403,7 +452,7 @@ internal fun IptvScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                   Text(
                     when {
-                      searching -> "Results for “${query.trim()}”"
+                      searching -> "Results for “${appliedQuery.trim()}”"
                       activeGroup != ALL_IPTV_GROUPS -> activeGroup
                       else -> activeCategory
                     },
@@ -425,7 +474,17 @@ internal fun IptvScreen(
             items(items = visible, key = IptvChannel::id) { channel ->
               IptvChannelCard(
                 channel = channel,
-                onClick = { dismissKeyboard(); onPlay(channel) },
+                favorite = channel.key in favoriteKeys,
+                onClick = {
+                  dismissKeyboard()
+                  channelStore.recordWatch(channel.key)
+                  recentKeys = channelStore.recents()
+                  onPlay(channel)
+                },
+                onToggleFavorite = {
+                  channelStore.toggleFavorite(channel.key)
+                  favoriteKeys = channelStore.favorites()
+                },
                 modifier =
                   if (channel.id == visible.first().id) Modifier.focusRequester(gridFocusRequester)
                   else Modifier,
@@ -544,6 +603,8 @@ private fun IptvCategoryCard(
 
 private fun iptvCategoryAccent(category: String): Color =
   when (category) {
+    IPTV_CATEGORY_FAVORITES -> Color(0xFFFFD166)
+    IPTV_CATEGORY_RECENT -> Color(0xFF9BE7FF)
     IPTV_CATEGORY_DADDYLIVE -> Color(0xFFFF8A65)
     IPTV_CATEGORY_SPORTS -> Color(0xFF59E6A8)
     IPTV_CATEGORY_NEWS -> Color(0xFF64B5FF)
@@ -560,7 +621,9 @@ private fun iptvCategoryAccent(category: String): Color =
 @Composable
 private fun IptvChannelCard(
   channel: IptvChannel,
+  favorite: Boolean,
   onClick: () -> Unit,
+  onToggleFavorite: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val category = remember(channel) { iptvCategoryFor(channel) }
@@ -582,7 +645,9 @@ private fun IptvChannelCard(
       modifier.height(98.dp).graphicsLayer { scaleX = scale; scaleY = scale }
         .clip(RoundedCornerShape(14.dp)).background(NightSurface)
         .border(if (focused) 3.dp else 1.dp, outline, RoundedCornerShape(14.dp))
-        .onFocusChanged { focused = it.isFocused }.clickable(onClick = onClick)
+        // hasFocus rather than isFocused: the star inside the card is focusable in its own right,
+        // and the card it belongs to should not go dark the moment the remote reaches it.
+        .onFocusChanged { focused = it.hasFocus }.clickable(onClick = onClick)
         .semantics {
           role = Role.Button
           contentDescription =
@@ -628,5 +693,36 @@ private fun IptvChannelCard(
         )
       }
     }
+    IptvFavoriteToggle(channelName = channel.name, favorite = favorite, onToggle = onToggleFavorite)
   }
+}
+
+@Composable
+private fun IptvFavoriteToggle(channelName: String, favorite: Boolean, onToggle: () -> Unit) {
+  var focused by remember { mutableStateOf(false) }
+  val tint = if (favorite) GizMint else SoftWhite.copy(alpha = if (focused) .95f else .45f)
+  Icon(
+    imageVector = if (favorite) Icons.Filled.Star else Icons.Filled.StarBorder,
+    contentDescription = null,
+    tint = tint,
+    modifier =
+      Modifier.size(34.dp)
+        .testTag("iptv-favorite:$channelName")
+        .clip(RoundedCornerShape(10.dp))
+        .background(if (focused) SoftWhite.copy(alpha = .14f) else Color.Transparent)
+        .border(
+          if (focused) 2.dp else 0.dp,
+          if (focused) GizMint else Color.Transparent,
+          RoundedCornerShape(10.dp),
+        )
+        .onFocusChanged { focused = it.isFocused }
+        .clickable(onClick = onToggle)
+        .semantics {
+          role = Role.Checkbox
+          selected = favorite
+          contentDescription =
+            if (favorite) "Remove $channelName from favourites" else "Add $channelName to favourites"
+        }
+        .padding(7.dp),
+  )
 }

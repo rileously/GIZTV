@@ -124,6 +124,78 @@ class IptvPlaylistTest {
   }
 
   @Test
+  fun repeatedListingsCollapseToOneChannelUnderAStableKey() {
+    val repeated =
+      """
+        #EXTM3U
+        #EXTINF:-1 tvg-id="news.one" group-title="News",News One HD
+        https://one.example/live/index.m3u8
+        #EXTINF:-1 tvg-id="news.one" group-title="Documentary",News One HD
+        https://two.example/live/index.m3u8
+        #EXTINF:-1 tvg-id="sport.one" group-title="Sports",Sport One
+        https://three.example/live/index.m3u8
+      """.trimIndent()
+    val channels = parseIptvPlaylist(StringReader(repeated)).channels
+
+    // Both listings survive parsing, because each carries a stream the other does not.
+    assertEquals(3, channels.size)
+    assertEquals(listOf("guide:news.one", "guide:news.one", "guide:sport.one"), channels.map { it.key })
+
+    val visible = visibleIptvChannels(channels, ALL_IPTV_CHANNELS, ALL_IPTV_GROUPS, "")
+    assertEquals(listOf("News One HD", "Sport One"), visible.map { it.name })
+    assertEquals(2, iptvCategories(channels).first().channelCount)
+    // The single card left leads with its own address and still reaches the one its dropped twin
+    // was holding.
+    assertEquals(
+      listOf("https://two.example/live/index.m3u8", "https://one.example/live/index.m3u8"),
+      visible.first().playbackSources.map { it.url },
+    )
+  }
+
+  @Test
+  fun aChannelStaysReachableUnderEveryCategoryItIsListedIn() {
+    val channels =
+      parseIptvPlaylist(
+          StringReader(
+            """
+              #EXTM3U
+              #EXTINF:-1 tvg-id="news.one" group-title="News",News One HD
+              https://one.example/live/index.m3u8
+              #EXTINF:-1 tvg-id="news.one" group-title="Documentary",News One HD
+              https://two.example/live/index.m3u8
+            """.trimIndent()
+          )
+        )
+        .channels
+
+    assertEquals(listOf("News One HD"), visibleIptvChannels(channels, IPTV_CATEGORY_NEWS, null, "").map { it.name })
+    assertEquals(
+      listOf("News One HD"),
+      visibleIptvChannels(channels, IPTV_CATEGORY_KNOWLEDGE, null, "").map { it.name },
+    )
+  }
+
+  @Test
+  fun channelsWithoutAGuideIdFallBackToNameThenAddress() {
+    val channels =
+      parseIptvPlaylist(
+          StringReader(
+            """
+              #EXTM3U
+              #EXTINF:-1 group-title="News",Long Enough Name
+              https://one.example/live/index.m3u8
+              #EXTINF:-1 group-title="News",BBC
+              https://two.example/live/index.m3u8
+            """.trimIndent()
+          )
+        )
+        .channels
+
+    assertEquals("name:news:long enough name", channels[0].key)
+    assertEquals("url:https://two.example/live/index.m3u8", channels[1].key)
+  }
+
+  @Test
   fun clearKeyPair_isConvertedToAndroidJwkWithoutLeakingHexKeys() {
     val jwk =
       normalizeClearKeyLicense(
