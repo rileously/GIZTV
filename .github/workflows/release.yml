@@ -62,13 +62,10 @@ jobs:
           # this says both things. Drop the second half once 1.52.x is gone.
           RELEASE_NOTES: |
             What changed:
-            - New Anime section, on the home row and in the phone footer. Browse by trending,
-              top airing, popular, top rated, latest or newest, filter to TV, movies, ONA, OVA
-              or specials, and search the catalogue.
-            - Every anime has a landing page with its facts, synopsis and full episode list,
-              with filler episodes marked.
-            - Pick dub or sub per title; your choice is remembered for the next one.
-            - Anime episodes join watch history and the continue watching row like anything else.
+            - Adult titles are filtered out of every anime listing and search.
+            - Anime listings keep going as you scroll instead of stopping after the first page.
+            - Fixed anime search showing "The coroutine scope left the composition" and an empty
+              grid while you were still typing.
 
             Already on 1.53.0 or newer? This installs itself as usual.
 
