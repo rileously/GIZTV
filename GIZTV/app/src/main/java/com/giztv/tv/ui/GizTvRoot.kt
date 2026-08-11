@@ -54,10 +54,13 @@ import com.giztv.tv.ui.catalog.TmdbShow
 import com.giztv.tv.ui.catalog.MovieDetailScreen
 import com.giztv.tv.ui.catalog.PersonDetailScreen
 import com.giztv.tv.ui.catalog.TvShowDetailScreen
+import android.util.Log
 import com.giztv.tv.ui.anime.Anime
 import com.giztv.tv.ui.anime.AnimeBrowseState
 import com.giztv.tv.ui.anime.AnimeDetailScreen
 import com.giztv.tv.ui.anime.AnimeScreen
+import com.giztv.tv.ui.anime.animeEpisodeRef
+import com.giztv.tv.ui.anime.resolveAnimeEpisode
 import com.giztv.tv.ui.drama.ShortDrama
 import com.giztv.tv.ui.drama.ShortDramaDetailScreen
 import com.giztv.tv.ui.drama.ShortDramaScreen
@@ -354,7 +357,7 @@ fun GizTvRoot(
     }
   }
 
-  fun openForPlayback(context: PlaybackContext, returnTo: Destination) {
+  fun openStreamProviderPlayback(context: PlaybackContext, returnTo: Destination) {
     streamFailoverAttempts = 0
     playerMinimized = false
     pendingContext = context
@@ -383,6 +386,45 @@ fun GizTvRoot(
 
     // Whoever answered last time, tried against the page being ground through again.
     raceRememberedStream(context)
+  }
+
+  /**
+   * Everything that opens a title, including the next episode a finished one rolls into and a
+   * resume arriving from the home row.
+   *
+   * An anime episode is pulled out here rather than handed to the provider race. The address such
+   * an episode is remembered by is an identity this app minted, not a page anyone can be asked
+   * about, and resolving it by loading the site's own player hands back whichever language that
+   * page opens on — the dub. That is what used to undo a viewer's choice of sub the moment one
+   * episode ended and the next began.
+   */
+  fun openForPlayback(context: PlaybackContext, returnTo: Destination) {
+    if (animeEpisodeRef(context.pageUrl) == null) {
+      openStreamProviderPlayback(context, returnTo)
+      return
+    }
+    streamFailoverAttempts = 0
+    playerMinimized = false
+    pendingContext = context
+    browserReturnDestination = returnTo
+    iptvPlaybackSources = emptyList()
+    iptvPlaybackSourceIndex = 0
+    prefetchTarget = null
+    prefetched = null
+    scope.launch {
+      val resolved =
+        runCatching { resolveAnimeEpisode(appContext, context) }
+          .onFailure { Log.w("GizTvRoot", "Anime episode could not be resolved", it) }
+          .getOrNull()
+      if (resolved != null) {
+        streamRequest = resolved
+        destination = Destination.PLAYER
+      } else {
+        // No worse than before this path existed: something plays, even if the site picks the
+        // language. Deliberately not left silent, because a dead Play now is its own bug.
+        openStreamProviderPlayback(context, returnTo)
+      }
+    }
   }
 
   // A title asked for while the app was already open — from a widget, the television's own row,

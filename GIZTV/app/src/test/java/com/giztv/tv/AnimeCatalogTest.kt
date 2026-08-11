@@ -1,10 +1,14 @@
 package com.giztv.tv
 
+import com.giztv.tv.ui.anime.AnimeLanguage
+import com.giztv.tv.ui.anime.animeEpisodeIdentity
+import com.giztv.tv.ui.anime.animeEpisodeRef
 import com.giztv.tv.ui.anime.parseAnimeCards
 import com.giztv.tv.ui.anime.parseAnimeDetails
 import com.giztv.tv.ui.anime.parseAnimeEpisodes
 import com.giztv.tv.ui.anime.parseAnimeLanguages
 import com.giztv.tv.ui.anime.parseEmbedStreamUrl
+import com.giztv.tv.ui.anime.preferring
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -165,6 +169,48 @@ class AnimeCatalogTest {
     assertEquals("https://anidb.app/embed/AAA", languages[0].embedUrl)
     assertFalse(languages[0].isSubtitled)
     assertTrue(languages[1].isSubtitled)
+  }
+
+  @Test
+  fun anEpisodeIdentityReadsBackToTheAnimeAndEpisodeItNames() {
+    val identity = animeEpisodeIdentity("vinland-saga-5999", 7)
+
+    assertEquals("https://anidb.app/anime/vinland-saga-5999?ep=7", identity)
+    val ref = animeEpisodeRef(identity)
+    assertEquals("vinland-saga-5999", ref?.slug)
+    // The number on the end of the slug is the anime every episode endpoint is keyed on.
+    assertEquals(5999, ref?.animeId)
+    assertEquals(7, ref?.episodeNumber)
+  }
+
+  @Test
+  fun addressesThatAreNotEpisodeIdentities_areLeftToTheOrdinaryResolvePath() {
+    // A title page rather than an episode, so nothing to resolve an episode from.
+    assertNull(animeEpisodeRef("https://anidb.app/anime/vinland-saga-5999"))
+    // A slug carrying no id cannot name an anime.
+    assertNull(animeEpisodeRef("https://anidb.app/anime/vinland-saga?ep=1"))
+    assertNull(animeEpisodeRef("https://anidb.app/anime/vinland-saga-5999?ep=0"))
+    // Anything belonging to another source has to fall through untouched.
+    assertNull(animeEpisodeRef("https://chartdrama.com/p/42000012638/some-drama?ep=1"))
+    assertNull(animeEpisodeRef("https://example.com/anime/vinland-saga-5999?ep=1"))
+  }
+
+  @Test
+  fun theRememberedLanguageIsWhatPlays_andASubIsPreferredOverTheFirstListed() {
+    // The site lists the dub first, which is why "first listed" is not the fallback.
+    val languages =
+      listOf(
+        AnimeLanguage("eng", "English", "https://anidb.app/embed/AAA"),
+        AnimeLanguage("jpn", "Japanese", "https://anidb.app/embed/BBB"),
+      )
+
+    assertEquals("Japanese", languages.preferring("jpn")?.name)
+    assertEquals("English", languages.preferring("eng")?.name)
+    // Nothing chosen yet, and a language that this title does not carry, both land on the sub
+    // rather than quietly handing back the dub.
+    assertEquals("Japanese", languages.preferring(null)?.name)
+    assertEquals("Japanese", languages.preferring("fre")?.name)
+    assertNull(emptyList<AnimeLanguage>().preferring("jpn"))
   }
 
   @Test

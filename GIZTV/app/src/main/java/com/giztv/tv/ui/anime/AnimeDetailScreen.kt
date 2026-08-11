@@ -72,15 +72,6 @@ import com.giztv.tv.ui.player.HlsStreamRequest
 import kotlinx.coroutines.launch
 
 /**
- * How an episode is identified for watch history.
- *
- * The site's own watch address carries no episode, so this is the app's own stable form of one. It
- * has to stay stable across releases: the continue-watching row is keyed on it.
- */
-internal fun animeEpisodeIdentity(slug: String, episodeNumber: Int): String =
-  "$ANIDB_ORIGIN/anime/$slug?ep=$episodeNumber"
-
-/**
  * Anime landing page: artwork and facts on the left, every episode on the right.
  *
  * Unlike a TMDB show, an episode here is a number and nothing else — the site publishes no titles,
@@ -164,9 +155,7 @@ internal fun AnimeDetailScreen(
           val available =
             languages.takeIf { it.isNotEmpty() } ?: AnimeRepository.languages(episode.id)
           val language =
-            available.firstOrNull { it.code == selectedLanguage }
-              ?: available.firstOrNull { it.isSubtitled }
-              ?: available.firstOrNull()
+            available.preferring(selectedLanguage)
               ?: throw IllegalStateException("This episode has no stream to play.")
           language to AnimeRepository.streamUrl(language)
         }
