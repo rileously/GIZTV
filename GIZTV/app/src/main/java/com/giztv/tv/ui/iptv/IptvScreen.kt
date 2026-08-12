@@ -72,6 +72,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import com.giztv.tv.data.IptvChannelStore
+import com.giztv.tv.data.SearchHistoryStore
+import com.giztv.tv.data.SearchSection
 import com.giztv.tv.theme.GizMint
 import com.giztv.tv.theme.DeepSpace
 import com.giztv.tv.theme.MutedBlue
@@ -82,6 +84,7 @@ import com.giztv.tv.ui.catalog.CatalogIconButton
 import com.giztv.tv.ui.catalog.CatalogSearchField
 import com.giztv.tv.ui.catalog.ChipRow
 import com.giztv.tv.ui.catalog.GizTvMark
+import com.giztv.tv.ui.catalog.SearchHistoryRow
 import com.giztv.tv.ui.catalog.StatusPanel
 import com.giztv.tv.ui.catalog.TmdbArtwork
 import com.giztv.tv.ui.catalog.remoteFocusNavigation
@@ -118,6 +121,7 @@ internal fun IptvScreen(
   val groupFocusRequester = remember { FocusRequester() }
   val searchFieldFocusRequester = remember { FocusRequester() }
   val searchButtonFocusRequester = remember { FocusRequester() }
+  val searchHistoryFocusRequester = remember { FocusRequester() }
   val gridFocusRequester = remember { FocusRequester() }
   val gridState = rememberLazyGridState()
 
@@ -130,6 +134,8 @@ internal fun IptvScreen(
   val query = browseState.query
   var loading by remember { mutableStateOf(true) }
   var searchExpanded by rememberSaveable { mutableStateOf(false) }
+  val searchHistoryStore = remember(context) { SearchHistoryStore(context) }
+  var recentSearches by remember { mutableStateOf(searchHistoryStore.recent(SearchSection.IPTV)) }
   var errorMessage by remember { mutableStateOf<String?>(null) }
 
   fun dismissKeyboard() {
@@ -169,6 +175,18 @@ internal fun IptvScreen(
     }
   }
 
+  /** Runs a remembered query again, exactly as if it had just been typed. */
+  fun repeatSearch(searched: String) {
+    searchExpanded = true
+    dismissKeyboard()
+    onBrowseStateChanged(browseState.copy(query = searched))
+  }
+
+  fun clearSearchHistory() {
+    searchHistoryStore.clear(SearchSection.IPTV)
+    recentSearches = emptyList()
+  }
+
   LaunchedEffect(requestSearchFocus) {
     if (!requestSearchFocus) return@LaunchedEffect
     searchExpanded = true
@@ -196,6 +214,10 @@ internal fun IptvScreen(
     }
     delay(SEARCH_DEBOUNCE_MS)
     appliedQuery = query
+    // Recorded once the guide has actually been filtered rather than on each keystroke. Everything
+    // this query was typed through is a prefix of it, and the store drops those.
+    searchHistoryStore.record(SearchSection.IPTV, query)
+    recentSearches = searchHistoryStore.recent(SearchSection.IPTV)
   }
 
   val index = playlist?.browseIndex
@@ -379,6 +401,12 @@ internal fun IptvScreen(
       }
 
       if (showSearchRow) {
+        // Down out of the box lands on the remembered queries when there are any, so the pad
+        // passes through them on its way to the guide rather than over them.
+        val showHistory = recentSearches.isNotEmpty()
+        val belowSearch =
+          if (showHistory) searchHistoryFocusRequester else bodyFocusRequester ?: FocusRequester.Default
+        val remoteBelowSearch = if (showHistory) searchHistoryFocusRequester else bodyFocusRequester
         Row(
           modifier = Modifier.focusGroup(),
           horizontalArrangement = Arrangement.spacedBy(9.dp),
@@ -393,8 +421,8 @@ internal fun IptvScreen(
               Modifier.weight(1f).focusRequester(searchFieldFocusRequester).focusProperties {
                 up = searchUpRequester
                 right = searchButtonFocusRequester
-                down = bodyFocusRequester ?: FocusRequester.Default
-              }.remoteFocusNavigation(up = searchUpRequester, down = bodyFocusRequester),
+                down = belowSearch
+              }.remoteFocusNavigation(up = searchUpRequester, down = remoteBelowSearch),
           )
           CatalogButton(
             label = "Search",
@@ -403,12 +431,24 @@ internal fun IptvScreen(
               Modifier.focusRequester(searchButtonFocusRequester).focusProperties {
                 up = searchUpRequester
                 left = searchFieldFocusRequester
-                down = bodyFocusRequester ?: FocusRequester.Default
+                down = belowSearch
               }.remoteFocusNavigation(
                 up = searchUpRequester,
                 left = searchFieldFocusRequester,
-                down = bodyFocusRequester,
+                down = remoteBelowSearch,
               ),
+          )
+        }
+        if (showHistory) {
+          Spacer(Modifier.height(if (compact) 6.dp else 9.dp))
+          SearchHistoryRow(
+            queries = recentSearches,
+            onSelect = ::repeatSearch,
+            onClear = ::clearSearchHistory,
+            compact = phoneDense,
+            firstChipFocusRequester = searchHistoryFocusRequester,
+            up = searchFieldFocusRequester,
+            down = bodyFocusRequester,
           )
         }
         Spacer(Modifier.height(if (compact) 8.dp else 14.dp))

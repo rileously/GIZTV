@@ -52,6 +52,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
@@ -65,6 +66,8 @@ import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Icon
 import androidx.tv.material3.Text
 import com.giztv.tv.data.PlaybackContext
+import com.giztv.tv.data.SearchHistoryStore
+import com.giztv.tv.data.SearchSection
 import com.giztv.tv.theme.GizMint
 import com.giztv.tv.theme.DeepSpace
 import com.giztv.tv.theme.MutedBlue
@@ -75,6 +78,7 @@ import com.giztv.tv.ui.catalog.CatalogIconButton
 import com.giztv.tv.ui.catalog.CatalogSearchField
 import com.giztv.tv.ui.catalog.ChipRow
 import com.giztv.tv.ui.catalog.GizTvMark
+import com.giztv.tv.ui.catalog.SearchHistoryRow
 import com.giztv.tv.ui.catalog.StatusPanel
 import com.giztv.tv.ui.catalog.remoteFocusNavigation
 import kotlinx.coroutines.delay
@@ -97,6 +101,7 @@ internal fun DlhdSoccerScreen(
   onSearchFocusHandled: () -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
+  val context = LocalContext.current
   val scope = rememberCoroutineScope()
   val focusManager = LocalFocusManager.current
   val keyboardController = LocalSoftwareKeyboardController.current
@@ -104,6 +109,7 @@ internal fun DlhdSoccerScreen(
   val refreshFocusRequester = remember { FocusRequester() }
   val searchFieldFocusRequester = remember { FocusRequester() }
   val searchButtonFocusRequester = remember { FocusRequester() }
+  val searchHistoryFocusRequester = remember { FocusRequester() }
   val chipFocusRequester = remember { FocusRequester() }
   val gridFocusRequester = remember { FocusRequester() }
   val gridState = rememberLazyGridState()
@@ -112,6 +118,8 @@ internal fun DlhdSoccerScreen(
   var query by rememberSaveable { mutableStateOf("") }
   var searchActive by rememberSaveable { mutableStateOf(false) }
   var searchExpanded by rememberSaveable { mutableStateOf(false) }
+  val searchHistoryStore = remember(context) { SearchHistoryStore(context) }
+  var recentSearches by remember { mutableStateOf(searchHistoryStore.recent(SearchSection.SOCCER)) }
   var events by remember { mutableStateOf<List<DlhdSoccerEvent>>(emptyList()) }
   var loading by remember { mutableStateOf(true) }
   var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -154,6 +162,21 @@ internal fun DlhdSoccerScreen(
     dismissKeyboard()
     searchButtonFocusRequester.requestFocus()
     searchActive = true
+    searchHistoryStore.record(SearchSection.SOCCER, trimmed)
+    recentSearches = searchHistoryStore.recent(SearchSection.SOCCER)
+  }
+
+  /** Runs a remembered query again, filtering the schedule already in hand. */
+  fun repeatSearch(searched: String) {
+    query = searched
+    searchExpanded = true
+    searchActive = true
+    dismissKeyboard()
+  }
+
+  fun clearSearchHistory() {
+    searchHistoryStore.clear(SearchSection.SOCCER)
+    recentSearches = emptyList()
   }
 
   LaunchedEffect(requestSearchFocus) {
@@ -318,6 +341,11 @@ internal fun DlhdSoccerScreen(
       }
 
       if (showSearchRow) {
+        // Down out of the box lands on the remembered queries when there are any, so the pad
+        // passes through them on its way to the fixtures rather than over them.
+        val showHistory = recentSearches.isNotEmpty()
+        val belowSearch = if (showHistory) searchHistoryFocusRequester else gridFocusRequester
+        val remoteBelowSearch = belowSearch
         Row(
           horizontalArrangement = Arrangement.spacedBy(9.dp),
           verticalAlignment = Alignment.CenterVertically,
@@ -341,7 +369,7 @@ internal fun DlhdSoccerScreen(
                   hideBackButton -> refreshFocusRequester
                   else -> backFocusRequester
                 }
-              down = gridFocusRequester
+              down = belowSearch
               right = searchButtonFocusRequester
             }.remoteFocusNavigation(
               up =
@@ -350,7 +378,7 @@ internal fun DlhdSoccerScreen(
                   hideBackButton -> refreshFocusRequester
                   else -> backFocusRequester
                 },
-              down = gridFocusRequester,
+              down = remoteBelowSearch,
             ),
           )
           CatalogButton(
@@ -364,8 +392,20 @@ internal fun DlhdSoccerScreen(
                   else -> backFocusRequester
                 }
               left = searchFieldFocusRequester
-              down = gridFocusRequester
+              down = belowSearch
             },
+          )
+        }
+        if (recentSearches.isNotEmpty()) {
+          Spacer(Modifier.height(if (phoneDense) 6.dp else 9.dp))
+          SearchHistoryRow(
+            queries = recentSearches,
+            onSelect = ::repeatSearch,
+            onClear = ::clearSearchHistory,
+            compact = phoneDense,
+            firstChipFocusRequester = searchHistoryFocusRequester,
+            up = searchFieldFocusRequester,
+            down = gridFocusRequester,
           )
         }
         Spacer(Modifier.height(if (phoneDense) 6.dp else if (compact) 8.dp else 14.dp))

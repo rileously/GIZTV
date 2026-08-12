@@ -55,6 +55,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
+import com.giztv.tv.data.SearchHistoryStore
+import com.giztv.tv.data.SearchSection
 import com.giztv.tv.data.WatchHistoryStore
 import com.giztv.tv.theme.GizMint
 import com.giztv.tv.theme.DeepSpace
@@ -63,6 +65,7 @@ import com.giztv.tv.theme.SoftWhite
 import com.giztv.tv.ui.catalog.CatalogButton
 import com.giztv.tv.ui.catalog.CatalogIconButton
 import com.giztv.tv.ui.catalog.CatalogSearchField
+import com.giztv.tv.ui.catalog.SearchHistoryRow
 import com.giztv.tv.ui.catalog.ChipRow
 import com.giztv.tv.ui.catalog.GizTvMark
 import com.giztv.tv.ui.catalog.PosterCard
@@ -110,6 +113,7 @@ internal fun AnimeScreen(
   val kindFocusRequester = remember { FocusRequester() }
   val searchFieldFocusRequester = remember { FocusRequester() }
   val searchButtonFocusRequester = remember { FocusRequester() }
+  val searchHistoryFocusRequester = remember { FocusRequester() }
   val gridFocusRequester = remember { FocusRequester() }
   val gridState = rememberLazyGridState()
 
@@ -122,6 +126,8 @@ internal fun AnimeScreen(
   var listingGeneration by remember { mutableIntStateOf(0) }
   var errorMessage by remember { mutableStateOf<String?>(null) }
   var searchExpanded by rememberSaveable { mutableStateOf(false) }
+  val searchHistoryStore = remember(context) { SearchHistoryStore(context) }
+  var recentSearches by remember { mutableStateOf(searchHistoryStore.recent(SearchSection.ANIME)) }
   val sort = browseState.sort
   val kind = browseState.kind
   val query = browseState.query
@@ -154,6 +160,12 @@ internal fun AnimeScreen(
       hasMore = page.hasMore
       nextPage = 2
       listingGeneration += 1
+      // Recorded once the listing has actually answered rather than on each keystroke. Everything
+      // this query was typed through is a prefix of it, and the store drops those.
+      if (query.isNotBlank()) {
+        searchHistoryStore.record(SearchSection.ANIME, query)
+        recentSearches = searchHistoryStore.recent(SearchSection.ANIME)
+      }
     } catch (cancellation: CancellationException) {
       throw cancellation
     } catch (failure: Exception) {
@@ -223,6 +235,18 @@ internal fun AnimeScreen(
       dismissKeyboard()
       searchButtonFocusRequester.requestFocus()
     }
+  }
+
+  /** Runs a remembered query again, exactly as if it had just been typed. */
+  fun repeatSearch(searched: String) {
+    searchExpanded = true
+    dismissKeyboard()
+    onBrowseStateChanged(browseState.copy(query = searched))
+  }
+
+  fun clearSearchHistory() {
+    searchHistoryStore.clear(SearchSection.ANIME)
+    recentSearches = emptyList()
   }
 
   LaunchedEffect(requestSearchFocus) {
@@ -352,6 +376,12 @@ internal fun AnimeScreen(
       Spacer(Modifier.height(if (compact) 7.dp else 10.dp))
 
       if (showSearchRow) {
+        // Down out of the box lands on the remembered queries when there are any, so the pad
+        // passes through them on its way to the grid rather than over them.
+        val showHistory = recentSearches.isNotEmpty()
+        val belowSearch =
+          if (showHistory) searchHistoryFocusRequester else bodyFocusRequester ?: FocusRequester.Default
+        val remoteBelowSearch = if (showHistory) searchHistoryFocusRequester else bodyFocusRequester
         Row(
           modifier = Modifier.focusGroup(),
           horizontalArrangement = Arrangement.spacedBy(9.dp),
@@ -366,8 +396,8 @@ internal fun AnimeScreen(
               Modifier.weight(1f).focusRequester(searchFieldFocusRequester).focusProperties {
                 up = kindFocusRequester
                 right = searchButtonFocusRequester
-                down = bodyFocusRequester ?: FocusRequester.Default
-              }.remoteFocusNavigation(up = kindFocusRequester, down = bodyFocusRequester),
+                down = belowSearch
+              }.remoteFocusNavigation(up = kindFocusRequester, down = remoteBelowSearch),
           )
           CatalogButton(
             label = "Search",
@@ -376,12 +406,24 @@ internal fun AnimeScreen(
               Modifier.focusRequester(searchButtonFocusRequester).focusProperties {
                 up = kindFocusRequester
                 left = searchFieldFocusRequester
-                down = bodyFocusRequester ?: FocusRequester.Default
+                down = belowSearch
               }.remoteFocusNavigation(
                 up = kindFocusRequester,
                 left = searchFieldFocusRequester,
-                down = bodyFocusRequester,
+                down = remoteBelowSearch,
               ),
+          )
+        }
+        if (showHistory) {
+          Spacer(Modifier.height(if (compact) 6.dp else 9.dp))
+          SearchHistoryRow(
+            queries = recentSearches,
+            onSelect = ::repeatSearch,
+            onClear = ::clearSearchHistory,
+            compact = phoneDense,
+            firstChipFocusRequester = searchHistoryFocusRequester,
+            up = searchFieldFocusRequester,
+            down = bodyFocusRequester,
           )
         }
         Spacer(Modifier.height(if (compact) 8.dp else 14.dp))

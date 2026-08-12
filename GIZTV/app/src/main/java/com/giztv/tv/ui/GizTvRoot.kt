@@ -59,6 +59,8 @@ import com.giztv.tv.ui.catalog.TmdbMovie
 import com.giztv.tv.ui.catalog.TmdbShow
 import com.giztv.tv.ui.catalog.TmdbTvRepository
 import com.giztv.tv.ui.catalog.seasonPlaylist
+import com.giztv.tv.ui.drama.chartDramaSlugOf
+import com.giztv.tv.ui.drama.resumedShortDramaRun
 import com.giztv.tv.ui.catalog.MovieDetailScreen
 import com.giztv.tv.ui.catalog.PersonDetailScreen
 import com.giztv.tv.ui.catalog.TvShowDetailScreen
@@ -224,7 +226,14 @@ fun GizTvRoot(
     )
   }
   var browserUrl by remember {
-    mutableStateOf(initialResume?.pageUrl ?: initialBrowserUrl ?: SKYFLIX_URL)
+    // Pointed at the provider the failover would start on, not merely at the address the title is
+    // remembered by. openForPlayback settles on exactly this a moment later, so the loading page
+    // is built once rather than built and then sent somewhere else.
+    mutableStateOf(
+      initialResume?.let { nextProviderPageUrl(it.pageUrl, 0) ?: it.pageUrl }
+        ?: initialBrowserUrl
+        ?: SKYFLIX_URL
+    )
   }
   var browserReturnDestination by remember { mutableStateOf(Destination.CATALOG) }
   /**
@@ -410,6 +419,21 @@ fun GizTvRoot(
   }
 
   /**
+   * Starts a title whose run had to be fetched first, unless the loading page got there without it.
+   *
+   * A cold start from a widget has the loading page up before the rebuild is asked for, so on a
+   * device where the provider answers faster than the run can be looked up the title is already
+   * playing by the time this is called. Starting it again would take the viewer back to the page
+   * they had just left, which is a worse trade than the episode ending where it always used to.
+   */
+  fun openRebuiltPlayback(rebuilt: PlaybackContext, returnTo: Destination) {
+    val alreadyPlaying =
+      destination == Destination.PLAYER && streamRequest?.context?.pageUrl == rebuilt.pageUrl
+    if (alreadyPlaying) return
+    openStreamProviderPlayback(rebuilt, returnTo)
+  }
+
+  /**
    * Everything that opens a title, including the next episode a finished one rolls into and a
    * resume arriving from the home row.
    *
@@ -422,9 +446,13 @@ fun GizTvRoot(
   fun openForPlayback(context: PlaybackContext, returnTo: Destination) {
     if (animeEpisodeRef(context.pageUrl) == null) {
       // An episode resumed from Continue watching, the home row or the widget knows nothing about
-      // the season it belongs to, so it used to stop dead at its own credits. The rest of the
-      // season is fetched before the provider is asked — one cached TMDB call in front of a
+      // the run it belongs to, so it used to stop dead at its own credits. Whatever holds the rest
+      // of that run is fetched before the provider is asked — one cached lookup in front of a
       // resolve that takes seconds — so that the episode after this one is there to roll into.
+      //
+      // It has to happen before playback starts rather than alongside it: the player remembers
+      // almost everything against the request it was handed, so a run arriving afterwards could
+      // only be delivered by replacing that request, which would restart the video.
       val target = catalogTargetOf(context.pageUrl)
       if (context.playlist.isEmpty() && target?.isEpisode == true) {
         scope.launch {
@@ -432,7 +460,19 @@ fun GizTvRoot(
             runCatching { TmdbTvRepository(BuildConfig.TMDB_API_KEY).episodes(target.tmdbId, requireNotNull(target.seasonNumber)) }
               .onFailure { Log.w("GizTvRoot", "Season could not be rebuilt for ${context.pageUrl}", it) }
               .getOrDefault(emptyList())
-          openStreamProviderPlayback(context.copy(playlist = seasonPlaylist(target.tmdbId, season)), returnTo)
+          openRebuiltPlayback(context.copy(playlist = seasonPlaylist(target.tmdbId, season)), returnTo)
+        }
+        return
+      }
+      // The same gap, for a drama resumed from outside its own page. The listing there hands one
+      // over complete; the widget and the television row cannot.
+      if (context.playlist.isEmpty() && chartDramaSlugOf(context.pageUrl) != null) {
+        scope.launch {
+          val rebuilt =
+            runCatching { resumedShortDramaRun(context) }
+              .onFailure { Log.w("GizTvRoot", "Drama run could not be rebuilt for ${context.pageUrl}", it) }
+              .getOrNull()
+          openRebuiltPlayback(rebuilt ?: context, returnTo)
         }
         return
       }
@@ -463,10 +503,15 @@ fun GizTvRoot(
     }
   }
 
-  // A title asked for while the app was already open — from a widget, the television's own row,
-  // or a phone handing one over. The first one is handled by the starting destination above; this
-  // catches every one after it, which previously needed the activity to be destroyed to arrive.
-  var lastResumed by remember { mutableStateOf(initialResumePageUrl) }
+  // A title asked for from a widget, the television's own row, or a phone handing one over.
+  //
+  // Every one of them goes through openForPlayback, including the first — the one that arrives
+  // with the activity. That one used to be served by the starting state alone, which set the
+  // browser at the title and stopped there: it never rebuilt the run the episode belongs to, so a
+  // cold start from the widget was the one way into an episode that could not roll into the next.
+  // It also went straight to the provider the address happens to name rather than the one that
+  // answers fastest, because the failover order starts at the head of the list.
+  var lastResumed by remember { mutableStateOf<String?>(null) }
   LaunchedEffect(initialResumePageUrl) {
     val pageUrl = initialResumePageUrl ?: return@LaunchedEffect
     if (pageUrl == lastResumed) return@LaunchedEffect

@@ -60,6 +60,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
@@ -72,6 +73,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import com.giztv.tv.data.PlaybackContext
+import com.giztv.tv.data.SearchHistoryStore
+import com.giztv.tv.data.SearchSection
 import com.giztv.tv.theme.GizMint
 import com.giztv.tv.theme.DeepSpace
 import com.giztv.tv.theme.MutedBlue
@@ -82,6 +85,7 @@ import com.giztv.tv.ui.catalog.CatalogIconButton
 import com.giztv.tv.ui.catalog.CatalogSearchField
 import com.giztv.tv.ui.catalog.ChipRow
 import com.giztv.tv.ui.catalog.GizTvMark
+import com.giztv.tv.ui.catalog.SearchHistoryRow
 import com.giztv.tv.ui.catalog.StatusPanel
 import com.giztv.tv.ui.catalog.TmdbArtwork
 import com.giztv.tv.ui.catalog.remoteFocusNavigation
@@ -114,6 +118,7 @@ internal fun SportsScreen(
   onSearchFocusHandled: () -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
+  val context = LocalContext.current
   val scope = rememberCoroutineScope()
   val focusManager = LocalFocusManager.current
   val keyboardController = LocalSoftwareKeyboardController.current
@@ -122,6 +127,7 @@ internal fun SportsScreen(
   val chipFocusRequester = remember { FocusRequester() }
   val searchFieldFocusRequester = remember { FocusRequester() }
   val searchButtonFocusRequester = remember { FocusRequester() }
+  val searchHistoryFocusRequester = remember { FocusRequester() }
   val gridFocusRequester = remember { FocusRequester() }
   val gridState = rememberLazyGridState()
 
@@ -129,6 +135,8 @@ internal fun SportsScreen(
   var query by rememberSaveable { mutableStateOf("") }
   var searchActive by rememberSaveable { mutableStateOf(false) }
   var searchExpanded by rememberSaveable { mutableStateOf(false) }
+  val searchHistoryStore = remember(context) { SearchHistoryStore(context) }
+  var recentSearches by remember { mutableStateOf(emptyList<String>()) }
   var events by remember { mutableStateOf<List<SportEvent>>(emptyList()) }
   var loading by remember { mutableStateOf(true) }
   var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -171,7 +179,24 @@ internal fun SportsScreen(
     dismissKeyboard()
     searchButtonFocusRequester.requestFocus()
     searchActive = true
+    searchHistoryStore.record(SearchSection.SPORTS, trimmed)
+    recentSearches = searchHistoryStore.recent(SearchSection.SPORTS)
   }
+
+  /** Runs a remembered query again, filtering the schedule already in hand. */
+  fun repeatSearch(searched: String) {
+    query = searched
+    searchExpanded = true
+    searchActive = true
+    dismissKeyboard()
+  }
+
+  fun clearSearchHistory() {
+    searchHistoryStore.clear(SearchSection.SPORTS)
+    recentSearches = emptyList()
+  }
+
+  LaunchedEffect(Unit) { recentSearches = searchHistoryStore.recent(SearchSection.SPORTS) }
 
   LaunchedEffect(requestSearchFocus) {
     if (!requestSearchFocus) return@LaunchedEffect
@@ -343,11 +368,16 @@ internal fun SportsScreen(
         },
         onSearch = ::runSearch,
         showSearch = showSearchRow,
+        recentSearches = recentSearches,
+        onRepeatSearch = ::repeatSearch,
+        onClearSearchHistory = ::clearSearchHistory,
         chipFocusRequester = chipFocusRequester,
         searchFieldFocusRequester = searchFieldFocusRequester,
         searchButtonFocusRequester = searchButtonFocusRequester,
+        searchHistoryFocusRequester = searchHistoryFocusRequester,
         backFocusRequester = if (hideBackButton) refreshFocusRequester else backFocusRequester,
         bodyFocusRequester = bodyFocusRequester,
+        compact = phoneDense,
       )
       Spacer(modifier.height(if (phoneDense) 6.dp else if (compact) 8.dp else 14.dp))
 
@@ -437,28 +467,41 @@ private fun SportsFilterRow(
   onQueryChanged: (String) -> Unit,
   onSearch: () -> Unit,
   showSearch: Boolean = true,
+  recentSearches: List<String> = emptyList(),
+  onRepeatSearch: (String) -> Unit = {},
+  onClearSearchHistory: () -> Unit = {},
   chipFocusRequester: FocusRequester,
   searchFieldFocusRequester: FocusRequester,
   searchButtonFocusRequester: FocusRequester,
+  searchHistoryFocusRequester: FocusRequester,
   backFocusRequester: FocusRequester,
   bodyFocusRequester: FocusRequester?,
+  compact: Boolean = false,
 ) {
+  // Down out of the box lands on the remembered queries when there are any, so the pad passes
+  // through them on its way to the fixtures rather than over them.
+  val showHistory = showSearch && recentSearches.isNotEmpty()
+  val belowSearch =
+    if (showHistory) searchHistoryFocusRequester else bodyFocusRequester ?: FocusRequester.Default
   val fieldModifier =
     Modifier.focusRequester(searchFieldFocusRequester).focusProperties {
       up = backFocusRequester
       left = chipFocusRequester
-      down = bodyFocusRequester ?: FocusRequester.Default
+      down = belowSearch
       right = searchButtonFocusRequester
-    }.remoteFocusNavigation(up = backFocusRequester, down = bodyFocusRequester)
+    }.remoteFocusNavigation(
+      up = backFocusRequester,
+      down = if (showHistory) searchHistoryFocusRequester else bodyFocusRequester,
+    )
   val buttonModifier =
     Modifier.focusRequester(searchButtonFocusRequester).focusProperties {
       up = backFocusRequester
       left = searchFieldFocusRequester
-      down = bodyFocusRequester ?: FocusRequester.Default
+      down = belowSearch
     }.remoteFocusNavigation(
       up = backFocusRequester,
       left = searchFieldFocusRequester,
-      down = bodyFocusRequester,
+      down = if (showHistory) searchHistoryFocusRequester else bodyFocusRequester,
     )
   Column(modifier = Modifier.focusGroup(), verticalArrangement = Arrangement.spacedBy(9.dp)) {
     if (filters.isNotEmpty()) {
@@ -479,6 +522,15 @@ private fun SportsFilterRow(
         CatalogSearchField(query, "Search teams or leagues…", onQueryChanged, onSearch, fieldModifier.weight(1f))
         CatalogButton("Search", onSearch, buttonModifier)
       }
+      SearchHistoryRow(
+        queries = recentSearches,
+        onSelect = onRepeatSearch,
+        onClear = onClearSearchHistory,
+        compact = compact,
+        firstChipFocusRequester = searchHistoryFocusRequester,
+        up = searchFieldFocusRequester,
+        down = bodyFocusRequester,
+      )
     }
   }
 }

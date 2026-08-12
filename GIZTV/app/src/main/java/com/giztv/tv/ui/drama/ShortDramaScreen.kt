@@ -53,6 +53,8 @@ import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import com.giztv.tv.data.PlaybackContext
 import com.giztv.tv.data.PlaybackFailureStore
+import com.giztv.tv.data.SearchHistoryStore
+import com.giztv.tv.data.SearchSection
 import com.giztv.tv.data.WatchHistoryEntry
 import com.giztv.tv.data.WatchHistoryStore
 import com.giztv.tv.theme.GizMint
@@ -66,6 +68,7 @@ import com.giztv.tv.ui.catalog.ChipRow
 import com.giztv.tv.ui.catalog.ContinueWatchingSection
 import com.giztv.tv.ui.catalog.GizTvMark
 import com.giztv.tv.ui.catalog.PosterCard
+import com.giztv.tv.ui.catalog.SearchHistoryRow
 import com.giztv.tv.ui.catalog.StatusPanel
 import com.giztv.tv.ui.catalog.friendlyCatalogError
 import com.giztv.tv.ui.catalog.remoteFocusNavigation
@@ -103,6 +106,7 @@ internal fun ShortDramaScreen(
   val keywordFocusRequester = remember { FocusRequester() }
   val searchFieldFocusRequester = remember { FocusRequester() }
   val searchButtonFocusRequester = remember { FocusRequester() }
+  val searchHistoryFocusRequester = remember { FocusRequester() }
   val continueRowFocusRequester = remember { FocusRequester() }
   val gridFocusRequester = remember { FocusRequester() }
   val gridState = rememberLazyGridState()
@@ -111,6 +115,8 @@ internal fun ShortDramaScreen(
   var query by rememberSaveable { mutableStateOf("") }
   var searchActive by rememberSaveable { mutableStateOf(false) }
   var searchExpanded by rememberSaveable { mutableStateOf(false) }
+  val searchHistoryStore = remember(context) { SearchHistoryStore(context) }
+  var recentSearches by remember { mutableStateOf(emptyList<String>()) }
   val failureStore = remember(context) { PlaybackFailureStore(context) }
   var dramas by remember { mutableStateOf<List<ShortDrama>>(emptyList()) }
   var continueWatching by remember { mutableStateOf<List<WatchHistoryEntry>>(emptyList()) }
@@ -169,7 +175,25 @@ internal fun ShortDramaScreen(
     searchButtonFocusRequester.requestFocus()
     searchActive = true
     load(trimmed)
+    searchHistoryStore.record(SearchSection.SHORT_DRAMAS, trimmed)
+    recentSearches = searchHistoryStore.recent(SearchSection.SHORT_DRAMAS)
   }
+
+  /** Runs a remembered query again, exactly as if it had just been typed. */
+  fun repeatSearch(searched: String) {
+    query = searched
+    searchExpanded = true
+    searchActive = true
+    dismissKeyboard()
+    load(searched)
+  }
+
+  fun clearSearchHistory() {
+    searchHistoryStore.clear(SearchSection.SHORT_DRAMAS)
+    recentSearches = emptyList()
+  }
+
+  LaunchedEffect(Unit) { recentSearches = searchHistoryStore.recent(SearchSection.SHORT_DRAMAS) }
 
   LaunchedEffect(requestSearchFocus) {
     if (!requestSearchFocus) return@LaunchedEffect
@@ -284,11 +308,16 @@ internal fun ShortDramaScreen(
         onQueryChanged = { query = it },
         onSearch = ::runSearch,
         showSearch = showSearchRow,
+        recentSearches = recentSearches,
+        onRepeatSearch = ::repeatSearch,
+        onClearSearchHistory = ::clearSearchHistory,
         keywordFocusRequester = keywordFocusRequester,
         searchFieldFocusRequester = searchFieldFocusRequester,
         searchButtonFocusRequester = searchButtonFocusRequester,
+        searchHistoryFocusRequester = searchHistoryFocusRequester,
         backFocusRequester = backFocusRequester,
         bodyFocusRequester = bodyFocusRequester,
+        compact = phoneDense,
       )
       Spacer(modifier.height(if (phoneDense) 6.dp else if (compact) 8.dp else 14.dp))
 
@@ -412,12 +441,33 @@ private fun DramaFilterRow(
   onQueryChanged: (String) -> Unit,
   onSearch: () -> Unit,
   showSearch: Boolean = true,
+  recentSearches: List<String> = emptyList(),
+  onRepeatSearch: (String) -> Unit = {},
+  onClearSearchHistory: () -> Unit = {},
   keywordFocusRequester: FocusRequester,
   searchFieldFocusRequester: FocusRequester,
   searchButtonFocusRequester: FocusRequester,
+  searchHistoryFocusRequester: FocusRequester,
   backFocusRequester: FocusRequester,
   bodyFocusRequester: FocusRequester?,
+  compact: Boolean = false,
 ) {
+  // Down out of the box lands on the remembered queries when there are any, so the pad passes
+  // through them on its way to the grid rather than over them.
+  val showHistory = showSearch && recentSearches.isNotEmpty()
+  val belowSearch =
+    if (showHistory) searchHistoryFocusRequester else bodyFocusRequester ?: FocusRequester.Default
+  val history: @Composable () -> Unit = {
+    SearchHistoryRow(
+      queries = recentSearches,
+      onSelect = onRepeatSearch,
+      onClear = onClearSearchHistory,
+      compact = compact,
+      firstChipFocusRequester = searchHistoryFocusRequester,
+      up = searchFieldFocusRequester,
+      down = bodyFocusRequester,
+    )
+  }
   val keywords: @Composable () -> Unit = {
     ChipRow(
       labels = DEFAULT_DRAMA_KEYWORDS,
@@ -434,18 +484,21 @@ private fun DramaFilterRow(
     Modifier.focusRequester(searchFieldFocusRequester).focusProperties {
       up = backFocusRequester
       left = keywordFocusRequester
-      down = bodyFocusRequester ?: FocusRequester.Default
+      down = belowSearch
       right = searchButtonFocusRequester
-    }.remoteFocusNavigation(up = backFocusRequester, down = bodyFocusRequester)
+    }.remoteFocusNavigation(
+      up = backFocusRequester,
+      down = if (showHistory) searchHistoryFocusRequester else bodyFocusRequester,
+    )
   val buttonModifier =
     Modifier.focusRequester(searchButtonFocusRequester).focusProperties {
       up = backFocusRequester
       left = searchFieldFocusRequester
-      down = bodyFocusRequester ?: FocusRequester.Default
+      down = belowSearch
     }.remoteFocusNavigation(
       up = backFocusRequester,
       left = searchFieldFocusRequester,
-      down = bodyFocusRequester,
+      down = if (showHistory) searchHistoryFocusRequester else bodyFocusRequester,
     )
   if (narrow) {
     Column(modifier = Modifier.focusGroup(), verticalArrangement = Arrangement.spacedBy(9.dp)) {
@@ -455,20 +508,25 @@ private fun DramaFilterRow(
           CatalogSearchField(query, "Search short dramas…", onQueryChanged, onSearch, fieldModifier.weight(1f))
           CatalogButton("Search", onSearch, buttonModifier)
         }
+        history()
       }
     }
   } else {
-    Row(
-      modifier = Modifier.focusGroup().fillMaxWidth(),
-      horizontalArrangement = Arrangement.spacedBy(10.dp),
-      verticalAlignment = Alignment.CenterVertically,
-    ) {
-      keywords()
-      Spacer(Modifier.width(6.dp))
-      if (showSearch) {
-        CatalogSearchField(query, "Search short dramas…", onQueryChanged, onSearch, fieldModifier.weight(1f))
-        CatalogButton("Search", onSearch, buttonModifier)
+    // The chips and the box share a line, so the remembered queries take the line under both.
+    Column(modifier = Modifier.focusGroup().fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        keywords()
+        Spacer(Modifier.width(6.dp))
+        if (showSearch) {
+          CatalogSearchField(query, "Search short dramas…", onQueryChanged, onSearch, fieldModifier.weight(1f))
+          CatalogButton("Search", onSearch, buttonModifier)
+        }
       }
+      if (showSearch) history()
     }
   }
 }

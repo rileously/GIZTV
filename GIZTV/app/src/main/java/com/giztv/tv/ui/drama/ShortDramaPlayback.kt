@@ -68,6 +68,28 @@ internal fun ReelTitle.shortDramaPlayback(
 }
 
 /**
+ * Rebuilds the whole run behind an episode that arrived knowing only itself.
+ *
+ * An episode resumed from the widget or the television's own row carries its address and its title
+ * and nothing else, so it used to stop at the end of the one episode. The address names the drama;
+ * the listing is what says how many episodes it has, and searching for the recorded title is the
+ * only way back to it — chartdrama publishes no per-slug lookup. The reel comes free with that
+ * search, so the swipe onto a neighbouring drama works from a resumed episode too.
+ *
+ * Returns null when [playback] is not a chartdrama episode, or when the drama can no longer be
+ * found, which leaves the single episode exactly as it was.
+ */
+internal suspend fun resumedShortDramaRun(playback: PlaybackContext): PlaybackContext? {
+  val slug = chartDramaSlugOf(playback.pageUrl) ?: return null
+  val listing = runCatching { ShortDramaRepository.search(playback.title) }.getOrDefault(emptyList())
+  val drama = listing.firstOrNull { it.slug == slug } ?: return null
+  return drama.toReelTitle().shortDramaPlayback(
+    reel = reelAround(drama, listing),
+    episode = playback.episodeNumber ?: 1,
+  )
+}
+
+/**
  * The episode a drama should open on, given what has already been watched of it.
  *
  * A reel swipe onto something half-watched should carry on from where it was left, not start the

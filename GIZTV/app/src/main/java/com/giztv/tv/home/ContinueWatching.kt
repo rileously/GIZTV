@@ -49,8 +49,10 @@ internal fun resumeIntent(context: Context, pageUrl: String): Intent =
 /**
  * Finds the title a home surface asked to resume, and enough about it to play.
  *
- * The season's other episodes are not kept with the history, so a title resumed this way plays the
- * episode it was asked for and stops at the end of it rather than rolling into the next one.
+ * The rest of the season is deliberately not here: history keeps one episode, not the run it came
+ * from, and rebuilding that run is a request rather than a lookup. It is made on the way into
+ * playback instead — see `openForPlayback` — which is what lets an episode started from the widget
+ * roll into the next one rather than stopping at its own credits.
  */
 internal fun resumeContextFor(context: Context, pageUrl: String?): PlaybackContext? {
   val entry = pageUrl?.let { WatchHistoryStore(context).find(it) } ?: return null

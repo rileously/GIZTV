@@ -75,6 +75,7 @@ import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.CircularProgressIndicator
@@ -2214,7 +2215,25 @@ internal fun HlsPlayerScreen(
         playbackSpeed = playbackSpeed,
         playButtonFocusRequester = playButtonFocusRequester,
         showMinimize = canMinimize,
+        // Named by episode rather than "Next", so a viewer can see what they are moving to. A
+        // short drama numbers straight through and has no name worth carrying, so it gets the
+        // number alone.
+        nextEpisodeLabel =
+          nextEntry?.let { entry ->
+            if (shortForm) "E${entry.episodeNumber}" else "E${entry.episodeNumber} · ${entry.name}"
+          },
         onInteraction = { controlsInteractionVersion++ },
+        onNextEpisode = {
+          val playbackContext = request.context
+          val next = nextEntry
+          if (playbackContext != null && next != null) {
+            // The episode being left is still worth remembering the place in: a viewer who steps
+            // forward part-way through has not finished it.
+            savePlaybackProgress()
+            controlsVisible = false
+            onPlayNext(playbackContext.advanceTo(next))
+          }
+        },
         onBack = {
           if (canMinimize) {
             activeDialog = null
@@ -2576,8 +2595,11 @@ private fun ModernPlayerControls(
   playbackSpeed: Float,
   playButtonFocusRequester: FocusRequester,
   showMinimize: Boolean = false,
+  /** What the following episode is called, or null when there is not one to go to. */
+  nextEpisodeLabel: String? = null,
   onInteraction: () -> Unit,
   onBack: () -> Unit,
+  onNextEpisode: () -> Unit = {},
   onMinimize: () -> Unit = {},
   onSubtitles: () -> Unit,
   onSubtitleSync: () -> Unit,
@@ -2896,6 +2918,20 @@ private fun ModernPlayerControls(
           ) {
           if (!compact) {
             val hiddenWhileSeekingModifier = Modifier.alpha(surroundingControlsAlpha)
+            // First of the row, and the only one that changes what is playing rather than how it
+            // plays. Waiting out the credits for the up-next card is the slow way to the same
+            // place; this is the way for a viewer who has already decided.
+            nextEpisodeLabel?.let { label ->
+              ModernPlayerActionPill(
+                Icons.Filled.SkipNext,
+                "Next episode",
+                label,
+                onNextEpisode,
+                onInteraction,
+                showValue = true,
+                modifier = hiddenWhileSeekingModifier,
+              )
+            }
             ModernPlayerActionPill(Icons.AutoMirrored.Filled.VolumeUp, "Audio", selectedAudio, onAudio, onInteraction, showValue = false, modifier = hiddenWhileSeekingModifier)
             ModernPlayerActionPill(Icons.Filled.HighQuality, "Quality", selectedQuality, onQuality, onInteraction, showValue = false, modifier = hiddenWhileSeekingModifier)
             if (showServerControl) {
@@ -2920,6 +2956,16 @@ private fun ModernPlayerControls(
             }
           } else {
             val hiddenWhileSeekingModifier = Modifier.alpha(surroundingControlsAlpha)
+            nextEpisodeLabel?.let { label ->
+              ModernTransportControl(
+                Icons.Filled.SkipNext,
+                "Next episode: $label",
+                44.dp,
+                onNextEpisode,
+                onInteraction,
+                modifier = hiddenWhileSeekingModifier,
+              )
+            }
             ModernTransportControl(Icons.AutoMirrored.Filled.VolumeUp, "Audio: $selectedAudio", 44.dp, onAudio, onInteraction, modifier = hiddenWhileSeekingModifier)
             ModernTransportControl(Icons.Filled.HighQuality, "Quality: $selectedQuality", 44.dp, onQuality, onInteraction, modifier = hiddenWhileSeekingModifier)
             if (showServerControl) {

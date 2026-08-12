@@ -99,6 +99,8 @@ import com.giztv.tv.data.LibraryItem
 import com.giztv.tv.data.LibraryKind
 import com.giztv.tv.data.MyListStore
 import com.giztv.tv.data.PlaybackContext
+import com.giztv.tv.data.SearchHistoryStore
+import com.giztv.tv.data.SearchSection
 import com.giztv.tv.data.UiPreferencesStore
 import com.giztv.tv.data.WatchHistoryEntry
 import com.giztv.tv.data.WatchHistoryStore
@@ -173,7 +175,7 @@ internal fun RestoreCatalogFocusEffect(
     if (settleDelayMs > 0) delay(settleDelayMs)
     repeat(retryAttempts) { attempt ->
       withFrameNanos {}
-      if (runCatching { requester.requestFocus() }.getOrDefault(false)) return@LaunchedEffect
+      if (runCatching { requester.requestFocus() }.isSuccess) return@LaunchedEffect
       if (attempt > 0 && retryDelayMs > 0) delay(retryDelayMs)
     }
   }
@@ -255,6 +257,7 @@ internal fun CatalogScreen(
   val playbackProgressStore = remember(context) { PlaybackProgressStore(context) }
   val myListStore = remember(context) { MyListStore(context) }
   val uiPreferences = remember(context) { UiPreferencesStore(context) }
+  val searchHistoryStore = remember(context) { SearchHistoryStore(context) }
   val scope = rememberCoroutineScope()
   val focusManager = LocalFocusManager.current
   val keyboardController = LocalSoftwareKeyboardController.current
@@ -267,6 +270,7 @@ internal fun CatalogScreen(
   val firstTabFocusRequester = remember { FocusRequester() }
   val searchFieldFocusRequester = remember { FocusRequester() }
   val searchButtonFocusRequester = remember { FocusRequester() }
+  val searchHistoryFocusRequester = remember { FocusRequester() }
   val heroFocusRequester = remember { FocusRequester() }
   val filterFocusRequester = remember { FocusRequester() }
   val continueRowFocusRequester = remember { FocusRequester() }
@@ -289,6 +293,11 @@ internal fun CatalogScreen(
   var query by rememberSaveable { mutableStateOf("") }
   var searchActive by rememberSaveable { mutableStateOf(false) }
   var searchExpanded by rememberSaveable { mutableStateOf(false) }
+  // Films and series are looked for separately, so they remember separately: the tab decides which
+  // list is being added to and which is offered back under the box.
+  val searchSection =
+    if (tab == CatalogTab.SHOWS) SearchSection.TV_SHOWS else SearchSection.MOVIES
+  var recentSearches by remember { mutableStateOf(emptyList<String>()) }
   // Every listing is on the page at once, one rail each, rather than behind a filter.
   //
   // Seeded from the cache while composing rather than left empty for a coroutine to fill. Opening a
@@ -509,6 +518,27 @@ internal fun CatalogScreen(
     searchButtonFocusRequester.requestFocus()
   }
 
+  fun rememberSearch(searched: String) {
+    searchHistoryStore.record(searchSection, searched)
+    recentSearches = searchHistoryStore.recent(searchSection)
+  }
+
+  /** Runs a remembered query again, exactly as if it had just been typed. */
+  fun repeatSearch(searched: String) {
+    query = searched
+    searchExpanded = true
+    keyboardController?.hide()
+    focusManager.clearFocus()
+  }
+
+  fun clearSearchHistory() {
+    searchHistoryStore.clear(searchSection)
+    recentSearches = emptyList()
+  }
+
+  // Re-read per tab, and on every entry so a search made on another screen's turn is here too.
+  LaunchedEffect(searchSection) { recentSearches = searchHistoryStore.recent(searchSection) }
+
   LaunchedEffect(requestSearchFocus) {
     if (!requestSearchFocus) return@LaunchedEffect
     searchExpanded = true
@@ -529,7 +559,7 @@ internal fun CatalogScreen(
     delay(300)
     repeat(RAIL_FOCUS_ATTEMPTS) { attempt ->
       withFrameNanos {}
-      if (runCatching { firstTabFocusRequester.requestFocus() }.getOrDefault(false)) {
+      if (runCatching { firstTabFocusRequester.requestFocus() }.isSuccess) {
         return@LaunchedEffect
       }
       if (attempt > 0) delay(RAIL_FOCUS_RETRY_MS)
@@ -580,6 +610,10 @@ internal fun CatalogScreen(
     // the results back on just as an emptied box had switched them off.
     searchActive = true
     runLoad(tab, trimmed)
+    // Recorded once the search has actually been made rather than on each keystroke. Everything
+    // this query was typed through is a prefix of it, and the store drops those, so a run of
+    // letters leaves one entry behind instead of one per letter.
+    rememberSearch(trimmed)
   }
 
   // The likeliest thing anyone is about to press, warmed without being asked to dwell on it. One
@@ -776,7 +810,7 @@ internal fun CatalogScreen(
         // it did.
         repeat(RAIL_FOCUS_ATTEMPTS) { attempt ->
           if (
-            runCatching { railFocusRequesters[target].requestFocus() }.getOrDefault(false)
+            runCatching { railFocusRequesters[target].requestFocus() }.isSuccess
           ) return@launch
           withFrameNanos {}
           if (attempt > 0) delay(RAIL_FOCUS_RETRY_MS)
@@ -847,7 +881,7 @@ internal fun CatalogScreen(
             placed.offset + placed.size <= layoutInfo.viewportEndOffset
         if (!fullyVisible) railState.animateScrollToItem(itemIndex)
         repeat(RAIL_FOCUS_ATTEMPTS) { attempt ->
-          if (runCatching { requester.requestFocus() }.getOrDefault(false)) return@launch
+          if (runCatching { requester.requestFocus() }.isSuccess) return@launch
           withFrameNanos {}
           if (attempt > 0) delay(RAIL_FOCUS_RETRY_MS)
         }
@@ -1003,23 +1037,46 @@ internal fun CatalogScreen(
           if (!showSearchRow) null
           else {
             {
-              CatalogSearchRow(
-                narrow = narrow,
-                query = query,
-                placeholder = if (tab == CatalogTab.MOVIES) "Search movies…" else "Search shows…",
-                onQueryChanged = { query = it },
-                onSearch = ::runSearch,
-                searchFieldFocusRequester = searchFieldFocusRequester,
-                searchButtonFocusRequester = searchButtonFocusRequester,
-                tabFocusRequester = firstTabFocusRequester,
-                bodyFocusRequester =
-                  firstBodyFocusRequester.takeIf { showRails || showContinueRow || itemCount > 0 },
-                onMoveDown = {
-                  if (showRails) focusHomeItem(0, firstBodyFocusRequester)
-                  else runCatching { firstBodyFocusRequester.requestFocus() }
-                  Unit
-                },
-              )
+              val showHistoryRow = recentSearches.isNotEmpty()
+              val moveIntoBody: () -> Unit = {
+                if (showRails) focusHomeItem(0, firstBodyFocusRequester)
+                else runCatching { firstBodyFocusRequester.requestFocus() }
+                Unit
+              }
+              Column(verticalArrangement = Arrangement.spacedBy(if (phoneDense) 6.dp else 9.dp)) {
+                CatalogSearchRow(
+                  narrow = narrow,
+                  query = query,
+                  placeholder = if (tab == CatalogTab.MOVIES) "Search movies…" else "Search shows…",
+                  onQueryChanged = { query = it },
+                  onSearch = ::runSearch,
+                  searchFieldFocusRequester = searchFieldFocusRequester,
+                  searchButtonFocusRequester = searchButtonFocusRequester,
+                  tabFocusRequester = firstTabFocusRequester,
+                  // Down out of the box lands on the remembered queries when there are any, so
+                  // the pad reaches them on the way to the results rather than past them.
+                  bodyFocusRequester =
+                    if (showHistoryRow) searchHistoryFocusRequester
+                    else firstBodyFocusRequester.takeIf { showRails || showContinueRow || itemCount > 0 },
+                  onMoveDown =
+                    if (showHistoryRow) {
+                      { runCatching { searchHistoryFocusRequester.requestFocus() }; Unit }
+                    } else {
+                      moveIntoBody
+                    },
+                )
+                SearchHistoryRow(
+                  queries = recentSearches,
+                  onSelect = ::repeatSearch,
+                  onClear = ::clearSearchHistory,
+                  compact = phoneDense,
+                  firstChipFocusRequester = searchHistoryFocusRequester,
+                  up = searchFieldFocusRequester,
+                  down =
+                    firstBodyFocusRequester.takeIf { showRails || showContinueRow || itemCount > 0 },
+                  onMoveDown = moveIntoBody,
+                )
+              }
             }
           },
       )
