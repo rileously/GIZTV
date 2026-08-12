@@ -62,11 +62,9 @@ jobs:
           # this says both things. Drop the second half once 1.52.x is gone.
           RELEASE_NOTES: |
             What changed:
-            - A "Skip intro" button now appears over openings and title sequences in films, series
-              and anime, and becomes "Next episode" over the closing credits. It never skips on its
-              own, and it only shows where someone has submitted the times.
-            - Fixed an episode resumed from Continue watching, the home row or the widget stopping
-              at its own credits instead of rolling into the next one.
+            - Fixed the short drama swipe. The next drama's cover used to shrink, dim and swell
+              back again the moment you let go; now it simply stays where your thumb left it
+              until the episode starts.
 
             Already on 1.53.0 or newer? This installs itself as usual.
 
