@@ -983,12 +983,6 @@ internal fun CatalogScreen(
           } else {
             null
           },
-        onCloseSearch =
-          if (phoneChrome && showSearchRow) {
-            { collapseSearchUi() }
-          } else {
-            null
-          },
         openWebModifier =
           Modifier.focusRequester(openWebFocusRequester).focusProperties {
             left = animeFocusRequester
@@ -1065,6 +1059,7 @@ internal fun CatalogScreen(
                     } else {
                       moveIntoBody
                     },
+                  onCloseSearch = if (phoneChrome) ({ collapseSearchUi() }) else null,
                 )
                 SearchHistoryRow(
                   queries = recentSearches,

@@ -285,9 +285,6 @@ internal fun ShortDramaScreen(
             },
           )
         }
-        if (phoneDense && showSearchRow) {
-          CatalogIconButton("Close search", Icons.Filled.Close, ::collapseSearchUi)
-        }
         if (!hideBackButton) {
           CatalogButton(
             label = "Back",
@@ -311,6 +308,7 @@ internal fun ShortDramaScreen(
         recentSearches = recentSearches,
         onRepeatSearch = ::repeatSearch,
         onClearSearchHistory = ::clearSearchHistory,
+        onCloseSearch = if (phoneDense) ({ collapseSearchUi() }) else null,
         keywordFocusRequester = keywordFocusRequester,
         searchFieldFocusRequester = searchFieldFocusRequester,
         searchButtonFocusRequester = searchButtonFocusRequester,
@@ -451,6 +449,7 @@ private fun DramaFilterRow(
   backFocusRequester: FocusRequester,
   bodyFocusRequester: FocusRequester?,
   compact: Boolean = false,
+  onCloseSearch: (() -> Unit)? = null,
 ) {
   // Down out of the box lands on the remembered queries when there are any, so the pad passes
   // through them on its way to the grid rather than over them.
@@ -507,6 +506,9 @@ private fun DramaFilterRow(
         Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.CenterVertically) {
           CatalogSearchField(query, "Search short dramas…", onQueryChanged, onSearch, fieldModifier.weight(1f))
           CatalogButton("Search", onSearch, buttonModifier)
+          onCloseSearch?.let { close ->
+            CatalogIconButton("Clear search", Icons.Filled.Close, close)
+          }
         }
         history()
       }
@@ -524,6 +526,9 @@ private fun DramaFilterRow(
         if (showSearch) {
           CatalogSearchField(query, "Search short dramas…", onQueryChanged, onSearch, fieldModifier.weight(1f))
           CatalogButton("Search", onSearch, buttonModifier)
+          onCloseSearch?.let { close ->
+            CatalogIconButton("Clear search", Icons.Filled.Close, close)
+          }
         }
       }
       if (showSearch) history()

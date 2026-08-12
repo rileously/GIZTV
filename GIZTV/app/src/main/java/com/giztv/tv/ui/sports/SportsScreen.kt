@@ -312,9 +312,6 @@ internal fun SportsScreen(
               },
             )
           }
-          if (phoneDense && showSearchRow) {
-            CatalogIconButton("Close search", Icons.Filled.Close, ::collapseSearchUi)
-          }
           CatalogButton(
             label = "Refresh",
             onClick = { dismissKeyboard(); load(refresh = true) },
@@ -371,6 +368,7 @@ internal fun SportsScreen(
         recentSearches = recentSearches,
         onRepeatSearch = ::repeatSearch,
         onClearSearchHistory = ::clearSearchHistory,
+        onCloseSearch = if (phoneDense) ({ collapseSearchUi() }) else null,
         chipFocusRequester = chipFocusRequester,
         searchFieldFocusRequester = searchFieldFocusRequester,
         searchButtonFocusRequester = searchButtonFocusRequester,
@@ -477,6 +475,7 @@ private fun SportsFilterRow(
   backFocusRequester: FocusRequester,
   bodyFocusRequester: FocusRequester?,
   compact: Boolean = false,
+  onCloseSearch: (() -> Unit)? = null,
 ) {
   // Down out of the box lands on the remembered queries when there are any, so the pad passes
   // through them on its way to the fixtures rather than over them.
@@ -521,6 +520,9 @@ private fun SportsFilterRow(
       Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.CenterVertically) {
         CatalogSearchField(query, "Search teams or leagues…", onQueryChanged, onSearch, fieldModifier.weight(1f))
         CatalogButton("Search", onSearch, buttonModifier)
+        onCloseSearch?.let { close ->
+          CatalogIconButton("Clear search", Icons.Filled.Close, close)
+        }
       }
       SearchHistoryRow(
         queries = recentSearches,

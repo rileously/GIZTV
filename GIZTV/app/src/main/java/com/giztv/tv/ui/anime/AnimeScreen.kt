@@ -325,9 +325,6 @@ internal fun AnimeScreen(
               },
             )
           }
-          if (phoneDense && showSearchRow) {
-            CatalogIconButton("Close search", Icons.Filled.Close, ::collapseSearchUi)
-          }
           if (!hideBackButton) {
             CatalogButton(
               label = "Back",
@@ -413,6 +410,9 @@ internal fun AnimeScreen(
                 down = remoteBelowSearch,
               ),
           )
+          if (phoneDense) {
+            CatalogIconButton("Clear search", Icons.Filled.Close, ::collapseSearchUi)
+          }
         }
         if (showHistory) {
           Spacer(Modifier.height(if (compact) 6.dp else 9.dp))

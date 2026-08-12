@@ -287,9 +287,6 @@ internal fun DlhdSoccerScreen(
               },
             )
           }
-          if (phoneDense && showSearchRow) {
-            CatalogIconButton("Close search", Icons.Filled.Close, ::collapseSearchUi)
-          }
           CatalogButton(
             label = "Refresh",
             onClick = {
@@ -395,6 +392,9 @@ internal fun DlhdSoccerScreen(
               down = belowSearch
             },
           )
+          if (phoneDense) {
+            CatalogIconButton("Clear search", Icons.Filled.Close, ::collapseSearchUi)
+          }
         }
         if (recentSearches.isNotEmpty()) {
           Spacer(Modifier.height(if (phoneDense) 6.dp else 9.dp))

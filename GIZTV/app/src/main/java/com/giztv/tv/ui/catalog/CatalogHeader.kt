@@ -86,7 +86,6 @@ internal fun CatalogTopBar(
   onOpenIptv: () -> Unit,
   onOpenRemote: (() -> Unit)?,
   onOpenSearch: (() -> Unit)? = null,
-  onCloseSearch: (() -> Unit)? = null,
   openWebModifier: Modifier,
   shortDramasModifier: Modifier,
   animeModifier: Modifier,
@@ -148,9 +147,6 @@ internal fun CatalogTopBar(
       }
       onOpenSearch?.let { open ->
         CatalogIconButton("Search", Icons.Filled.Search, open)
-      }
-      onCloseSearch?.let { close ->
-        CatalogIconButton("Close search", Icons.Filled.Close, close)
       }
       onOpenRemote?.let { open ->
         CatalogActionButton(
@@ -238,6 +234,15 @@ internal fun CatalogSearchRow(
   tabFocusRequester: FocusRequester,
   bodyFocusRequester: FocusRequester?,
   onMoveDown: (() -> Unit)? = null,
+  /**
+   * Empties the box and puts the search away.
+   *
+   * Sits at the end of this row rather than up in the header, where it used to be. The header is
+   * the other side of the screen from the words being erased, which on a phone is the other side
+   * of the hand holding it — and it read as chrome belonging to the page rather than as the
+   * counterpart to the box directly beneath it.
+   */
+  onCloseSearch: (() -> Unit)? = null,
 ) {
   val fieldModifier =
     Modifier.focusRequester(searchFieldFocusRequester).focusProperties {
@@ -275,5 +280,22 @@ internal fun CatalogSearchRow(
     val width = if (narrow) Modifier.weight(1f) else Modifier.width(560.dp)
     CatalogSearchField(query, placeholder, onQueryChanged, onSearch, fieldModifier.then(width))
     CatalogIconButton("Search", Icons.Filled.Search, onSearch, buttonModifier)
+    onCloseSearch?.let { close ->
+      CatalogIconButton(
+        label = "Clear search",
+        icon = Icons.Filled.Close,
+        onClick = close,
+        modifier =
+          Modifier.focusProperties {
+            up = tabFocusRequester
+            left = searchButtonFocusRequester
+            down = bodyFocusRequester ?: FocusRequester.Default
+          }.remoteFocusNavigation(
+            up = tabFocusRequester,
+            left = searchButtonFocusRequester,
+            down = bodyFocusRequester,
+          ),
+      )
+    }
   }
 }

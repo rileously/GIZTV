@@ -332,9 +332,6 @@ internal fun IptvScreen(
               },
             )
           }
-          if (phoneDense && showSearchRow) {
-            CatalogIconButton("Close search", Icons.Filled.Close, ::collapseSearchUi)
-          }
           CatalogButton(
             label = "Reload",
             onClick = { dismissKeyboard(); load(refresh = true) },
@@ -438,6 +435,9 @@ internal fun IptvScreen(
                 down = remoteBelowSearch,
               ),
           )
+          if (phoneDense) {
+            CatalogIconButton("Clear search", Icons.Filled.Close, ::collapseSearchUi)
+          }
         }
         if (showHistory) {
           Spacer(Modifier.height(if (compact) 6.dp else 9.dp))
