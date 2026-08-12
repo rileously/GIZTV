@@ -62,11 +62,10 @@ jobs:
           # this says both things. Drop the second half once 1.52.x is gone.
           RELEASE_NOTES: |
             What changed:
-            - Searching the TV Shows tab now lists series first and films underneath, instead of
-              putting a screenful of films in front of the answer you asked for.
-            - Fixed the remote landing on the wrong thing, or on nothing, in the catalog. A rail
-              or a card that was still settling was treated as though it had taken the focus, so
-              the app stopped trying to hand it over.
+            - On a phone, the bottom bar now stays put on a film's page and on an actor or crew
+              member's page, so another section is one press away instead of needing Back first.
+            - The button that clears a search has moved down beside the search box, at the end of
+              the line it belongs to, rather than sitting in the far top corner of the screen.
 
             Already on 1.53.0 or newer? This installs itself as usual.
 
