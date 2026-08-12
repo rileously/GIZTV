@@ -1,7 +1,7 @@
 {
-  "versionCode": 116,
-  "versionName": "1.59.0",
-  "apkUrl": "https://github.com/rileously/GIZTV/releases/download/v1.59.0/GIZTV-v1.59.0.apk",
-  "sha256": "ae937f6dcf46ecda0b7bea7488c99e16098cb4da9049f84d2f7b049522e12b43",
-  "releaseNotes": "What changed:\n- A \"Skip intro\" button now appears over openings and title sequences in films, series\n  and anime, and becomes \"Next episode\" over the closing credits. It never skips on its\n  own, and it only shows where someone has submitted the times.\n- Fixed an episode resumed from Continue watching, the home row or the widget stopping\n  at its own credits instead of rolling into the next one.\n\nAlready on 1.53.0 or newer? This installs itself as usual.\n\nOn 1.52.1 or older? 1.53.0 changed the app's identity, so Android will not install this\nover your copy and the in-app update stops with \"The downloaded update belongs to a\ndifferent app.\" Uninstall GIZTV once, then install this build from the release page.\nWatch history does not carry across that one reinstall. Updates after it are automatic.\n"
+  "versionCode": 117,
+  "versionName": "1.60.0",
+  "apkUrl": "https://github.com/rileously/GIZTV/releases/download/v1.60.0/GIZTV-v1.60.0.apk",
+  "sha256": "6dd873ba17f74fb8c4e385f202440f058a06d1b2d558c6cb11ea030edb6ca986",
+  "releaseNotes": "What changed:\n- Fixed the short drama swipe. The next drama's cover used to shrink, dim and swell\n  back again the moment you let go; now it simply stays where your thumb left it\n  until the episode starts.\n\nAlready on 1.53.0 or newer? This installs itself as usual.\n\nOn 1.52.1 or older? 1.53.0 changed the app's identity, so Android will not install this\nover your copy and the in-app update stops with \"The downloaded update belongs to a\ndifferent app.\" Uninstall GIZTV once, then install this build from the release page.\nWatch history does not carry across that one reinstall. Updates after it are automatic.\n"
 }
