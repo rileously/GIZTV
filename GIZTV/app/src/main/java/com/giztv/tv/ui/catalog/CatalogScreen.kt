@@ -40,6 +40,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridState
+import androidx.compose.foundation.lazy.grid.LazyGridScope
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -1516,46 +1517,65 @@ internal fun CatalogScreen(
               }
             }
             if (searchActive) {
-              if (movies.isNotEmpty()) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                  SectionHeading(heading = "Movies (${movies.size})", itemCount = movies.size, narrow = narrow)
-                }
-                items(items = movies, key = { "movie-${it.id}" }) { movie ->
-                  PosterCard(
-                    title = movie.title,
-                    subtitle = movie.year ?: "—",
-                    rating = movie.voteAverage,
-                    posterUrl = movie.posterUrl,
-                    actionLabel = "Open ${movie.title}",
-                    watched = historyStore.find(vidfastMovieUrl(movie.id))?.completed == true,
-                    onClick = { onOpenMovie(movie) },
-                    onDwell = { onConsidering(movie.toPlaybackContext()) },
-                    modifier =
-                      gridEntryModifier(movie.id == movies.firstOrNull()?.id, gridFocusRequester) {
-                        lastContentFocusRequester = it
-                      },
-                  )
+              // One search asks both TMDB endpoints, so both kinds always come back. Which is
+              // shown first follows the tab the search was typed on: asking the TV Shows tab for
+              // a series and being handed a screenful of films is the wrong answer arriving in
+              // front of the right one, and on a television that is a page of scrolling to undo.
+              val showsLead = tab == CatalogTab.SHOWS
+              val movieResults: LazyGridScope.(Boolean) -> Unit = { leading ->
+                if (movies.isNotEmpty()) {
+                  item(span = { GridItemSpan(maxLineSpan) }) {
+                    SectionHeading(heading = "Movies (${movies.size})", itemCount = movies.size, narrow = narrow)
+                  }
+                  items(items = movies, key = { "movie-${it.id}" }) { movie ->
+                    PosterCard(
+                      title = movie.title,
+                      subtitle = movie.year ?: "—",
+                      rating = movie.voteAverage,
+                      posterUrl = movie.posterUrl,
+                      actionLabel = "Open ${movie.title}",
+                      watched = historyStore.find(vidfastMovieUrl(movie.id))?.completed == true,
+                      onClick = { onOpenMovie(movie) },
+                      onDwell = { onConsidering(movie.toPlaybackContext()) },
+                      modifier =
+                        gridEntryModifier(
+                          leading && movie.id == movies.firstOrNull()?.id,
+                          gridFocusRequester,
+                        ) { lastContentFocusRequester = it },
+                    )
+                  }
                 }
               }
-              if (shows.isNotEmpty()) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                  SectionHeading(heading = "TV Shows (${shows.size})", itemCount = shows.size, narrow = narrow)
+              val showResults: LazyGridScope.(Boolean) -> Unit = { leading ->
+                if (shows.isNotEmpty()) {
+                  item(span = { GridItemSpan(maxLineSpan) }) {
+                    SectionHeading(heading = "TV Shows (${shows.size})", itemCount = shows.size, narrow = narrow)
+                  }
+                  items(items = shows, key = { "show-${it.id}" }) { show ->
+                    PosterCard(
+                      title = show.name,
+                      subtitle = show.year ?: "—",
+                      rating = show.voteAverage,
+                      posterUrl = show.posterUrl,
+                      actionLabel = "Open ${show.name}",
+                      onClick = { onOpenShow(show) },
+                      modifier =
+                        gridEntryModifier(
+                          leading && show.id == shows.firstOrNull()?.id,
+                          gridFocusRequester,
+                        ) { lastContentFocusRequester = it },
+                    )
+                  }
                 }
-                items(items = shows, key = { "show-${it.id}" }) { show ->
-                  PosterCard(
-                    title = show.name,
-                    subtitle = show.year ?: "—",
-                    rating = show.voteAverage,
-                    posterUrl = show.posterUrl,
-                    actionLabel = "Open ${show.name}",
-                    onClick = { onOpenShow(show) },
-                    modifier =
-                      gridEntryModifier(
-                        movies.isEmpty() && show.id == shows.firstOrNull()?.id,
-                        gridFocusRequester,
-                      ) { lastContentFocusRequester = it },
-                  )
-                }
+              }
+              // The pad lands on the first card of whichever section is actually on screen first,
+              // so an empty leading section hands the grid's entry point to the other one.
+              if (showsLead) {
+                showResults(this, true)
+                movieResults(this, shows.isEmpty())
+              } else {
+                movieResults(this, true)
+                showResults(this, movies.isEmpty())
               }
             } else if (itemCount > 0) {
               item(span = { GridItemSpan(maxLineSpan) }) {
