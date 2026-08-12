@@ -1,7 +1,7 @@
 {
-  "versionCode": 118,
-  "versionName": "1.61.0",
-  "apkUrl": "https://github.com/rileously/GIZTV/releases/download/v1.61.0/GIZTV-v1.61.0.apk",
-  "sha256": "660030971ef71d6e2a2e742b70cfd84b8d0f29bfa1a884de03cf66b7167ec8c8",
-  "releaseNotes": "What changed:\n- Every listing now remembers what it has been searched for, and offers those queries\n  back under the box. Films, series, sport, soccer, short dramas, anime and the IPTV\n  guide each keep their own list. One press runs a search again; Clear empties that\n  one listing's history.\n- The player has a Next episode button, named by the episode it goes to, so there is\n  no need to sit through the credits to reach it.\n- Fixed an episode started from the widget or the television's own Continue watching\n  row stopping dead at its own credits instead of rolling into the next one.\n\nAlready on 1.53.0 or newer? This installs itself as usual.\n\nOn 1.52.1 or older? 1.53.0 changed the app's identity, so Android will not install this\nover your copy and the in-app update stops with \"The downloaded update belongs to a\ndifferent app.\" Uninstall GIZTV once, then install this build from the release page.\nWatch history does not carry across that one reinstall. Updates after it are automatic.\n"
+  "versionCode": 119,
+  "versionName": "1.62.0",
+  "apkUrl": "https://github.com/rileously/GIZTV/releases/download/v1.62.0/GIZTV-v1.62.0.apk",
+  "sha256": "b43a310ac33f2ec1284afd08af1f565efd382de0ccdb063b0f7d7bb8a274815b",
+  "releaseNotes": "What changed:\n- Searching the TV Shows tab now lists series first and films underneath, instead of\n  putting a screenful of films in front of the answer you asked for.\n- Fixed the remote landing on the wrong thing, or on nothing, in the catalog. A rail\n  or a card that was still settling was treated as though it had taken the focus, so\n  the app stopped trying to hand it over.\n\nAlready on 1.53.0 or newer? This installs itself as usual.\n\nOn 1.52.1 or older? 1.53.0 changed the app's identity, so Android will not install this\nover your copy and the in-app update stops with \"The downloaded update belongs to a\ndifferent app.\" Uninstall GIZTV once, then install this build from the release page.\nWatch history does not carry across that one reinstall. Updates after it are automatic.\n"
 }
