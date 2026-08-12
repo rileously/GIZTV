@@ -17,6 +17,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -152,6 +154,13 @@ private enum class Destination {
   BROWSER,
   PLAYER,
 }
+
+/**
+ * The two pages a title being opened passes between: the page that resolves the stream and the
+ * player that receives it. Neither is a place the viewer navigated to, so for a reel the move
+ * between them is a hand-over rather than a page change.
+ */
+private val PLAYBACK_HANDOVER_DESTINATIONS = setOf(Destination.BROWSER, Destination.PLAYER)
 
 private data class PersonSelection(val id: Int, val name: String, val isDirector: Boolean = false)
 
@@ -651,6 +660,15 @@ fun GizTvRoot(
         AnimatedContent(
           targetState = destination,
           transitionSpec = {
+            // A short drama swiped onto hands the screen over from the player to the loading page
+            // and back again, and the swipe has already carried that drama's cover exactly into
+            // place. Fading and scaling those two hand-overs morphs the cover the gesture just
+            // delivered — the picture shrinks, dims and swells again between every drama — so a
+            // reel swaps them outright and the cover simply stays where the thumb left it.
+            val isReelHandover =
+              pendingContext?.shortForm == true &&
+                initialState in PLAYBACK_HANDOVER_DESTINATIONS &&
+                targetState in PLAYBACK_HANDOVER_DESTINATIONS
             val isEnteringDetail =
               targetState in
                 listOf(
@@ -662,7 +680,9 @@ fun GizTvRoot(
                   Destination.PLAYER,
                   Destination.BROWSER,
                 )
-            if (isEnteringDetail) {
+            if (isReelHandover) {
+              EnterTransition.None togetherWith ExitTransition.None
+            } else if (isEnteringDetail) {
               (fadeIn(animationSpec = tween(280, easing = FastOutSlowInEasing)) +
                 scaleIn(initialScale = 0.95f, animationSpec = tween(280, easing = FastOutSlowInEasing))) togetherWith
                 (fadeOut(animationSpec = tween(180)) +
