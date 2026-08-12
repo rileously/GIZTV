@@ -283,5 +283,5 @@ internal fun Modifier.remoteFocusNavigation(
         Key.DirectionRight -> right
         else -> null
       } ?: return@onPreviewKeyEvent false
-    runCatching { destination.requestFocus() }.getOrDefault(false)
+    destination.requestFocusIfReady()
   }

@@ -175,7 +175,7 @@ internal fun RestoreCatalogFocusEffect(
     if (settleDelayMs > 0) delay(settleDelayMs)
     repeat(retryAttempts) { attempt ->
       withFrameNanos {}
-      if (runCatching { requester.requestFocus() }.isSuccess) return@LaunchedEffect
+      if (requester.requestFocusIfReady()) return@LaunchedEffect
       if (attempt > 0 && retryDelayMs > 0) delay(retryDelayMs)
     }
   }
@@ -559,7 +559,7 @@ internal fun CatalogScreen(
     delay(300)
     repeat(RAIL_FOCUS_ATTEMPTS) { attempt ->
       withFrameNanos {}
-      if (runCatching { firstTabFocusRequester.requestFocus() }.isSuccess) {
+      if (firstTabFocusRequester.requestFocusIfReady()) {
         return@LaunchedEffect
       }
       if (attempt > 0) delay(RAIL_FOCUS_RETRY_MS)
@@ -810,7 +810,7 @@ internal fun CatalogScreen(
         // it did.
         repeat(RAIL_FOCUS_ATTEMPTS) { attempt ->
           if (
-            runCatching { railFocusRequesters[target].requestFocus() }.isSuccess
+            railFocusRequesters[target].requestFocusIfReady()
           ) return@launch
           withFrameNanos {}
           if (attempt > 0) delay(RAIL_FOCUS_RETRY_MS)
@@ -881,7 +881,7 @@ internal fun CatalogScreen(
             placed.offset + placed.size <= layoutInfo.viewportEndOffset
         if (!fullyVisible) railState.animateScrollToItem(itemIndex)
         repeat(RAIL_FOCUS_ATTEMPTS) { attempt ->
-          if (runCatching { requester.requestFocus() }.isSuccess) return@launch
+          if (requester.requestFocusIfReady()) return@launch
           withFrameNanos {}
           if (attempt > 0) delay(RAIL_FOCUS_RETRY_MS)
         }

@@ -94,7 +94,7 @@ internal fun MovieDetailFocusResetEffect(
     scrollState.scrollTo(0)
     repeat(retryAttempts) { attempt ->
       withFrameNanos {}
-      if (runCatching { playFocusRequester.requestFocus() }.getOrDefault(false)) {
+      if (playFocusRequester.requestFocusIfReady()) {
         return@LaunchedEffect
       }
       if (attempt > 0 && retryDelayMs > 0) delay(retryDelayMs)
