@@ -62,14 +62,11 @@ jobs:
           # this says both things. Drop the second half once 1.52.x is gone.
           RELEASE_NOTES: |
             What changed:
-            - Every listing now remembers what it has been searched for, and offers those queries
-              back under the box. Films, series, sport, soccer, short dramas, anime and the IPTV
-              guide each keep their own list. One press runs a search again; Clear empties that
-              one listing's history.
-            - The player has a Next episode button, named by the episode it goes to, so there is
-              no need to sit through the credits to reach it.
-            - Fixed an episode started from the widget or the television's own Continue watching
-              row stopping dead at its own credits instead of rolling into the next one.
+            - Searching the TV Shows tab now lists series first and films underneath, instead of
+              putting a screenful of films in front of the answer you asked for.
+            - Fixed the remote landing on the wrong thing, or on nothing, in the catalog. A rail
+              or a card that was still settling was treated as though it had taken the focus, so
+              the app stopped trying to hand it over.
 
             Already on 1.53.0 or newer? This installs itself as usual.
 
