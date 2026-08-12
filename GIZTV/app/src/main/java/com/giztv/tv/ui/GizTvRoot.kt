@@ -175,10 +175,20 @@ private sealed interface CatalogDetailRoute {
   data class Show(val show: TmdbShow) : CatalogDetailRoute
 }
 
-/** Browse surfaces that keep the phone footer visible (YouTube-style: hide on player/detail). */
+/**
+ * Surfaces that keep the phone footer visible. The player and the loading page do not: both are
+ * one thing being watched or waited for, and neither is a place to change section from.
+ *
+ * A film's page and a person's page do keep it. They are still browsing — a viewer reading a
+ * synopsis or running down someone's filmography is as likely to want another section as one
+ * reading the grid was, and taking the footer away meant pressing Back first purely to get it
+ * returned. Back still leaves the page; the footer is for leaving the section.
+ */
 private fun Destination.showsPhoneBottomNav(): Boolean =
   when (this) {
     Destination.CATALOG,
+    Destination.MOVIE_DETAIL,
+    Destination.PERSON_DETAIL,
     Destination.SHORT_DRAMAS,
     Destination.ANIME,
     Destination.SPORTS,
@@ -191,7 +201,12 @@ private fun Destination.showsPhoneBottomNav(): Boolean =
 
 private fun Destination.toPhoneBottomTab(): PhoneBottomTab? =
   when (this) {
-    Destination.CATALOG -> PhoneBottomTab.MOVIES
+    // A film and a person are both reached from the catalog and both go back to it, so the tab
+    // that opened them stays lit rather than the footer reading as though nothing is selected.
+    Destination.CATALOG,
+    Destination.MOVIE_DETAIL,
+    Destination.PERSON_DETAIL,
+    -> PhoneBottomTab.MOVIES
     Destination.SPORTS,
     Destination.DLHD_SOCCER,
     -> PhoneBottomTab.SPORTS
