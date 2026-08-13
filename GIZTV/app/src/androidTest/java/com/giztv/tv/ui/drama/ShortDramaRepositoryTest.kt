@@ -83,6 +83,42 @@ class ShortDramaRepositoryTest {
   }
 
   @Test
+  fun parser_keepsOneCardPerDramaWhenTheListingRepeatsIt() {
+    // The listing spans every provider chartdrama carries, so a drama more than one of them holds
+    // comes back more than once. The grid keys on the slug, and the same key twice takes the
+    // screen down with it — which is what a broad category like "Marriage" used to do.
+    val dramas =
+      parseShortDramas(
+        """
+        {
+          "items": [
+            {
+              "slug": "42000012638/a-marriage-of-convenience",
+              "title": "A Marriage of Convenience",
+              "latestEpisodeLabel": "EP71 TV",
+              "source": 5
+            },
+            {
+              "slug": "42000012638/a-marriage-of-convenience",
+              "title": "A Marriage of Convenience",
+              "latestEpisodeLabel": "EP71 TV",
+              "source": 9
+            },
+            { "slug": "42000019001/married-by-mistake", "title": "Married by Mistake" }
+          ]
+        }
+        """.trimIndent()
+      )
+
+    assertEquals(
+      listOf("42000012638/a-marriage-of-convenience", "42000019001/married-by-mistake"),
+      dramas.map { it.slug },
+    )
+    // The first one carries the card, so the order the listing chose is the order kept.
+    assertEquals("A Marriage of Convenience", dramas.first().title)
+  }
+
+  @Test
   fun parser_returnsNothingForAnErrorPayload() {
     assertTrue(parseShortDramas("""{"error":"forbidden"}""").isEmpty())
   }
@@ -100,11 +136,11 @@ class ShortDramaRepositoryTest {
   fun episodeUrl_usesTheSiteOwnSlugVerbatim() {
     // Taken as given rather than rebuilt from the title, so punctuation is never a question.
     assertEquals(
-      "https://dramabox.chartdrama.com/p/42000017050/father-of-my-ex-owner-of-my-heart?ep=1",
+      "https://chartdrama.com/p/42000017050/father-of-my-ex-owner-of-my-heart?ep=1",
       chartDramaEpisodeUrl("42000017050/father-of-my-ex-owner-of-my-heart", 1),
     )
     assertEquals(
-      "https://dramabox.chartdrama.com/p/42000012638/the-one-you-love-is-her-twin-sister?ep=12",
+      "https://chartdrama.com/p/42000012638/the-one-you-love-is-her-twin-sister?ep=12",
       chartDramaEpisodeUrl("/42000012638/the-one-you-love-is-her-twin-sister/", 12),
     )
   }

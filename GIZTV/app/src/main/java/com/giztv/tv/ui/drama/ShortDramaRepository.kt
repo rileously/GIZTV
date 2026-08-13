@@ -155,6 +155,16 @@ internal class DramaBoxBusyException(val retryAfterMs: Long) :
     } seconds."
   )
 
+/**
+ * Reads the listing, skipping rows that could not be opened and keeping one card per drama.
+ *
+ * Distinct by slug because the listing spans every provider chartdrama carries rather than one
+ * corner of it, and the same drama is carried by more than one of them — a broad word like
+ * "Marriage" is where that shows. The grid keys its cards on the slug, and a lazy grid handed the
+ * same key twice brings the screen down, so a repeat has to be dropped before it ever gets there.
+ * It is the same drama either way: the reel a swipe travels along would otherwise pass through it
+ * twice.
+ */
 internal fun parseShortDramas(json: String): List<ShortDrama> {
   val items = JSONObject(json).optJSONArray("items") ?: return emptyList()
   return buildList {
@@ -176,6 +186,7 @@ internal fun parseShortDramas(json: String): List<ShortDrama> {
       )
     }
   }
+    .distinctBy(ShortDrama::slug)
 }
 
 /**
