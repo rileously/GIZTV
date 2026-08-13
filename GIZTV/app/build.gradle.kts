@@ -44,8 +44,8 @@ android {
         applicationId = "com.giztv.tv"
         minSdk = 23
         targetSdk = 36
-        versionCode = 122
-        versionName = "1.64.0"
+        versionCode = 123
+        versionName = "1.64.1"
         buildConfigField("String", "TMDB_API_KEY", "\"$escapedTmdbApiKey\"")
         buildConfigField("String", "UPDATE_MANIFEST_URL", "\"$escapedUpdateManifestUrl\"")
     }

@@ -62,12 +62,9 @@ jobs:
           # this says both things. Drop the second half once 1.52.x is gone.
           RELEASE_NOTES: |
             What changed:
-            - Short dramas now opens on a mix of every category instead of on Love alone, so the
-              first screen is a spread rather than one mood. The categories still narrow it, with
-              a Mix chip in front of them to come back to.
-            - Captions in a short drama stay on the screen now. The picture fills a phone by being
-              zoomed, and the captions were being cropped away with everything else that fell off
-              the edge.
+            - The short drama categories can be scrolled on a phone held upright. The row was wider
+              than the screen, so the last of them — Marriage among them — could not be reached by
+              touch at all. A remote and a television were never affected.
 
             Already on 1.53.0 or newer? This installs itself as usual.
 
