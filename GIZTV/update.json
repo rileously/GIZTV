@@ -1,7 +1,7 @@
 {
-  "versionCode": 120,
-  "versionName": "1.63.0",
-  "apkUrl": "https://github.com/rileously/GIZTV/releases/download/v1.63.0/GIZTV-v1.63.0.apk",
-  "sha256": "7be14990cd68a519cb91bfc103f8ec92a79087f1d6b997801ec7b38502381412",
-  "releaseNotes": "What changed:\n- On a phone, the bottom bar now stays put on a film's page and on an actor or crew\n  member's page, so another section is one press away instead of needing Back first.\n- The button that clears a search has moved down beside the search box, at the end of\n  the line it belongs to, rather than sitting in the far top corner of the screen.\n\nAlready on 1.53.0 or newer? This installs itself as usual.\n\nOn 1.52.1 or older? 1.53.0 changed the app's identity, so Android will not install this\nover your copy and the in-app update stops with \"The downloaded update belongs to a\ndifferent app.\" Uninstall GIZTV once, then install this build from the release page.\nWatch history does not carry across that one reinstall. Updates after it are automatic.\n"
+  "versionCode": 121,
+  "versionName": "1.63.1",
+  "apkUrl": "https://github.com/rileously/GIZTV/releases/download/v1.63.1/GIZTV-v1.63.1.apk",
+  "sha256": "a0dfbb0d3a6997813cf73cebde695e071ad8349a34d9a7c60eab9075d336950c",
+  "releaseNotes": "What changed:\n- Short dramas no longer closes the app part way down a category. The listing carries\n  some dramas twice, once for each source that has them, and a grid cannot hold one\n  title in two places — which is what brought Marriage down on the way past it.\n\nAlready on 1.53.0 or newer? This installs itself as usual.\n\nOn 1.52.1 or older? 1.53.0 changed the app's identity, so Android will not install this\nover your copy and the in-app update stops with \"The downloaded update belongs to a\ndifferent app.\" Uninstall GIZTV once, then install this build from the release page.\nWatch history does not carry across that one reinstall. Updates after it are automatic.\n"
 }
