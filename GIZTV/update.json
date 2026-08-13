@@ -1,7 +1,7 @@
 {
-  "versionCode": 121,
-  "versionName": "1.63.1",
-  "apkUrl": "https://github.com/rileously/GIZTV/releases/download/v1.63.1/GIZTV-v1.63.1.apk",
-  "sha256": "a0dfbb0d3a6997813cf73cebde695e071ad8349a34d9a7c60eab9075d336950c",
-  "releaseNotes": "What changed:\n- Short dramas no longer closes the app part way down a category. The listing carries\n  some dramas twice, once for each source that has them, and a grid cannot hold one\n  title in two places — which is what brought Marriage down on the way past it.\n\nAlready on 1.53.0 or newer? This installs itself as usual.\n\nOn 1.52.1 or older? 1.53.0 changed the app's identity, so Android will not install this\nover your copy and the in-app update stops with \"The downloaded update belongs to a\ndifferent app.\" Uninstall GIZTV once, then install this build from the release page.\nWatch history does not carry across that one reinstall. Updates after it are automatic.\n"
+  "versionCode": 122,
+  "versionName": "1.64.0",
+  "apkUrl": "https://github.com/rileously/GIZTV/releases/download/v1.64.0/GIZTV-v1.64.0.apk",
+  "sha256": "64935899430b50c9c307f3e698828985eed34e6e067bfa8f3adf4b9d136ca109",
+  "releaseNotes": "What changed:\n- Short dramas now opens on a mix of every category instead of on Love alone, so the\n  first screen is a spread rather than one mood. The categories still narrow it, with\n  a Mix chip in front of them to come back to.\n- Captions in a short drama stay on the screen now. The picture fills a phone by being\n  zoomed, and the captions were being cropped away with everything else that fell off\n  the edge.\n\nAlready on 1.53.0 or newer? This installs itself as usual.\n\nOn 1.52.1 or older? 1.53.0 changed the app's identity, so Android will not install this\nover your copy and the in-app update stops with \"The downloaded update belongs to a\ndifferent app.\" Uninstall GIZTV once, then install this build from the release page.\nWatch history does not carry across that one reinstall. Updates after it are automatic.\n"
 }
