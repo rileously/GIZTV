@@ -62,9 +62,12 @@ jobs:
           # this says both things. Drop the second half once 1.52.x is gone.
           RELEASE_NOTES: |
             What changed:
-            - Short dramas no longer closes the app part way down a category. The listing carries
-              some dramas twice, once for each source that has them, and a grid cannot hold one
-              title in two places — which is what brought Marriage down on the way past it.
+            - Short dramas now opens on a mix of every category instead of on Love alone, so the
+              first screen is a spread rather than one mood. The categories still narrow it, with
+              a Mix chip in front of them to come back to.
+            - Captions in a short drama stay on the screen now. The picture fills a phone by being
+              zoomed, and the captions were being cropped away with everything else that fell off
+              the edge.
 
             Already on 1.53.0 or newer? This installs itself as usual.
 
