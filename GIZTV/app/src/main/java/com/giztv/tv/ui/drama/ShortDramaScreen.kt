@@ -5,6 +5,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -22,6 +23,7 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
@@ -496,6 +498,11 @@ private fun DramaFilterRow(
       down = bodyFocusRequester,
       semanticsRole = Role.Tab,
       compactChips = true,
+      // Seven chips are wider than a phone held upright, and a row that cannot be scrolled simply
+      // loses the ones past the edge — Marriage was unreachable by touch. Every other chip row in
+      // the app already scrolls; this one was the exception. On a television the whole row fits, so
+      // nothing scrolls, and a remote still walks the chips with the pad either way.
+      modifier = Modifier.horizontalScroll(rememberScrollState()),
     )
   }
   val fieldModifier =
