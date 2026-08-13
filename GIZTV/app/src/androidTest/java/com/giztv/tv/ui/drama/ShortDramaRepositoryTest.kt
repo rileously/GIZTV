@@ -170,9 +170,54 @@ class ShortDramaRepositoryTest {
   }
 
   @Test
+  fun chips_openOnTheMixRatherThanOnACategory() {
+    // Opening on a category meant opening on one mood, every cover a romance.
+    assertEquals(MIXED_DRAMA_LABEL, DRAMA_CHIP_LABELS[MIXED_CHIP_INDEX])
+    assertEquals(DEFAULT_DRAMA_KEYWORDS, DRAMA_CHIP_LABELS.drop(1))
+  }
+
+  @Test
+  fun mix_takesOneTitleFromEachCategoryInTurn() {
+    val love = listOf(drama("1/love-a"), drama("2/love-b"), drama("3/love-c"))
+    val ceo = listOf(drama("4/ceo-a"), drama("5/ceo-b"))
+    val revenge = listOf(drama("6/revenge-a"))
+
+    // Round robin, and a category that runs short simply stops being drawn from.
+    assertEquals(
+      listOf("1/love-a", "4/ceo-a", "6/revenge-a", "2/love-b", "5/ceo-b", "3/love-c"),
+      interleaveDramas(listOf(love, ceo, revenge)).map { it.slug },
+    )
+  }
+
+  @Test
+  fun mix_toleratesACategoryThatCameBackEmpty() {
+    val ceo = listOf(drama("4/ceo-a"))
+    assertEquals(
+      listOf("4/ceo-a"),
+      interleaveDramas(listOf(emptyList(), ceo, emptyList())).map { it.slug },
+    )
+    assertTrue(interleaveDramas(emptyList()).isEmpty())
+  }
+
+  private fun drama(slug: String) =
+    ShortDrama(
+      slug = slug,
+      title = slug.substringAfter('/'),
+      coverUrl = null,
+      episodeCount = 1,
+      synopsis = "",
+      starring = null,
+      tags = emptyList(),
+    )
+
+  @Test
   fun defaultCategories_fitTheRowTheyShareWithSearch() {
-    // A seventh chip pushes the search placeholder onto a second line on a 1080p television.
+    // Measured on a 1080p television, where the chips share their line with the search field: the
+    // six categories and the short Mix chip in front of them leave the placeholder on one line. A
+    // seventh category — a word as long as the others — is what pushes it onto a second.
     assertTrue(DEFAULT_DRAMA_KEYWORDS.size <= 6)
+    assertEquals(7, DRAMA_CHIP_LABELS.size)
+    assertTrue("the mix chip has to stay short", MIXED_DRAMA_LABEL.length <= 4)
   }
 
   @Test

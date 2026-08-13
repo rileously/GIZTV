@@ -7,6 +7,9 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -70,7 +73,56 @@ internal object ShortDramaRepository {
       )
     }
   }
+
+  /**
+   * A bit of every category, which is what the page opens on.
+   *
+   * Opening on one word meant opening on one mood — every cover on the first screen was a romance,
+   * because "Love" is the first chip. The listing has no feed of its own to ask for instead, so the
+   * mix is made here: every category at once, taken a title at a time from each so the grid reads
+   * as a spread rather than as six blocks stacked up.
+   *
+   * Each category is fetched under its own cache key, so pressing a chip straight after the mix has
+   * already loaded costs no request at all. A category that fails is left out rather than taking
+   * the page down with it; only when the whole lot fails is there nothing to show but the failure.
+   */
+  suspend fun mixed(): List<ShortDrama> =
+    searches.get(MIXED_CACHE_KEY) {
+      val answers = coroutineScope {
+        DEFAULT_DRAMA_KEYWORDS.map { keyword -> async { runCatching { search(keyword) } } }.awaitAll()
+      }
+      val loaded = answers.mapNotNull(Result<List<ShortDrama>>::getOrNull)
+      if (loaded.isEmpty()) {
+        throw answers.firstNotNullOfOrNull(Result<List<ShortDrama>>::exceptionOrNull)
+          ?: IOException("Short dramas could not be loaded")
+      }
+      interleaveDramas(loaded).distinctBy(ShortDrama::slug).take(MIXED_LIMIT)
+    }
 }
+
+/**
+ * One title from each category in turn, then the next from each, until they run out.
+ *
+ * Round-robin rather than concatenation because the point of the mix is that the first screen is
+ * not all one thing. Categories that run short simply stop being drawn from.
+ */
+internal fun interleaveDramas(byCategory: List<List<ShortDrama>>): List<ShortDrama> {
+  val deepest = byCategory.maxOfOrNull { it.size } ?: 0
+  return buildList {
+    for (index in 0 until deepest) {
+      for (category in byCategory) category.getOrNull(index)?.let(::add)
+    }
+  }
+}
+
+/**
+ * Not a query anyone can type, so the mix can share the search cache without a real search ever
+ * colliding with it — a typed query is trimmed, and this cannot be typed at all.
+ */
+private const val MIXED_CACHE_KEY = "\u0000mixed"
+
+/** Enough to scroll through without asking the listing for more than one screen's worth. */
+private const val MIXED_LIMIT = 48
 
 /**
  * The categories offered above the grid.
@@ -86,12 +138,27 @@ internal object ShortDramaRepository {
  * returns, measured rather than guessed — every one answers with dozens of titles, and they are
  * ordered roughly by how much there is behind each.
  *
- * Six of them, because the row shares its line with the search field and a seventh squeezes the
- * placeholder onto two lines. Heiress and Boss are the next two worth having if that row ever gets
- * its own line.
+ * Six of them, because the row shares its line with the search field and a seventh category
+ * squeezes the placeholder onto two lines. The Mix chip in front of them is not a seventh: it is a
+ * short word, and measured on a 1080p television the row still fits. Heiress and Boss are the next
+ * two worth having if that row ever gets its own line.
  */
 internal val DEFAULT_DRAMA_KEYWORDS =
   listOf("Love", "Billionaire", "Revenge", "Secret", "CEO", "Marriage")
+
+/**
+ * The chips above the grid: the mix the page opens on, then the categories that narrow it.
+ *
+ * The mix leads because opening on a category means opening on a single mood — see
+ * [ShortDramaRepository.mixed]. Its chip is a short word by necessity, since the row shares its
+ * line with the search field and the six categories already most of it.
+ */
+internal const val MIXED_DRAMA_LABEL = "Mix"
+
+internal val DRAMA_CHIP_LABELS = listOf(MIXED_DRAMA_LABEL) + DEFAULT_DRAMA_KEYWORDS
+
+/** The mix sits first, so its chip is the one the page opens on. */
+internal const val MIXED_CHIP_INDEX = 0
 
 private const val CHART_DRAMA_HOST = "chartdrama.com"
 internal const val CHART_DRAMA_ORIGIN = "https://$CHART_DRAMA_HOST"

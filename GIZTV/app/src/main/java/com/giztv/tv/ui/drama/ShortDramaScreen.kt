@@ -77,10 +77,11 @@ import kotlinx.coroutines.launch
 /**
  * The short drama listing.
  *
- * The categories sit above the grid and the page opens on the first of them, so there is something
- * to browse before anything is typed. chartdrama matches on title text rather than genre, so each
- * category is a word rather than a filter — see [DEFAULT_DRAMA_KEYWORDS] for why there is no better
- * option. Every chip press is exactly one request, which the repository caches and paces.
+ * The categories sit above the grid and the page opens on a mix of all of them, so the first screen
+ * is a spread rather than one mood — see [ShortDramaRepository.mixed]. chartdrama matches on title
+ * text rather than genre, so each category is a word rather than a filter — see
+ * [DEFAULT_DRAMA_KEYWORDS] for why there is no better option. Every category chip is exactly one
+ * request, which the repository caches and paces, and the mix is those same requests fanned out.
  *
  * Titles that have been opened and produced no stream are left out, so the grid stops offering what
  * the source has stopped serving.
@@ -128,20 +129,33 @@ internal fun ShortDramaScreen(
     keyboardController?.hide()
   }
 
-  fun load(searchQuery: String) {
+  fun loadListing(describe: String, fetch: suspend () -> List<ShortDrama>) {
     scope.launch {
       loading = true
       errorMessage = null
-      runCatching { ShortDramaRepository.search(searchQuery) }
+      runCatching { fetch() }
         // A title that has already been opened and produced no stream is not offered again. The
         // listing has no idea its own site has stopped serving these, so the only thing that knows
         // is what happened last time someone tried.
         .onSuccess { dramas = it.filterNot { drama -> failureStore.hasFailed(drama.playablePageUrl) } }
         .onFailure {
-          Log.e("GizTvShortDrama", "Short drama search failed for \"$searchQuery\"", it)
+          Log.e("GizTvShortDrama", "Short drama listing failed for \"$describe\"", it)
           errorMessage = friendlyCatalogError(it)
         }
       loading = false
+    }
+  }
+
+  fun load(searchQuery: String) {
+    loadListing(searchQuery) { ShortDramaRepository.search(searchQuery) }
+  }
+
+  /** The mix at [MIXED_CHIP_INDEX], one category at every other chip. */
+  fun loadChip(index: Int) {
+    if (index == MIXED_CHIP_INDEX) {
+      loadListing(MIXED_DRAMA_LABEL) { ShortDramaRepository.mixed() }
+    } else {
+      load(DRAMA_CHIP_LABELS[index])
     }
   }
 
@@ -150,7 +164,7 @@ internal fun ShortDramaScreen(
     if (query.isNotBlank() || searchActive) {
       query = ""
       searchActive = false
-      load(DEFAULT_DRAMA_KEYWORDS[keywordIndex])
+      loadChip(keywordIndex)
     }
     dismissKeyboard()
   }
@@ -161,7 +175,7 @@ internal fun ShortDramaScreen(
     query = ""
     searchActive = false
     searchExpanded = false
-    load(DEFAULT_DRAMA_KEYWORDS[index])
+    loadChip(index)
   }
 
   fun runSearch() {
@@ -208,7 +222,7 @@ internal fun ShortDramaScreen(
   // Re-read on every entry so a drama just left in the player shows its place again.
   LaunchedEffect(Unit) {
     continueWatching = historyStore.continueWatching(shortForm = true)
-    load(DEFAULT_DRAMA_KEYWORDS[keywordIndex])
+    loadChip(keywordIndex)
     if (!hideBackButton) backFocusRequester.requestFocus()
   }
 
@@ -220,7 +234,12 @@ internal fun ShortDramaScreen(
   // Back is handled by GizTvRoot: a handler registered here would also receive the press that
   // just left the drama detail screen, skipping this page entirely.
   val heading =
-    if (searchActive) "Results for “${query.trim()}”" else "${DEFAULT_DRAMA_KEYWORDS[keywordIndex]} short dramas"
+    when {
+      searchActive -> "Results for “${query.trim()}”"
+      // The mix is not a category, so naming one over it would misdescribe what is under it.
+      keywordIndex == MIXED_CHIP_INDEX -> "Short dramas"
+      else -> "${DRAMA_CHIP_LABELS[keywordIndex]} short dramas"
+    }
 
   BoxWithConstraints(
     modifier =
@@ -327,7 +346,7 @@ internal fun ShortDramaScreen(
             modifier = Modifier.weight(1f),
             actionLabel = "Try again",
             onAction = {
-              load(if (searchActive) query.trim() else DEFAULT_DRAMA_KEYWORDS[keywordIndex])
+              if (searchActive) load(query.trim()) else loadChip(keywordIndex)
             },
           )
         dramas.isEmpty() && !showContinueRow ->
@@ -469,7 +488,7 @@ private fun DramaFilterRow(
   }
   val keywords: @Composable () -> Unit = {
     ChipRow(
-      labels = DEFAULT_DRAMA_KEYWORDS,
+      labels = DRAMA_CHIP_LABELS,
       selectedIndex = selectedKeyword,
       onSelect = onSelectKeyword,
       firstChipFocusRequester = keywordFocusRequester,
