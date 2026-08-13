@@ -759,6 +759,16 @@ internal enum class VideoResizeOption(val label: String, val resizeMode: Int) {
 
   /** The next size round, so the button can be pressed rather than opened. */
   fun next(): VideoResizeOption = entries[(ordinal + 1) % entries.size]
+
+  /**
+   * Whether this mode fills the player by pushing the picture past its edge.
+   *
+   * Fit never overflows and Stretch distorts to the exact bounds, so only the three that hold the
+   * aspect ratio while covering one axis have a picture running off the screen. See
+   * [keepSubtitlesOnScreen] for why that matters to captions.
+   */
+  val cropsPicture: Boolean
+    get() = this == ZOOM || this == FIT_WIDTH || this == FIT_HEIGHT
 }
 
 private enum class PlayerControlDialog {
@@ -2152,6 +2162,7 @@ internal fun HlsPlayerScreen(
         view.player = player
         view.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
         view.resizeMode = videoResize.resizeMode
+        keepSubtitlesOnScreen(view, videoResize)
         applySubtitleAppearance(
           view,
           subtitleSize,
@@ -4746,6 +4757,38 @@ internal fun isEnglishSubtitleLabel(label: String?, language: String?): Boolean 
 
 internal fun isHearingImpairedSubtitleLabel(label: String?): Boolean =
   label?.contains("hi", ignoreCase = true) == true
+
+/**
+ * Keeps captions on the screen when the picture is cropped to fill it.
+ *
+ * The player lays its [SubtitleView] inside the content frame, alongside the video surface. Under a
+ * mode that covers rather than fits, that frame measures itself past the player's own bounds and is
+ * clipped — so the bottom padding captions are placed against is measured off the zoomed picture
+ * rather than off the screen, and the text is cropped away with the rest of the overflow. Short
+ * dramas open zoomed on a phone, which is where this shows.
+ *
+ * The overlay frame is a sibling of the content frame at the player's own size, so captions parked
+ * there sit against the screen whatever the picture is doing. It is also the geometry the caption
+ * drag band already assumes, since [isSubtitleDragTouch] measures from the player's full height.
+ * Under a mode that cannot overflow they belong back home in the content frame, travelling with a
+ * letterboxed picture the way they always have.
+ */
+@androidx.annotation.OptIn(UnstableApi::class)
+internal fun keepSubtitlesOnScreen(playerView: PlayerView, resize: VideoResizeOption) {
+  val subtitles = playerView.subtitleView ?: return
+  // The surface never leaves the content frame, so it is how the way home is found without
+  // reaching for a resource id the player does not publish.
+  val contentFrame = playerView.videoSurfaceView?.parent as? ViewGroup ?: return
+  val overlay = playerView.overlayFrameLayout ?: return
+  val target = if (resize.cropsPicture) overlay else contentFrame
+  val current = subtitles.parent as? ViewGroup
+  if (current === target) return
+  current?.removeView(subtitles)
+  target.addView(
+    subtitles,
+    ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+  )
+}
 
 @androidx.annotation.OptIn(UnstableApi::class)
 internal fun applySubtitleAppearance(
