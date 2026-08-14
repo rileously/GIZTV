@@ -8,6 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.runtime.mutableStateOf
 import androidx.core.net.toUri
+import com.giztv.tv.crash.CrashReporter
 import com.giztv.tv.data.flushHttpResponseCache
 import com.giztv.tv.data.installHttpResponseCache
 import com.giztv.tv.home.EXTRA_RESUME_PAGE_URL
@@ -31,6 +32,8 @@ class MainActivity : AppCompatActivity() {
   private val resumeRequest = mutableStateOf<String?>(null)
 
   override fun onCreate(savedInstanceState: Bundle?) {
+    // First thing in, so a fault while the rest of this is setting itself up is still written down.
+    CrashReporter.install(this)
     installHttpResponseCache(this)
     requestedOrientation =
       gizTvOrientation(

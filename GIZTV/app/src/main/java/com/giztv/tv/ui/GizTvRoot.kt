@@ -88,6 +88,7 @@ import com.giztv.tv.ui.player.HlsStreamRequest
 import com.giztv.tv.ui.player.PlaybackProgressStore
 import com.giztv.tv.ui.player.playbackProgressKeyForPage
 import com.giztv.tv.ui.player.shouldComposeInAppPlayerSession
+import com.giztv.tv.ui.crash.CrashReportController
 import com.giztv.tv.ui.link.PairingCodeOverlay
 import com.giztv.tv.ui.link.RemoteScreen
 import com.giztv.tv.ui.update.AppUpdateController
@@ -1178,6 +1179,9 @@ fun GizTvRoot(
         destination != Destination.BROWSER
     ) {
       AppUpdateController()
+      // Same rule as the update prompt: a report of the last crash is not worth interrupting
+      // something that is playing now, and it will still be there the next time the catalog is.
+      CrashReportController()
     }
 
     // Unlike the update prompt, this one belongs over the player too: someone pairing a phone is
