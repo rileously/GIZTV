@@ -361,16 +361,23 @@ internal fun parseTopBilledActor(json: String): TmdbActor? {
   return null
 }
 
-/** Fetches a TMDB endpoint off the main thread and parses it with [parse]. */
+/**
+ * Fetches a TMDB endpoint off the main thread and parses it with [parse].
+ *
+ * [language] is passed through as TMDB's `language` parameter; blank omits it, which is the only
+ * way to ask an endpoint that *filters* by language rather than ranking by it for everything it
+ * has. See [TmdbTrailerRepository] for the one place that needs it.
+ */
 internal suspend fun <T> tmdbRequest(
   apiKey: String,
   path: String,
   params: Map<String, String> = emptyMap(),
+  language: String = TMDB_DEFAULT_LANGUAGE,
   parse: (String) -> T,
 ): T =
   withContext(Dispatchers.IO) {
     if (apiKey.isBlank()) throw IOException("TMDB API key is not configured")
-    val url = tmdbUrl(apiKey, path, params)
+    val url = tmdbUrl(apiKey, path, params, language)
     runCatching { readTmdb(url, parse) ?: throw IOException("TMDB returned no body") }
       // Nothing on the wire, so the last copy of this listing is better than an empty rail. A
       // listing a few days old still opens the right title.
@@ -396,17 +403,24 @@ internal suspend fun <T> tmdbStored(
     runCatching { readTmdb(tmdbUrl(apiKey, path, params), parse, cacheOnly = true) }.getOrNull()
   }
 
-private fun tmdbUrl(apiKey: String, path: String, params: Map<String, String>): String =
+private fun tmdbUrl(
+  apiKey: String,
+  path: String,
+  params: Map<String, String>,
+  language: String = TMDB_DEFAULT_LANGUAGE,
+): String =
   Uri.Builder()
     .scheme("https")
     .authority("api.themoviedb.org")
     .appendPath("3")
     .apply { path.split('/').forEach(::appendPath) }
     .appendQueryParameter("api_key", apiKey)
-    .appendQueryParameter("language", "en-US")
+    .apply { if (language.isNotBlank()) appendQueryParameter("language", language) }
     .apply { params.forEach { (name, value) -> appendQueryParameter(name, value) } }
     .build()
     .toString()
+
+internal const val TMDB_DEFAULT_LANGUAGE = "en-US"
 
 private fun <T> readTmdb(url: String, parse: (String) -> T, cacheOnly: Boolean = false): T? {
   val connection = (URL(url).openConnection() as HttpURLConnection)

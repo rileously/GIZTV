@@ -99,7 +99,7 @@ internal class TmdbTvRepository(private val apiKey: String) {
 
   /** What TMDB says goes with a show the viewer already got through. */
   suspend fun recommendations(showId: Int): List<TmdbShow> =
-    tmdbRequest(apiKey, "tv/$showId/recommendations", mapOf("page" to "1"), ::parseTmdbShows)
+    tmdbRequest(apiKey, "tv/$showId/recommendations", mapOf("page" to "1"), parse = ::parseTmdbShows)
 
   suspend fun searchShows(query: String): List<TmdbShow> =
     tmdbRequest(

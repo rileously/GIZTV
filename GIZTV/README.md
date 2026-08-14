@@ -13,6 +13,7 @@ GIZTV is an Android phone and TV app built with Kotlin and Compose. It browses a
 - TMDB catalog with Movies / TV Shows / My List tabs, Popular / Trending / Top rated listings, and per-tab title search
 - Show landing page with artwork, synopsis, a season rail, and an episode list carrying stills, runtimes, and summaries
 - Any episode is two moves away: pick a season across, pick an episode down
+- Trailer button on every film and show page, handing the trailer to the YouTube app — or to a browser on a device without it — rather than embedding a player YouTube declines to serve inside other apps
 - Continue watching row that resumes movies and episodes at the second they were left
 - Watched ticks and partial-progress bars on episodes, with a resume timestamp on each one
 - Up next card at the end of an episode, rolling into the following one after ten seconds unless dismissed

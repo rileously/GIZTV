@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -113,6 +115,7 @@ internal fun TvShowDetailScreen(
 ) {
   val context = LocalContext.current
   val repository = remember { TmdbTvRepository(BuildConfig.TMDB_API_KEY) }
+  val trailerRepository = remember { TmdbTrailerRepository(BuildConfig.TMDB_API_KEY) }
   val historyStore = remember(context) { WatchHistoryStore(context) }
   val myListStore = remember(context) { MyListStore(context) }
   val uiPreferences = remember(context) { UiPreferencesStore(context) }
@@ -128,6 +131,7 @@ internal fun TvShowDetailScreen(
   var loadingEpisodes by remember(show.id) { mutableStateOf(false) }
   var errorMessage by remember(show.id) { mutableStateOf<String?>(null) }
   var saved by remember(show.id) { mutableStateOf(myListStore.contains(LibraryKind.SHOW, show.id)) }
+  var trailer by remember(show.id) { mutableStateOf<TmdbTrailer?>(null) }
 
   fun loadEpisodes(seasonNumber: Int) {
     selectedSeason = seasonNumber
@@ -168,6 +172,15 @@ internal fun TvShowDetailScreen(
         errorMessage = friendlyCatalogError(it)
       }
     loadingSeasons = false
+  }
+
+  // Kept out of the effect above so the season rail — the thing this page exists for — never waits
+  // behind a request that only fills in a button.
+  LaunchedEffect(show.id) {
+    trailer =
+      runCatching { trailerRepository.showTrailer(show.id) }
+        .onFailure { Log.w("GizTvTmdb", "Trailer load failed for ${show.id}", it) }
+        .getOrNull()
   }
 
   // Reset the scroll only once the list is actually laid out; scrolling a detached
@@ -272,8 +285,10 @@ internal fun TvShowDetailScreen(
         seasonCount = seasons.size,
         narrow = isNarrow,
         saved = saved,
+        trailer = trailer,
         onBack = onBack,
         onToggleSaved = { saved = myListStore.toggle(show.toLibraryItem()) },
+        onPlayTrailer = { openTrailerInYouTube(context, it) },
         backFocusRequester = backFocusRequester,
         seasonRailFocusRequester = seasonRailFocusRequester,
       )
@@ -334,14 +349,17 @@ private fun TmdbShow.toLibraryItem(): LibraryItem =
     posterPath = posterPath,
   )
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ShowHeader(
   show: TmdbShow,
   seasonCount: Int,
   narrow: Boolean,
   saved: Boolean,
+  trailer: TmdbTrailer?,
   onBack: () -> Unit,
   onToggleSaved: () -> Unit,
+  onPlayTrailer: (TmdbTrailer) -> Unit,
   backFocusRequester: FocusRequester,
   seasonRailFocusRequester: FocusRequester,
 ) {
@@ -376,13 +394,25 @@ private fun ShowHeader(
         CatalogButton("Back", onBack, backModifier)
       }
       Spacer(Modifier.height(10.dp))
-      CatalogButton(saveLabel, onToggleSaved)
+      // Wrapped rather than fixed: the trailer button only exists once TMDB has answered, and on a
+      // phone the three of them do not fit across one line.
+      FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        CatalogButton(saveLabel, onToggleSaved)
+        trailer?.let { CatalogButton("▶ Trailer", { onPlayTrailer(it) }) }
+      }
     }
   } else {
     Column {
-      Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+      FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
         CatalogButton("Back", onBack, backModifier)
         CatalogButton(saveLabel, onToggleSaved)
+        trailer?.let { CatalogButton("▶ Trailer", { onPlayTrailer(it) }) }
       }
       Spacer(Modifier.height(18.dp))
       // Sized so the title, rating and synopsis stay above the fold on a 1080p panel.

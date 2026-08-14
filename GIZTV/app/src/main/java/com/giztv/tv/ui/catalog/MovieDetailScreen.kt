@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -35,6 +37,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -111,6 +114,7 @@ internal fun MovieDetailFocusResetEffect(
  * - User reviews with full text dialog viewer
  * - "More Like This" recommended movies rail
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun MovieDetailScreen(
   movie: TmdbMovie,
@@ -124,6 +128,7 @@ internal fun MovieDetailScreen(
   val context = LocalContext.current
   val detailsRepository = remember { TmdbPlaybackDetailsRepository(BuildConfig.TMDB_API_KEY) }
   val movieRepository = remember { TmdbMovieRepository(BuildConfig.TMDB_API_KEY) }
+  val trailerRepository = remember { TmdbTrailerRepository(BuildConfig.TMDB_API_KEY) }
   val myListStore = remember(context) { MyListStore(context) }
 
   // A new detail opened from "More Like This" stays at the same composable call site. Keying these
@@ -135,6 +140,7 @@ internal fun MovieDetailScreen(
 
   var details by remember(movie.id) { mutableStateOf<TmdbPlaybackDetails?>(null) }
   var recommendations by remember(movie.id) { mutableStateOf<List<TmdbMovie>>(emptyList()) }
+  var trailer by remember(movie.id) { mutableStateOf<TmdbTrailer?>(null) }
   var loadingDetails by remember(movie.id) { mutableStateOf(true) }
   var saved by remember(movie.id) { mutableStateOf(myListStore.contains(LibraryKind.MOVIE, movie.id)) }
   var selectedReview by remember(movie.id) { mutableStateOf<PlaybackReview?>(null) }
@@ -148,6 +154,16 @@ internal fun MovieDetailScreen(
       throw cancelled
     } catch (failure: Throwable) {
       Log.e("GizTvMovieDetail", "Failed loading movie details for ${movie.id}", failure)
+    }
+
+    // Asked for after the synopsis and before the rail below it: the button it fills in sits beside
+    // Play, so it is worth the wait of one request, but nothing on the page waits for it.
+    try {
+      trailer = trailerRepository.movieTrailer(movie.id)
+    } catch (cancelled: CancellationException) {
+      throw cancelled
+    } catch (failure: Throwable) {
+      Log.e("GizTvMovieDetail", "Failed loading trailer for ${movie.id}", failure)
     }
 
     try {
@@ -315,16 +331,27 @@ internal fun MovieDetailScreen(
 
           Spacer(Modifier.height(16.dp))
 
-          // Action Buttons: Netflix Play Button & My List Button
-          Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
+          // Action Buttons: Netflix Play Button, Trailer & My List Button
+          //
+          // Three pills do not fit across a phone, and the trailer only appears once TMDB has
+          // answered, so the row has to be able to change width without pushing a button off the
+          // screen. It wraps rather than being cut off.
+          FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
           ) {
             NetflixPlayButton(
               onClick = { onPlay(movie.toPlaybackContext()) },
               focusRequester = playFocusRequester,
               upFocus = backFocusRequester,
             )
+
+            trailer?.let { available ->
+              TrailerButton(
+                onClick = { openTrailerInYouTube(context, available) },
+                upFocus = backFocusRequester,
+              )
+            }
 
             MyListButton(
               saved = saved,
@@ -573,6 +600,53 @@ private fun NetflixPlayButton(
       color = DeepSpace,
       fontWeight = FontWeight.Black,
       fontSize = 16.sp
+    )
+  }
+}
+
+/** Outlined companion to Play: same shape, plainly not the button that starts the film. */
+@Composable
+private fun TrailerButton(
+  onClick: () -> Unit,
+  upFocus: FocusRequester? = null,
+) {
+  var focused by remember { mutableStateOf(false) }
+  val scale by animateFloatAsState(if (focused) 1.08f else 1f, label = "trailer scale")
+  val bg by animateColorAsState(
+    if (focused) GizMint.copy(alpha = 0.3f) else NightSurface.copy(alpha = 0.8f),
+    label = "trailer bg"
+  )
+  val border by animateColorAsState(
+    if (focused) SoftWhite else SoftWhite.copy(alpha = 0.3f),
+    label = "trailer border"
+  )
+
+  Row(
+    modifier = Modifier
+      .height(44.dp)
+      .graphicsLayer { scaleX = scale; scaleY = scale }
+      .clip(RoundedCornerShape(22.dp))
+      .background(bg)
+      .border(if (focused) 2.dp else 1.dp, border, RoundedCornerShape(22.dp))
+      .focusProperties { if (upFocus != null) up = upFocus }
+      .onFocusChanged { focused = it.isFocused }
+      .clickable(onClick = onClick)
+      .semantics { role = Role.Button; contentDescription = "Play Trailer" }
+      .padding(horizontal = 18.dp),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(6.dp)
+  ) {
+    Icon(
+      imageVector = Icons.Filled.PlayCircleOutline,
+      contentDescription = null,
+      tint = SoftWhite,
+      modifier = Modifier.size(18.dp)
+    )
+    Text(
+      text = "Trailer",
+      color = SoftWhite,
+      fontWeight = FontWeight.Bold,
+      fontSize = 14.sp
     )
   }
 }
