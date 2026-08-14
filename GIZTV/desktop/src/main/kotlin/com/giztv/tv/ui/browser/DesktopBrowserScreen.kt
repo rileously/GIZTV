@@ -123,7 +123,7 @@ internal fun BrowserScreen(
     // segments are unwrapped by StreamHeaderProxy, so every server in the shared picker is now a
     // valid desktop choice.
     var selectedProviderIndex by remember {
-      mutableStateOf(STREAM_PROVIDERS.indexOfFirst { it.id == "cinesrc" }.coerceAtLeast(0))
+      mutableStateOf(STREAM_PROVIDERS.indexOfFirst { it.id == "vidrock" }.coerceAtLeast(0))
     }
     var stageMessage by remember { mutableStateOf("Extracting stream…") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -304,7 +304,7 @@ internal fun BrowserScreen(
 
 // ── Extractor dispatcher ──────────────────────────────────────────────────
 
-private val DESKTOP_PROVIDER_ORDER = listOf("cinesrc", "vidfast", "vidrock")
+private val DESKTOP_PROVIDER_ORDER = listOf("vidrock", "cinesrc", "vidfast", "videasy")
 
 private fun nextDesktopProviderIndex(attempted: Set<Int>): Int? =
     DESKTOP_PROVIDER_ORDER.asSequence()
@@ -327,7 +327,7 @@ private suspend fun extractStream(
     // Do not take MP4s from the markup: these providers place advertising there before their
     // JavaScript asks for the actual title. The browser path below waits specifically for HLS.
 
-    // Then the browser. All three of these sites assemble the address in JavaScript, so the fetch
+    // Then the browser. All four sites assemble the address in JavaScript, so the fetch
     // above can never see it — this is the whole reason the television build drives a browser rather than an HTTP client.
     onStatus("Running browser to extract stream…")
     var media =

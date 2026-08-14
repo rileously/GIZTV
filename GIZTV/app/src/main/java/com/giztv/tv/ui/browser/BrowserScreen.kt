@@ -268,6 +268,34 @@ private val adCleanupScript =
   })();
   """.trimIndent()
 
+/** Videasy resolves the title on load but waits for this control before requesting its HLS media. */
+private val startVideasyPlaybackScript =
+  """
+  (function () {
+    if (window.__giztvVideasyStarted) return true;
+
+    function start() {
+      const buttons = Array.from(document.querySelectorAll('button'));
+      const button = buttons.find(node => {
+        const label = (node.getAttribute('aria-label') || node.getAttribute('title') || node.textContent || '').toLowerCase();
+        return label.includes('play');
+      }) || buttons[0];
+      if (!button) return false;
+      window.__giztvVideasyStarted = true;
+      button.click();
+      return true;
+    }
+
+    if (start()) return true;
+    let attempts = 0;
+    const timer = setInterval(function () {
+      attempts += 1;
+      if (start() || attempts >= 40) clearInterval(timer);
+    }, 250);
+    return false;
+  })();
+  """.trimIndent()
+
 /** Makes hoofoot's YouTube controls usable in WebView as well as allowing the requested autoplay. */
 private val enableYoutubePlaybackScript =
   """
@@ -1205,6 +1233,12 @@ internal class AdBlockingWebViewClient(
   override fun onPageFinished(view: WebView, url: String) {
     currentPageTitle = view.title.orEmpty()
     view.evaluateJavascript(adCleanupScript, null)
+    if (providerIdOf(url) == "videasy") {
+      // The resolver is covered by the preparation screen, so it must perform the play action that
+      // makes Videasy emit its HLS request. Popups remain disabled by PopupBlockingChromeClient.
+      view.settings.mediaPlaybackRequiresUserGesture = false
+      view.evaluateJavascript(startVideasyPlaybackScript, null)
+    }
     onStatus("${blockedRequestCount.get()} ads blocked · Popups off")
     if (!streamReported.get()) onStage(PreparationStage.FINDING_STREAM)
     onPageState(view.title.orEmpty(), url, 100, view.canGoBack())

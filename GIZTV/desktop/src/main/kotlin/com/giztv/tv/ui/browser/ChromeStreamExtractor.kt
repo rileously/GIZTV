@@ -25,8 +25,9 @@ import com.giztv.tv.ui.player.transportStreamPayloadOffset
  * Android's WebView is Chromium underneath.
  *
  * So this drives Chromium instead, over the DevTools protocol, and simply reads the requests as
- * they leave. That is the same thing the television build watches for, and against the same three
- * providers it produced an address in two to five seconds each.
+ * they leave. That is the same thing the television build watches for. Videasy is the fourth
+ * provider and needs one extra browser action: its page resolves the title on load, then waits for
+ * its play control before it emits the playlist request.
  */
 internal object ChromeStreamExtractor {
 
@@ -88,10 +89,33 @@ internal object ChromeStreamExtractor {
 
       val deadline = System.currentTimeMillis() + timeoutMs
       var announced = 0L
+      var videasyStartAttempts = 0
+      var nextVideasyStartAtMs = 500L
       val rejected = mutableSetOf<String>()
       while (System.currentTimeMillis() < deadline) {
         currentCoroutineContext().ensureActive()
         delay(POLL_MS)
+        val waited = timeoutMs - (deadline - System.currentTimeMillis())
+        if (
+          isVideasyPlayer(pageUrl) &&
+            videasyStartAttempts < VIDEASY_START_ATTEMPTS &&
+            waited >= nextVideasyStartAtMs
+        ) {
+          // A DevTools user gesture also keeps this reliable when Chromium's autoplay policy is
+          // stricter than Android WebView's. Repeated readiness probes are idempotent after the
+          // initial play control has appeared and been activated.
+          socket.send(
+            command(
+              100 + videasyStartAttempts,
+              "Runtime.evaluate",
+              JSONObject()
+                .put("expression", VIDEASY_START_EXPRESSION)
+                .put("userGesture", true),
+            )
+          )
+          videasyStartAttempts += 1
+          nextVideasyStartAtMs += VIDEASY_START_INTERVAL_MS
+        }
         // A playlist is the film; take the first good one and stop — but only if what it points at
         // is actually video. See carriesRealMedia.
         seen.firstOrNull {
@@ -103,7 +127,6 @@ internal object ChromeStreamExtractor {
           rejected.add(candidate.url)
           onStatus("That stream cannot be decoded; trying elsewhere…")
         }
-        val waited = timeoutMs - (deadline - System.currentTimeMillis())
         if (waited - announced >= 4_000L) {
           announced = waited
           onStatus("Waiting for stream… (${waited / 1000}s)")
@@ -209,6 +232,13 @@ internal object ChromeStreamExtractor {
       .put("method", method)
       .put("params", params ?: JSONObject())
       .toString()
+
+  private fun isVideasyPlayer(url: String): Boolean =
+    runCatching {
+        val host = java.net.URI(url).host?.lowercase().orEmpty()
+        host == "player.videasy.to" || host == "player.videasy.net"
+      }
+      .getOrDefault(false)
 
   // Signed proxy endpoints often carry the real playlist address inside `?url=...`; the extension
   // is therefore in the query rather than the visible path.
@@ -387,8 +417,26 @@ internal object ChromeStreamExtractor {
 
   private const val DEVTOOLS_PORT = 9333
   private const val POLL_MS = 250L
+  private const val VIDEASY_START_INTERVAL_MS = 500L
+  private const val VIDEASY_START_ATTEMPTS = 20
   private const val STARTUP_ATTEMPTS = 40
   private const val STARTUP_POLL_MS = 250L
+
+  private const val VIDEASY_START_EXPRESSION =
+    """
+    (() => {
+      if (window.__giztvVideasyStarted) return true;
+      const buttons = Array.from(document.querySelectorAll('button'));
+      const button = buttons.find(node => {
+        const label = (node.getAttribute('aria-label') || node.getAttribute('title') || node.textContent || '').toLowerCase();
+        return label.includes('play');
+      }) || buttons[0];
+      if (!button) return false;
+      window.__giztvVideasyStarted = true;
+      button.click();
+      return true;
+    })()
+    """
 
   private const val EXTRACTOR_USER_AGENT =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +

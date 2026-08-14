@@ -56,6 +56,9 @@ class StreamProviderTest {
 
     assertTrue(byId.getValue("vidfast").movieUrl(786892).startsWith("https://vidfast.vc/movie/786892"))
     assertTrue(byId.getValue("vidfast").episodeUrl(94997, 1, 1).startsWith("https://vidfast.vc/tv/94997/1/1"))
+
+    assertEquals("https://player.videasy.to/movie/786892", byId.getValue("videasy").movieUrl(786892))
+    assertEquals("https://player.videasy.to/tv/94997/1/1", byId.getValue("videasy").episodeUrl(94997, 1, 1))
   }
 
   @Test
@@ -63,7 +66,7 @@ class StreamProviderTest {
     // VidSrc assembles its address inside the page behind an anti-inspection script, so the
     // resolver never sees one. Carrying it would only add a dead attempt to every failover.
     assertTrue(STREAM_PROVIDERS.none { it.host.contains("vsembed") })
-    assertEquals(listOf("vidrock", "cinesrc", "vidfast"), STREAM_PROVIDERS.map { it.id })
+    assertEquals(listOf("vidrock", "cinesrc", "vidfast", "videasy"), STREAM_PROVIDERS.map { it.id })
   }
 
   @Test
@@ -148,6 +151,7 @@ class StreamProviderTest {
     assertEquals("SR1", serverLabelFor("https://vidrock.ru/movie/786892"))
     assertEquals("SR2", serverLabelFor("https://cinesrc.st/embed/tv/94997?season=1&episode=1"))
     assertEquals("SR3", serverLabelFor(vidfastMovieUrl(786892)))
+    assertEquals("SR4", serverLabelFor("https://player.videasy.to/movie/786892"))
     // Subdomains still belong to their provider.
     assertEquals("SR1", serverLabelFor("https://cdn.vidrock.ru/movie/786892"))
   }
@@ -174,8 +178,8 @@ class StreamProviderTest {
   @Test
   fun catalogTitles_offerEveryProviderAsAServerChoice() {
     val options = playbackServerOptions(catalogPageUrl = vidfastMovieUrl(786892), sourceCount = 1)
-    assertEquals(listOf("SR1", "SR2", "SR3"), options.map { it.label })
-    assertEquals(listOf(0, 1, 2), options.map { it.index })
+    assertEquals(listOf("SR1", "SR2", "SR3", "SR4"), options.map { it.label })
+    assertEquals(listOf(0, 1, 2, 3), options.map { it.index })
   }
 
   @Test
