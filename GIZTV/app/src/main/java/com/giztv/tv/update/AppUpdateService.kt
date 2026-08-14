@@ -224,7 +224,15 @@ internal object AppUpdateService {
     val installed = packageManager.getPackageInfo(context.packageName, signingFlag)
     val installedCertificates = installed.signingCertificateDigests()
     val archiveCertificates = archiveWithSigs?.signingCertificateDigests().orEmpty()
-    if (installedCertificates.isNotEmpty() && archiveCertificates.isNotEmpty()) {
+    // The downloaded file is the half an attacker would control, so an unreadable signature on it
+    // is a refusal rather than a reason to skip the comparison. Android would reject an unsigned
+    // APK at install anyway; failing here says why, instead of leaving the last check un-run.
+    check(archiveCertificates.isNotEmpty()) {
+      "The downloaded update is not signed, or its certificate could not be read."
+    }
+    // The installed side is not attacker-controlled. If this device cannot report its own
+    // certificate there is nothing to compare against, and refusing would only strand the viewer.
+    if (installedCertificates.isNotEmpty()) {
       check(installedCertificates.any(archiveCertificates::contains)) {
         "Signature mismatch with installed version. Please uninstall older GIZTV once to upgrade to v1.52.0."
       }
