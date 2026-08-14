@@ -57,15 +57,16 @@ jobs:
 
       - name: Create update metadata
         env:
-          # 1.53.0 changed applicationId, so anything older than it still cannot be updated over
-          # and has to be reinstalled by hand. From 1.53.0 onwards updates install themselves, so
-          # this says both things. Drop the second half once 1.52.x is gone.
+          # What changed in this build, and nothing else. Edit this every release.
           RELEASE_NOTES: |
             What changed:
             - The short drama categories can be scrolled on a phone held upright. The row was wider
               than the screen, so the last of them — Marriage among them — could not be reached by
               touch at all. A remote and a television were never affected.
-
+          # 1.53.0 changed applicationId, so anything older than it still cannot be updated over
+          # and has to be reinstalled by hand. Kept apart from the notes above so the release page
+          # can put the first-install block between the two. Drop this once 1.52.x is gone.
+          UPGRADE_NOTES: |
             Already on 1.53.0 or newer? This installs itself as usual.
 
             On 1.52.1 or older? 1.53.0 changed the app's identity, so Android will not install this
@@ -79,18 +80,61 @@ jobs:
           cp "$APK_SOURCE" "$APK_NAME"
           APK_SHA256="$(sha256sum "$APK_NAME" | cut -d ' ' -f 1)"
           APK_URL="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$APK_NAME"
+          # A YAML block scalar keeps its trailing newline and command substitution drops one, so
+          # both halves are stripped bare here and every blank line below is put in deliberately.
+          CHANGED_NOTES="$(printf '%s' "$RELEASE_NOTES")"
+          UPGRADE_TEXT="$(printf '%s' "$UPGRADE_NOTES")"
+          # The in-app update screen is read by people who already have GIZTV installed, so it
+          # carries what changed and the upgrade path — and not the first-install block below.
+          IN_APP_NOTES="$(printf '%s\n\n%s\n' "$CHANGED_NOTES" "$UPGRADE_TEXT")"
           jq -n \
             --argjson versionCode "$VERSION_CODE" \
             --arg versionName "$VERSION_NAME" \
             --arg apkUrl "$APK_URL" \
             --arg sha256 "$APK_SHA256" \
-            --arg releaseNotes "$RELEASE_NOTES" \
+            --arg releaseNotes "$IN_APP_NOTES" \
             '{versionCode: $versionCode, versionName: $versionName, apkUrl: $apkUrl, sha256: $sha256, releaseNotes: $releaseNotes}' \
             > update.json
+
+          # The release page carries the sideload prompts as well, between what changed and the
+          # upgrade path: it is where someone installing for the first time lands, and meeting
+          # Play Protect unwarned is what makes them close the tab. The in-app notes above leave
+          # it out on purpose — everyone reading those has the app installed already.
+          {
+            printf '%s\n' "$CHANGED_NOTES"
+            cat <<NOTES
+
+          Installing this for the first time?
+
+          Android will ask two things, and both are normal:
+
+          1. "Install unknown apps" — allow it for whichever browser or file manager you
+             opened the APK with. Android asks once.
+          2. "App scan recommended" / "Send app to Play Protect?" — tap Scan and let it
+             finish. It passes.
+
+          Neither is a warning that something was found. Play Protect trusts an app by how
+          widely it has seen that app's package and signing key together, and GIZTV is
+          published here rather than on the Play Store, so it stays unrecognised no matter
+          how the app is built.
+
+          Verify the download before installing it if you like:
+
+              SHA-256  $APK_SHA256
+
+              Windows      Get-FileHash .\\$APK_NAME -Algorithm SHA256
+              Mac / Linux  shasum -a 256 $APK_NAME
+
+          Updates after this one install themselves — this is a one-time step.
+
+          NOTES
+            printf '%s\n' "$UPGRADE_TEXT"
+          } > release-notes.md
+
           echo "APK_NAME=$APK_NAME" >> "$GITHUB_ENV"
 
       - name: Publish GitHub Release
         run: |
           gh release create "$GITHUB_REF_NAME" "$APK_NAME" update.json \
             --title "GIZTV $GITHUB_REF_NAME" \
-            --generate-notes
+            --notes-file release-notes.md

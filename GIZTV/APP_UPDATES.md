@@ -46,8 +46,11 @@ outright, so shipping there would have forced the same break later, against a la
 ## Publish each future update
 
 1. Increase both `versionCode` and `versionName` in `app/build.gradle.kts`.
-2. Commit and push the change.
-3. Push a matching tag. For `versionName = "1.7.1"`:
+2. Rewrite `RELEASE_NOTES` in `../.github/workflows/release.yml` to say what changed in this
+   build, and nothing else. The two standing blocks beside it are added automatically — see
+   [The release notes](#the-release-notes) below.
+3. Commit and push the change.
+4. Push a matching tag. For `versionName = "1.7.1"`:
 
    ```powershell
    git tag v1.7.1
@@ -59,6 +62,46 @@ The repository workflow in `../.github/workflows/release.yml` does everything el
 `https://github.com/OWNER/REPOSITORY/releases/latest/download/update.json`
 
 The check is quiet if the network is unavailable or the installed version is current. A newer version displays a D-pad-friendly update screen. The app downloads into persistent private storage, verifies the SHA-256 checksum, package name, version, and signing certificate, then opens Android's installer. If the installer is dismissed, the verified APK remains available through **Install now** and is re-verified instead of downloaded again.
+
+## The release notes
+
+Two audiences read them, and they are not the same people, so the workflow assembles a different
+set for each from three pieces:
+
+| Piece | Where it lives | Release page | In-app update screen |
+| --- | --- | --- | --- |
+| What changed | `RELEASE_NOTES` in the workflow | yes | yes |
+| First-install and Play Protect | the `NOTES` heredoc in the workflow | yes | no |
+| Upgrade path off 1.52.x | `UPGRADE_NOTES` in the workflow | yes | no — it installs itself |
+
+Only the first needs editing per release.
+
+The in-app screen leaves the install block out deliberately: everyone reading it already has GIZTV
+installed and is about to be updated in place. The release page carries it because that is where
+somebody installing for the first time lands, and Play Protect's scan prompt is what makes them
+close the tab.
+
+### Why the install block is there at all
+
+GIZTV is sideloaded, so Android asks twice — once for **Install unknown apps**, once for Play
+Protect's **App scan recommended**. Play Protect decides an app is known by how widely it has seen
+that app's package name and signing certificate together, and this one is published from GitHub
+rather than the Play Store, so it stays unrecognised however it is built. No manifest flag,
+permission, or signing scheme turns the prompt off. Saying so before a viewer meets it is the whole
+mitigation.
+
+The APK's SHA-256 is interpolated into the block from `$APK_SHA256`, the same value that goes into
+`update.json`, so the notes cannot drift from what was actually published.
+
+Three things not to write into them:
+
+- **Never tell anyone to turn Play Protect off.** It reads exactly like what a malicious app would
+  ask for, and it costs a viewer real protection on a device that is about to grant an
+  install-packages permission.
+- **Never claim the app is "verified" or "Play Protect approved".** It is neither, and a viewer who
+  checks will trust the rest less.
+- **Never put the changelog above the install block on the release page.** A first-time viewer meets
+  the prompt before they care what changed.
 
 ## Local testing with another update feed
 
