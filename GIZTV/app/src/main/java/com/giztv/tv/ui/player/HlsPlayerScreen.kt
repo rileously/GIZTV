@@ -10,6 +10,7 @@ import android.graphics.Color as AndroidColor
 import android.graphics.Rect as AndroidRect
 import android.media.AudioManager
 import android.provider.Settings
+import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
@@ -118,8 +119,6 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.boundsInWindow
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -2169,6 +2168,22 @@ internal fun HlsPlayerScreen(
           keepScreenOn = true
           isFocusable = false
           isFocusableInTouchMode = false
+          // The picture is letterboxed inside this view, and where it lands differs for every
+          // resize mode. Media3 has already worked that out for its content frame, so the frame
+          // is measured rather than the calculation repeated here — handing picture in picture
+          // the whole view would animate the black bars along with the video.
+          findViewById<View>(androidx.media3.ui.R.id.exo_content_frame)
+            ?.addOnLayoutChangeListener { frame, _, _, _, _, _, _, _, _ ->
+              val corner = IntArray(2)
+              frame.getLocationInWindow(corner)
+              videoBounds =
+                AndroidRect(
+                  corner[0],
+                  corner[1],
+                  corner[0] + frame.width,
+                  corner[1] + frame.height,
+                )
+            }
         }
       },
       update = { view ->
@@ -2188,18 +2203,9 @@ internal fun HlsPlayerScreen(
       // so the two move as one strip and the gesture reads as scrolling a feed rather than as
       // something being pulled over the top of what was playing.
       modifier =
-        Modifier.fillMaxSize()
-          .onGloballyPositioned { coordinates ->
-            val bounds = coordinates.boundsInWindow()
-            videoBounds =
-              AndroidRect(
-                bounds.left.roundToInt(),
-                bounds.top.roundToInt(),
-                bounds.right.roundToInt(),
-                bounds.bottom.roundToInt(),
-              )
-          }
-          .graphicsLayer { translationY = if (reelMode) reelSlide.value else 0f },
+        Modifier.fillMaxSize().graphicsLayer {
+          translationY = if (reelMode) reelSlide.value else 0f
+        },
     )
 
     val showPauseTip =
