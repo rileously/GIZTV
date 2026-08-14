@@ -66,7 +66,7 @@ class StreamProviderTest {
     // VidSrc assembles its address inside the page behind an anti-inspection script, so the
     // resolver never sees one. Carrying it would only add a dead attempt to every failover.
     assertTrue(STREAM_PROVIDERS.none { it.host.contains("vsembed") })
-    assertEquals(listOf("vidrock", "cinesrc", "vidfast", "videasy"), STREAM_PROVIDERS.map { it.id })
+    assertEquals(listOf("videasy", "vidrock", "cinesrc", "vidfast"), STREAM_PROVIDERS.map { it.id })
   }
 
   @Test
@@ -141,19 +141,19 @@ class StreamProviderTest {
     // not at whichever provider happens to own the remembered address.
     val canonical = vidfastMovieUrl(786892)
     assertEquals(STREAM_PROVIDERS.first().movieUrl(786892), nextProviderPageUrl(canonical, 0))
-    assertEquals("vidrock", STREAM_PROVIDERS.first().id)
+    assertEquals("videasy", STREAM_PROVIDERS.first().id)
     // ...and the remembered address still belongs to vidfast, so nobody loses their place.
     assertEquals("vidfast", CANONICAL_PROVIDER.id)
   }
 
   @Test
   fun theServingSite_isNamedByItsPlaceInTheRunningOrder() {
-    assertEquals("SR1", serverLabelFor("https://vidrock.ru/movie/786892"))
-    assertEquals("SR2", serverLabelFor("https://cinesrc.st/embed/tv/94997?season=1&episode=1"))
-    assertEquals("SR3", serverLabelFor(vidfastMovieUrl(786892)))
-    assertEquals("SR4", serverLabelFor("https://player.videasy.to/movie/786892"))
+    assertEquals("SR1", serverLabelFor("https://player.videasy.to/movie/786892"))
+    assertEquals("SR2", serverLabelFor("https://vidrock.ru/movie/786892"))
+    assertEquals("SR3", serverLabelFor("https://cinesrc.st/embed/tv/94997?season=1&episode=1"))
+    assertEquals("SR4", serverLabelFor(vidfastMovieUrl(786892)))
     // Subdomains still belong to their provider.
-    assertEquals("SR1", serverLabelFor("https://cdn.vidrock.ru/movie/786892"))
+    assertEquals("SR2", serverLabelFor("https://cdn.vidrock.ru/movie/786892"))
   }
 
   @Test
@@ -203,7 +203,7 @@ class StreamProviderTest {
   @Test
   fun selectedServer_followsTheServingProviderOrIptvIndex() {
     assertEquals(
-      1,
+      2,
       selectedPlaybackServerIndex(
         sourcePageUrl = "https://cinesrc.st/embed/movie/1",
         sourceIndex = 0,

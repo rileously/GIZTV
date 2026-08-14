@@ -298,7 +298,7 @@ private const val RELIABLE_REBUFFER_MS = 4_000
 private const val PHONE_START_BUFFER_MS = 1_500
 private const val PHONE_REBUFFER_MS = 3_000
 /**
- * Progressive MP4/MKV files (typical of SR2/SR3) have no ladder, so a deep HLS cushion just means
+ * Progressive MP4/MKV files served by some providers have no ladder, so a deep HLS cushion means
  * more megabytes to fill before start and after every stall. Keep a useful safety net without
  * asking for 30–75 seconds of a single high-bitrate file.
  */

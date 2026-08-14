@@ -60,11 +60,8 @@ jobs:
           # What changed in this build, and nothing else. Edit this every release.
           RELEASE_NOTES: |
             What changed:
-            - Movies and TV episodes now have a fourth streaming server. Videasy appears as
-              Server 4 and joins the same automatic failover and in-player server picker as the
-              existing choices.
-            - VidRock remains Server 1 because it reached playable video faster in balanced
-              loading tests; Videasy is available whenever you want to switch or failover needs it.
+            - Videasy is now Server 1 and the default choice for movies and TV episodes.
+            - VidRock moves to Server 2 and remains the first automatic fallback.
           # 1.53.0 changed applicationId, so anything older than it still cannot be updated over
           # and has to be reinstalled by hand. Kept apart from the notes above so the release page
           # can put the first-install block between the two. Drop this once 1.52.x is gone.

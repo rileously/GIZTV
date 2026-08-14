@@ -119,11 +119,10 @@ internal fun BrowserScreen(
     val season = target?.seasonNumber ?: 1
     val episode = target?.episodeNumber ?: 1
 
-    // Start with the provider that usually resolves fastest. VidRock's disguised transport-stream
-    // segments are unwrapped by StreamHeaderProxy, so every server in the shared picker is now a
-    // valid desktop choice.
+    // Follow the shared provider priority. Videasy's activation click is handled by the resolver,
+    // so it can be the desktop default as well as the Android default.
     var selectedProviderIndex by remember {
-      mutableStateOf(STREAM_PROVIDERS.indexOfFirst { it.id == "vidrock" }.coerceAtLeast(0))
+      mutableStateOf(STREAM_PROVIDERS.indexOfFirst { it.id == "videasy" }.coerceAtLeast(0))
     }
     var stageMessage by remember { mutableStateOf("Extracting stream…") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -304,7 +303,7 @@ internal fun BrowserScreen(
 
 // ── Extractor dispatcher ──────────────────────────────────────────────────
 
-private val DESKTOP_PROVIDER_ORDER = listOf("vidrock", "cinesrc", "vidfast", "videasy")
+private val DESKTOP_PROVIDER_ORDER = listOf("videasy", "vidrock", "cinesrc", "vidfast")
 
 private fun nextDesktopProviderIndex(attempted: Set<Int>): Int? =
     DESKTOP_PROVIDER_ORDER.asSequence()

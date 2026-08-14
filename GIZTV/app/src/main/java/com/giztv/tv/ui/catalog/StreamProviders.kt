@@ -18,20 +18,21 @@ internal data class StreamProvider(
 /**
  * Tried in order; the first that produces a playable stream wins.
  *
- * Ordered by what they were measured doing, not by what they advertise.
+ * Ordered by configured playback priority.
  *
- * vidrock leads: it hands out an HLS playlist with a full set of subtitle tracks, so the player has
- * real renditions to adapt between. A cold-cache browser comparison against Videasy kept it here:
- * VidRock's median time to the first successful HLS response was lower. It spent a release demoted
- * for appearing to fail on every title; it was not failing, the resolver was taking the placeholder
- * its player loads before it has resolved anything and discarding the real playlist that followed.
- * See `isDecoyMediaUrl`.
+ * Videasy leads by preference. Its player resolves its source up front but does not request the HLS
+ * playlist until its play control is activated; both browser resolvers perform that activation
+ * while the preparation page is hidden.
  *
- * cinesrc sits second, in the slot vidlink held. It is the only one whose episode address carries
+ * VidRock is second. It hands out an HLS playlist with a full set of subtitle tracks, so the player
+ * has real renditions to adapt between. Its placeholder media request must still be ignored while
+ * the resolver waits for the real playlist; see `isDecoyMediaUrl`.
+ *
+ * CineSrc is third. It is the only provider whose episode address carries
  * the season and episode as query parameters rather than path segments, which is why the readers
  * below accept both shapes.
  *
- * vidfast trails on measured resolution time, not reliability. It serves either shape depending on
+ * VidFast is fourth. It serves either shape depending on
  * the title — a `master.m3u8` from moon.ironwallnet.net for some, a single progressive file for
  * others, sometimes 2160p with no ladder to adapt down — so neither shape can be assumed of it. The
  * player caps oversized progressive filenames (see preferProgressivePlaybackUrl) and gives those a
@@ -41,16 +42,20 @@ internal data class StreamProvider(
  * that was not the page: the resolver refused the HTTP cache outright, so every attempt fetched its
  * entire script bundle again before it could begin. That was the wait a fast connection could not
  * shorten. Resolving now reads ordinary cache rules and falls back to the network on any attempt
- * that finds nothing, and what it gives up is remembered per site so choosing SR3 twice only costs
- * the search once.
- *
- * Videasy is fourth so adding it does not silently rename the three existing server choices. Its
- * documented movie and episode URLs use the same TMDB path shapes as VidRock. The player resolves
- * its source up front but does not request the HLS playlist until its play control is activated;
- * both browser resolvers perform that activation while the preparation page is hidden.
+ * that finds nothing, and what it gives up is remembered per site so choosing VidFast twice only
+ * costs the search once.
  */
 internal val STREAM_PROVIDERS: List<StreamProvider> =
   listOf(
+    StreamProvider(
+      id = "videasy",
+      label = "Videasy",
+      host = "videasy.to",
+      movieUrl = { "https://player.videasy.to/movie/$it" },
+      episodeUrl = { show, season, episode ->
+        "https://player.videasy.to/tv/$show/$season/$episode"
+      },
+    ),
     StreamProvider(
       id = "vidrock",
       label = "VidRock",
@@ -79,15 +84,6 @@ internal val STREAM_PROVIDERS: List<StreamProvider> =
       movieUrl = { "https://vidfast.vc/movie/$it?autoPlay=true&sub=en&chromecast=false" },
       episodeUrl = { show, season, episode ->
         "https://vidfast.vc/tv/$show/$season/$episode?autoPlay=true&sub=en&chromecast=false"
-      },
-    ),
-    StreamProvider(
-      id = "videasy",
-      label = "Videasy",
-      host = "videasy.to",
-      movieUrl = { "https://player.videasy.to/movie/$it" },
-      episodeUrl = { show, season, episode ->
-        "https://player.videasy.to/tv/$show/$season/$episode"
       },
     ),
   )
