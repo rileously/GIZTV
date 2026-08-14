@@ -131,10 +131,19 @@ jobs:
             printf '%s\n' "$UPGRADE_TEXT"
           } > release-notes.md
 
+          # R8 renames everything, so a crash report from the field is unreadable without the
+          # mapping for the exact build it came from. It ships with the release for that reason —
+          # compressed, because the raw file is the best part of a hundred megabytes.
+          MAPPING_SOURCE="app/build/outputs/mapping/release/mapping.txt"
+          MAPPING_NAME="GIZTV-$GITHUB_REF_NAME-mapping.txt.gz"
+          test -f "$MAPPING_SOURCE"
+          gzip -c "$MAPPING_SOURCE" > "$MAPPING_NAME"
+
           echo "APK_NAME=$APK_NAME" >> "$GITHUB_ENV"
+          echo "MAPPING_NAME=$MAPPING_NAME" >> "$GITHUB_ENV"
 
       - name: Publish GitHub Release
         run: |
-          gh release create "$GITHUB_REF_NAME" "$APK_NAME" update.json \
+          gh release create "$GITHUB_REF_NAME" "$APK_NAME" "$MAPPING_NAME" update.json \
             --title "GIZTV $GITHUB_REF_NAME" \
             --notes-file release-notes.md
