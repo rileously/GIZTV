@@ -1606,6 +1606,20 @@ private fun isWebUrl(url: String): Boolean {
 
 internal fun isHlsUrl(url: String): Boolean {
   val normalized = url.lowercase()
+  val parsed = runCatching { url.toUri() }.getOrNull()
+  val host = parsed?.host?.lowercase().orEmpty()
+  val path = parsed?.path.orEmpty().lowercase()
+  val renditionType = runCatching { parsed?.getQueryParameter("type") }.getOrNull()
+
+  // VixCloud serves its HLS master without a .m3u8 extension, and serves the master's children
+  // from that same /playlist/ path with a type= saying which one. This has to be settled before
+  // the general rules below rather than after them: "/playlist" answers for the children just as
+  // readily as for the master, and taking a child for the stream hands the player a picture with
+  // no sound, or a subtitle track in place of the film.
+  if ((host == "vixsrc.to" || host.endsWith(".vixsrc.to")) && path.startsWith("/playlist/")) {
+    return renditionType.isNullOrBlank()
+  }
+
   if (
     normalized.contains("m3u8") ||
       normalized.contains("format=m3u8") ||
@@ -1616,21 +1630,6 @@ internal fun isHlsUrl(url: String): Boolean {
       normalized.contains("/playlist") ||
       normalized.contains("vidlink.pro/api") ||
       normalized.contains("vidlink.stream")
-  ) {
-    return true
-  }
-
-  val parsed = runCatching { url.toUri() }.getOrNull() ?: return false
-  val host = parsed.host?.lowercase().orEmpty()
-  val path = parsed.path.orEmpty().lowercase()
-  val renditionType = runCatching { parsed.getQueryParameter("type") }.getOrNull()
-
-  // VixCloud serves its HLS master without a .m3u8 extension. Only capture the
-  // master; its type=video/audio/subtitle children must stay inside Media3.
-  if (
-    (host == "vixsrc.to" || host.endsWith(".vixsrc.to")) &&
-      path.startsWith("/playlist/") &&
-      renditionType.isNullOrBlank()
   ) {
     return true
   }

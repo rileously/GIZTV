@@ -42,6 +42,16 @@ class SubtitleCatalogTest {
         ),
       )
     }
+
+    // The master itself still has to be caught, or the title never starts at all.
+    assertTrue(isHlsUrl("https://vixsrc.to/playlist/775794"))
+    assertTrue(isHlsUrl("https://vixsrc.to/playlist/775794?token=temporary&expires=1790763112"))
+    assertTrue(isHlsUrl("https://eu.vixsrc.to/playlist/775794?token=temporary"))
+    // A child stays a child however it is dressed up.
+    assertTrue(!isHlsUrl("https://vixsrc.to/playlist/775794.m3u8?type=audio&rendition=eng"))
+    // Everything else keeps answering as it did.
+    assertTrue(isHlsUrl("https://example.com/playlist?id=1"))
+    assertTrue(!isHlsUrl("https://vixsrc.to/movie/775794"))
   }
 
   @Test
