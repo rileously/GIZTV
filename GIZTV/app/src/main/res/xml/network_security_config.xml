@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Generated from app/src/main/assets/iptv/play.m3u. Regenerate whenever that playlist changes;
+  IptvCleartextHostsTest fails if the two fall out of step.
+
+  Cleartext stays off for everything else, which matters most for the in-app browser: it loads
+  addresses the viewer types, with JavaScript on, and a plain-text page there can be rewritten in
+  transit. These hosts are named one at a time because an IPTV stream that is only served over
+  http is the stream or nothing.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">103.148.44.38</domain>
+        <domain includeSubdomains="false">103.155.18.186</domain>
+        <domain includeSubdomains="false">103.165.93.31</domain>
+        <domain includeSubdomains="false">103.58.160.157</domain>
+        <domain includeSubdomains="false">119.156.228.231</domain>
+        <domain includeSubdomains="false">119.82.250.109</domain>
+        <domain includeSubdomains="false">136.239.158.18</domain>
+        <domain includeSubdomains="false">136.239.173.3</domain>
+        <domain includeSubdomains="false">146.59.253.52</domain>
+        <domain includeSubdomains="false">151.80.18.177</domain>
+        <domain includeSubdomains="false">163.172.64.96</domain>
+        <domain includeSubdomains="false">185.102.171.218</domain>
+        <domain includeSubdomains="false">193.47.62.192</domain>
+        <domain includeSubdomains="false">193.47.62.43</domain>
+        <domain includeSubdomains="false">193.47.62.51</domain>
+        <domain includeSubdomains="false">198.195.239.50</domain>
+        <domain includeSubdomains="false">202.169.224.202</domain>
+        <domain includeSubdomains="false">206.212.244.63</domain>
+        <domain includeSubdomains="false">23.237.104.106</domain>
+        <domain includeSubdomains="false">38.75.136.137</domain>
+        <domain includeSubdomains="false">41.205.93.154</domain>
+        <domain includeSubdomains="false">41.223.30.230</domain>
+        <domain includeSubdomains="false">50.7.120.34</domain>
+        <domain includeSubdomains="false">62.32.84.50</domain>
+        <domain includeSubdomains="false">63b03f7689049.streamlock.net</domain>
+        <domain includeSubdomains="false">66.102.126.10</domain>
+        <domain includeSubdomains="false">69.30.245.50</domain>
+        <domain includeSubdomains="false">69.30.246.194</domain>
+        <domain includeSubdomains="false">6zirt9yx.otttv.pw</domain>
+        <domain includeSubdomains="false">74.91.26.218</domain>
+        <domain includeSubdomains="false">84.17.50.102</domain>
+        <domain includeSubdomains="false">93.93.113.95</domain>
+        <domain includeSubdomains="false">aflaxtv.xyz</domain>
+        <domain includeSubdomains="false">akariko.netgenx.site</domain>
+        <domain includeSubdomains="false">alal.fit</domain>
+        <domain includeSubdomains="false">alwifaklive.info</domain>
+        <domain includeSubdomains="false">app24.jagobd.com.bd</domain>
+        <domain includeSubdomains="false">baka.semar.my.id</domain>
+        <domain includeSubdomains="false">bgdc.live</domain>
+        <domain includeSubdomains="false">cdn.nng.cloudns.us</domain>
+        <domain includeSubdomains="false">cdn1host.online</domain>
+        <domain includeSubdomains="false">cdns.jp-primehome.com</domain>
+        <domain includeSubdomains="false">d1msejlow1t3l4.cloudfront.net</domain>
+        <domain includeSubdomains="false">fortv.cc</domain>
+        <domain includeSubdomains="false">fr3d0m.tebasya.work</domain>
+        <domain includeSubdomains="false">front-main.eagle-4k.me</domain>
+        <domain includeSubdomains="false">hz1.teleport.cc</domain>
+        <domain includeSubdomains="false">istream.binarywaves.com</domain>
+        <domain includeSubdomains="false">khano.nng.cloudns.us</domain>
+        <domain includeSubdomains="false">line.crystalott.net</domain>
+        <domain includeSubdomains="false">m.live.net.sa</domain>
+        <domain includeSubdomains="false">main.light-ott.net</domain>
+        <domain includeSubdomains="false">moo7-restream2025.ddns.net</domain>
+        <domain includeSubdomains="false">myxpanel.pro</domain>
+        <domain includeSubdomains="false">op-group1-swiftservehd-1.dens.tv</domain>
+        <domain includeSubdomains="false">op-group1-swiftservesd-1.dens.tv</domain>
+        <domain includeSubdomains="false">opplextv.cyou</domain>
+        <domain includeSubdomains="false">rgkkw.live</domain>
+        <domain includeSubdomains="false">rocketfx.uk</domain>
+        <domain includeSubdomains="false">s.rocketdns.info</domain>
+        <domain includeSubdomains="false">sewv654wfcsdwfi87fwvgbngh.siauliairsavlt.pw</domain>
+        <domain includeSubdomains="false">stream.cammonitorplus.net</domain>
+        <domain includeSubdomains="false">tjtor8411.com</domain>
+        <domain includeSubdomains="false">tv-premium-pro.com</domain>
+        <domain includeSubdomains="false">tv.cloudcdn.me</domain>
+        <domain includeSubdomains="false">tv.nrg91.gr</domain>
+        <domain includeSubdomains="false">uutvs.cc</domain>
+        <domain includeSubdomains="false">vg-zeefta.akamaized.net</domain>
+        <domain includeSubdomains="false">vpn.full-keys4k.xyz</domain>
+        <domain includeSubdomains="false">wickediptv.xyz</domain>
+        <domain includeSubdomains="false">xsmt.ccwu.cc</domain>
+    </domain-config>
+</network-security-config>

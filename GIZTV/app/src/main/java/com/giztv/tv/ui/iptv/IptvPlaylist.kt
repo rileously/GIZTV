@@ -1,6 +1,7 @@
 package com.giztv.tv.ui.iptv
 
 import android.content.Context
+import android.os.Build
 import androidx.media3.common.MimeTypes
 import com.giztv.tv.ui.dlhd.DlhdChannelsRepository
 import com.giztv.tv.ui.player.HlsStreamRequest
@@ -617,10 +618,20 @@ private fun isChannelMetadata(channel: PendingChannel): Boolean =
 private fun isPlayableStreamUrl(url: String): Boolean {
   val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return false
   val host = uri.host?.lowercase(Locale.ENGLISH).orEmpty()
-  // The manifest deliberately blocks cleartext traffic, so showing http:// entries guarantees a
-  // playback failure. Keep only TLS streams and exclude playlist promotion links.
-  return uri.scheme.equals("https", ignoreCase = true) &&
-    host !in setOf("t.me", "telegram.me", "www.telegram.me")
+  if (host.isEmpty() || host in setOf("t.me", "telegram.me", "www.telegram.me")) return false
+  return when {
+    uri.scheme.equals("https", ignoreCase = true) -> true
+    // Cleartext is refused for everything the network config does not name, so an http channel it
+    // does not cover would be listed and then fail the moment it was chosen. One it does cover
+    // plays, and hiding those was costing the guide close to a fifth of its channels. Hosts
+    // arriving from the remote playlist are not in that list and stay hidden.
+    //
+    // Android 6 reads no network config at all, so there the manifest's flat refusal is the whole
+    // story and every one of these would be listed and then fail. They stay hidden on it.
+    uri.scheme.equals("http", ignoreCase = true) ->
+      Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && host in IPTV_CLEARTEXT_HOSTS
+    else -> false
+  }
 }
 
 private fun splitUrlAndHeaders(line: String): Pair<String, Map<String, String>> {
