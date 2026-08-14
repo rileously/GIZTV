@@ -40,6 +40,7 @@ kotlin {
                 exclude("**/ui/browser/AdRequestEvaluator.kt")
                 exclude("**/ui/browser/BookmarkStore.kt")
                 exclude("**/ui/browser/StreamCacheStore.kt")
+                exclude("**/ui/crash/CrashReportOverlay.kt")
                 exclude("**/ui/update/AppUpdateController.kt")
                 exclude("**/update/AppUpdateService.kt")
                 exclude("**/update/UpdateCheckWorker.kt")
