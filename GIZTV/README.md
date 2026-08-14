@@ -60,13 +60,50 @@ GIZTV is an Android phone and TV app built with Kotlin and Compose. It browses a
 .\gradlew.bat :app:assembleDebug
 ```
 
-The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
+The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`. It is for development only — see [Install on an Android phone or TV](#install-on-an-android-phone-or-tv) for why it should never be the build handed to anyone else.
 
-## Install on an Android phone
+Releases are built and signed by the tag workflow rather than by hand; [APP_UPDATES.md](APP_UPDATES.md) covers publishing one.
 
-Enable **Install unknown apps** for the file manager or browser used to open the APK, then install `app-debug.apk`. GIZTV appears in the standard phone launcher and stays in portrait on phones such as Pixel. Android TV devices continue to use landscape.
+## Install on an Android phone or TV
 
-For a connected Pixel or phone emulator:
+Download **`GIZTV-v<version>.apk`** from the [latest release](https://github.com/rileously/GIZTV/releases/latest). That is the signed build, and it is the only one that can take an in-app update later.
+
+Do not hand out `app-debug.apk`. A debug build is signed with the local `CN=Android Debug` key rather than the release key, so a release APK can never install over it — anyone who starts on a debug build has to uninstall, losing watch history, before they can update again. It is also `debuggable`, which Android and Play Protect both treat with more suspicion.
+
+Enable **Install unknown apps** for the file manager or browser used to open the APK. The permission is per-app and is normally only asked for once. GIZTV appears in the standard phone launcher and stays in portrait on phones such as Pixel; Android TV devices continue to use landscape.
+
+### What Android will warn about, and why
+
+Installing this way is a sideload, and recent Android versions say so twice. Both prompts are expected:
+
+1. **"Install unknown apps"** — Android asking whether the browser or file manager may install packages at all.
+2. **"App scan recommended" / "Send app to Play Protect?"** — Play Protect has not seen this app widely distributed before, so it offers to scan it. **Tap Scan and let it run.** It passes.
+
+Neither warning means anything was detected. Play Protect trusts an app by the reputation of its package name and signing certificate together, and GIZTV is distributed from GitHub rather than the Play Store, so that pair stays "unknown" no matter how the APK is built. Nothing inside the APK can turn the prompt off.
+
+If Play Protect ever says **"Unsafe app blocked"** rather than offering a scan, that is a different message and worth reporting as an issue.
+
+### Verifying a download
+
+Every release publishes the APK's SHA-256 in its notes and in `update.json`. To check a download before installing it:
+
+```powershell
+Get-FileHash .\GIZTV-v1.64.1.apk -Algorithm SHA256
+```
+
+The signing certificate is the same for every release from v1.52.0 onwards:
+
+```
+SHA-256  3E:EB:52:6A:A7:E3:60:05:18:5B:67:05:AE:F1:5F:DB:2A:E1:1A:90:81:6E:28:27:CB:3E:A1:E9:A9:CE:20:EB
+```
+
+### Staying updated
+
+GIZTV checks for its own updates and installs them itself, so the sideload above is a one-time cost. [Obtainium](https://github.com/ImranR98/Obtainium) also tracks this repository's releases directly if you would rather manage updates from one place.
+
+## Install a development build
+
+For a connected Pixel, phone emulator, or TV emulator during development:
 
 ```powershell
 android run --device=<device-serial> --apks=app\build\outputs\apk\debug\app-debug.apk --activity=com.giztv.tv.MainActivity --type=ACTIVITY
