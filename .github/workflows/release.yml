@@ -60,8 +60,14 @@ jobs:
           # What changed in this build, and nothing else. Edit this every release.
           RELEASE_NOTES: |
             What changed:
-            - Videasy is now Server 1 and the default choice for movies and TV episodes.
-            - VidRock moves to Server 2 and remains the first automatic fallback.
+            - Subtitle synchronization now stays open while the video keeps playing, so timing
+              changes can be checked immediately without pausing or seeking.
+            - New Earlier, Later, Reset, Undo, and press-when-heard controls make synchronization
+              faster with touchscreens and TV remotes.
+            - Subtitle timing is remembered separately for each episode, server, and subtitle file,
+              preventing a correction for one stream from being applied to another.
+            - Auto English now respects the provider's best ordinary English subtitle instead of
+              guessing that the second English track is the correct match.
           # 1.53.0 changed applicationId, so anything older than it still cannot be updated over
           # and has to be reinstalled by hand. Kept apart from the notes above so the release page
           # can put the first-install block between the two. Drop this once 1.52.x is gone.

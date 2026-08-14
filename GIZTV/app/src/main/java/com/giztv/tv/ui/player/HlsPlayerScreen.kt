@@ -52,9 +52,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -98,7 +95,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.media3.common.text.CueGroup
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -212,6 +208,7 @@ import com.giztv.tv.gizTvOrientation
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -826,7 +823,6 @@ internal fun HlsPlayerScreen(
   val subtitleSyncStore = remember(context) { SubtitleSyncStore(context) }
   val playerPreferences = remember(context) { PlayerPreferencesStore(context) }
   val progressKey = remember(request) { playbackProgressKey(request) }
-  val subtitleSyncKey = remember(request) { subtitleSyncKey(request) }
   val isLiveContent = request.isLive || request.context?.kindLabel.equals("LIVE", ignoreCase = true)
   // Continue watching keeps its own position against the catalog page, and it is the one the
   // viewer was just shown. It stands in when the progress store has nothing under this key —
@@ -902,10 +898,6 @@ internal fun HlsPlayerScreen(
   var subtitleSize by remember(request) { mutableStateOf(playerPreferences.subtitleSize()) }
   var subtitlePosition by remember(request) { mutableStateOf(playerPreferences.subtitlePosition()) }
   var subtitleStyle by remember(request) { mutableStateOf(playerPreferences.subtitleStyle()) }
-  // Read before the player is built, so its text renderer starts on the saved subtitle clock.
-  var subtitleOffsetMs by remember(subtitleSyncKey) { mutableLongStateOf(subtitleSyncStore.load(subtitleSyncKey)) }
-  // Shared with the text renderer, which reads it on every render pass.
-  val subtitleOffset = remember(subtitleSyncKey) { AtomicLong(subtitleOffsetMs) }
   var playbackSpeed by remember(request) { mutableStateOf(playerPreferences.playbackSpeed()) }
   /**
    * How the picture is fitted to the screen.
@@ -937,6 +929,22 @@ internal fun HlsPlayerScreen(
   var selectedAudio by remember(request, compatibilityMode) { mutableStateOf(playerPreferences.audioTrack()) }
   var audioPassthroughMode by remember(request) { mutableStateOf(playerPreferences.audioPassthrough()) }
   var selectedSubtitle by remember(request, compatibilityMode) { mutableStateOf(playerPreferences.subtitleTrack()) }
+  val subtitleTrackIdentity =
+    remember(request.subtitles, selectedSubtitle.label) {
+      resolveSubtitleTrackForCueMatch(request.subtitles, selectedSubtitle.label)?.url
+        ?: selectedSubtitle.label
+    }
+  val subtitleSyncKey =
+    remember(request, subtitleTrackIdentity) {
+      subtitleSyncKey(request, subtitleTrackIdentity)
+    }
+  // Read before the player is built, so its text renderer starts on this exact track's saved clock.
+  var subtitleOffsetMs by
+    remember(subtitleSyncKey) {
+      mutableLongStateOf(subtitleSyncStore.load(subtitleSyncKey))
+    }
+  // This object stays with the player when the subtitle track changes; only its clock value moves.
+  val subtitleOffset = remember(request) { AtomicLong(subtitleOffsetMs) }
   val localPlayer =
     remember(request, compatibilityMode, audioPassthroughMode) {
       createHlsPlayer(
@@ -949,6 +957,25 @@ internal fun HlsPlayerScreen(
         passthroughMode = audioPassthroughMode,
       )
     }
+
+  // Rapid remote repeats should update the renderer, not hammer SharedPreferences. The last value
+  // is also flushed when the player leaves, so closing immediately after a nudge is safe.
+  LaunchedEffect(subtitleSyncKey, subtitleOffsetMs) {
+    delay(400L)
+    subtitleSyncStore.save(subtitleSyncKey, subtitleOffsetMs)
+  }
+  DisposableEffect(subtitleSyncKey, subtitleSyncStore) {
+    val keyForThisTrack = subtitleSyncKey
+    val offsetClockForThisTrack = subtitleOffset
+    onDispose {
+      subtitleSyncStore.save(keyForThisTrack, offsetClockForThisTrack.get())
+    }
+  }
+  LaunchedEffect(subtitleSyncKey, localPlayer) {
+    if (subtitleOffset.getAndSet(subtitleOffsetMs) != subtitleOffsetMs) {
+      refreshSubtitleRenderer(localPlayer)
+    }
+  }
   val player: Player =
     remember(localPlayer, isTelevision) {
       createCastAwarePlayer(context, localPlayer, isTelevision)
@@ -1093,7 +1120,6 @@ internal fun HlsPlayerScreen(
     if (isCasting) return
     subtitleOffsetMs = safeOffsetMs
     subtitleOffset.set(safeOffsetMs)
-    subtitleSyncStore.save(subtitleSyncKey, safeOffsetMs)
     refreshSubtitleRenderer(localPlayer)
   }
 
@@ -1367,6 +1393,7 @@ internal fun HlsPlayerScreen(
           when (groupId) {
             GROUP_SUBTITLE ->
               subtitleOptions.firstOrNull { it.label == itemId }?.let { option ->
+                subtitleSyncStore.save(subtitleSyncKey, subtitleOffsetMs)
                 selectedSubtitle = option
                 playerPreferences.setSubtitleTrack(option)
                 selectSubtitleTrack(player, option)
@@ -2558,6 +2585,7 @@ internal fun HlsPlayerScreen(
           playerPreferences.setAudioPassthrough(mode)
         },
         onSubtitleSelected = { option ->
+          subtitleSyncStore.save(subtitleSyncKey, subtitleOffsetMs)
           selectedSubtitle = option
           playerPreferences.setSubtitleTrack(option)
           selectSubtitleTrack(player, option)
@@ -2608,6 +2636,7 @@ internal fun HlsPlayerScreen(
             exo.playWhenReady = playState
             exo.prepare()
           }
+          subtitleSyncStore.save(subtitleSyncKey, subtitleOffsetMs)
           selectedSubtitle = SubtitleTrackOption(newTrack.label)
         },
       )
@@ -3441,7 +3470,7 @@ private fun ModernTransportControl(
 
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
-private fun SubtitleSyncMiniOverlay(
+internal fun SubtitleSyncMiniOverlay(
   player: Player,
   request: HlsStreamRequest,
   selectedSubtitleLabel: String,
@@ -3451,37 +3480,28 @@ private fun SubtitleSyncMiniOverlay(
   onClose: () -> Unit,
 ) {
   val firstChoiceFocus = remember { FocusRequester() }
-  val wasPlaying = remember { player.playWhenReady || player.isPlaying }
-  val initialPositionMs = remember { player.currentPosition.coerceAtLeast(0L) }
   var positionMs by remember { mutableLongStateOf(player.currentPosition.coerceAtLeast(0L)) }
   var allCues by remember { mutableStateOf<List<SubtitleCue>>(emptyList()) }
   var cueLoadState by remember { mutableStateOf(SubtitleCueLoadState.LOADING) }
-  var matchedCueStartMs by remember { mutableStateOf<Long?>(null) }
-  val listState = rememberLazyListState()
-
-  var showLineList by remember { mutableStateOf(true) }
-  var selectedCueText by remember { mutableStateOf<String?>(null) }
   var isPlayingState by remember { mutableStateOf(player.isPlaying || player.playWhenReady) }
+  var targetCueStartMs by remember(selectedSubtitleLabel) { mutableStateOf<Long?>(null) }
+  var session by
+    remember(request, selectedSubtitleLabel) {
+      mutableStateOf(SubtitleSyncSession(openingOffsetMs = offsetMs))
+    }
 
-  // Pause so the spoken line stays under the cue the viewer is about to pick; resume on close.
-  DisposableEffect(isCasting) {
-    if (!isCasting) {
-      positionMs = player.currentPosition.coerceAtLeast(0L)
-      player.pause()
-      isPlayingState = false
-    }
-    onDispose {
-      if (!isCasting && wasPlaying) {
-        player.playWhenReady = true
-      }
-    }
+  // External controls can also nudge the same clock while this overlay is open.
+  LaunchedEffect(offsetMs) {
+    session = session.acceptExternalOffset(offsetMs)
   }
 
-  LaunchedEffect(player.isPlaying) {
-    isPlayingState = player.isPlaying
-    while (player.isPlaying) {
+  // This is deliberately a live tool: merely opening it never changes play/pause state. Poll the
+  // playhead continuously so a cue is matched to the instant the viewer presses Sync now.
+  LaunchedEffect(player, isCasting) {
+    while (true) {
       positionMs = player.currentPosition.coerceAtLeast(0L)
-      delay(200L)
+      isPlayingState = player.isPlaying || player.playWhenReady
+      delay(if (isPlayingState) 100L else 250L)
     }
   }
 
@@ -3512,37 +3532,52 @@ private fun SubtitleSyncMiniOverlay(
       }
   }
 
-  val nearbyCues = remember(allCues, positionMs) { nearbySubtitleCues(allCues, positionMs) }
-  val onScreenCue = remember(player.currentCues, positionMs) { onScreenSubtitleCue(player.currentCues) }
+  LaunchedEffect(cueLoadState, allCues) {
+    if (cueLoadState == SubtitleCueLoadState.READY && targetCueStartMs == null) {
+      targetCueStartMs =
+        suggestedSubtitleCue(
+            cues = allCues,
+            playbackPositionMs = player.currentPosition.coerceAtLeast(0L),
+            offsetMs = session.currentOffsetMs,
+          )
+          ?.startMs
+    }
+  }
 
-  LaunchedEffect(cueLoadState, nearbyCues.isNotEmpty(), onScreenCue != null) {
+  LaunchedEffect(cueLoadState, isCasting) {
     delay(100L)
     runCatching { firstChoiceFocus.requestFocus() }
   }
 
-  LaunchedEffect(nearbyCues, positionMs) {
-    val focusIndex =
-      nearbyCues
-        .indexOfFirst { positionMs in it.startMs..it.endMs }
-        .takeIf { it >= 0 }
-        ?: nearbyCues.indexOfFirst { it.startMs >= positionMs }.takeIf { it >= 0 }
-        ?: 0
-    if (nearbyCues.isNotEmpty()) {
-      listState.scrollToItem(focusIndex.coerceIn(0, nearbyCues.lastIndex))
+  val targetCueIndex =
+    remember(allCues, targetCueStartMs) {
+      allCues.indexOfFirst { it.startMs == targetCueStartMs }
     }
+  val targetCue = allCues.getOrNull(targetCueIndex)
+
+  fun applySession(next: SubtitleSyncSession) {
+    session = next
+    onOffsetSelected(next.currentOffsetMs)
   }
 
-  Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+  fun moveTargetCue(delta: Int) {
+    if (allCues.isEmpty()) return
+    val current = targetCueIndex.takeIf { it >= 0 } ?: 0
+    targetCueStartMs = allCues[(current + delta).coerceIn(0, allCues.lastIndex)].startMs
+  }
+
+  BoxWithConstraints(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+    val compactHeight = maxHeight < 430.dp
     Column(
       modifier =
         Modifier
-          .padding(bottom = 96.dp, start = 18.dp, end = 18.dp)
+          .padding(top = if (compactHeight) 8.dp else 18.dp, start = 18.dp, end = 18.dp)
           .fillMaxWidth()
-          .widthIn(max = 720.dp)
-          .clip(RoundedCornerShape(22.dp))
-          .background(NightSurface.copy(alpha = .97f))
-          .border(1.dp, SoftWhite.copy(alpha = .16f), RoundedCornerShape(22.dp))
-          .padding(horizontal = 14.dp, vertical = 12.dp),
+          .widthIn(max = 680.dp)
+          .clip(RoundedCornerShape(18.dp))
+          .background(NightSurface.copy(alpha = .94f))
+          .border(1.dp, SoftWhite.copy(alpha = .18f), RoundedCornerShape(18.dp))
+          .padding(horizontal = 14.dp, vertical = if (compactHeight) 8.dp else 12.dp),
     ) {
       Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(
@@ -3554,22 +3589,24 @@ private fun SubtitleSyncMiniOverlay(
         Spacer(modifier = Modifier.width(8.dp))
         Column(modifier = Modifier.weight(1f)) {
           Text(
-            if (isCasting) "Subtitle sync" else "Subtitle sync · ${formatPlayerTime(positionMs)}",
+            if (isCasting) "Subtitle sync" else "Live subtitle sync · ${formatPlayerTime(positionMs)}",
             color = SoftWhite,
             fontWeight = FontWeight.Black,
             fontSize = 13.sp,
             maxLines = 1,
           )
-          Text(
-            if (isCasting) {
-              "The receiver owns the timing while casting"
-            } else {
-              "Pick matching line or fine-tune timing · ${subtitleSyncHeadline(offsetMs)}"
-            },
-            color = MutedBlue,
-            fontSize = 11.sp,
-            maxLines = 2,
-          )
+          if (!compactHeight || isCasting) {
+            Text(
+              if (isCasting) {
+                "The receiver owns the timing while casting"
+              } else {
+                "Video keeps playing while every change is applied"
+              },
+              color = MutedBlue,
+              fontSize = 11.sp,
+              maxLines = 2,
+            )
+          }
         }
         if (!isCasting) {
           ModernTransportControl(
@@ -3595,180 +3632,332 @@ private fun SubtitleSyncMiniOverlay(
           size = 34.dp,
           onClick = onClose,
           onInteraction = {},
+          modifier = if (isCasting) Modifier.focusRequester(firstChoiceFocus) else Modifier,
         )
       }
 
       if (!isCasting) {
-        Spacer(modifier = Modifier.height(10.dp))
-
-        if (selectedCueText != null && !showLineList) {
-          Row(
-            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-          ) {
-            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-              Text(
-                "SELECTED LINE",
-                color = GizMint,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Black,
-                letterSpacing = 1.2.sp,
-              )
-              Text(
-                selectedCueText.orEmpty(),
-                color = SoftWhite,
-                fontSize = 12.sp,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-              )
-            }
-            SettingsChoiceChip(
-              label = "Change Line",
-              selected = false,
-              onClick = { showLineList = true },
-            )
-          }
-        }
-
-        if (showLineList) {
-          when {
-            cueLoadState == SubtitleCueLoadState.LOADING -> {
-              Text("Loading subtitle lines…", color = MutedBlue, fontSize = 12.sp)
-            }
-            nearbyCues.isNotEmpty() -> {
-              LazyColumn(
-                state = listState,
-                modifier =
-                  Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 240.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(DeepSpace.copy(alpha = .72f)),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-              ) {
-                itemsIndexed(nearbyCues, key = { _, cue -> "${cue.startMs}:${cue.text}" }) { index, cue ->
-                  SubtitleCuePickRow(
-                    cue = cue,
-                    selected = matchedCueStartMs == cue.startMs,
-                    onClick = {
-                      matchedCueStartMs = cue.startMs
-                      selectedCueText = cue.text
-                      onOffsetSelected(subtitleOffsetForCueMatch(initialPositionMs, cue.startMs))
-                      if (!player.isPlaying) {
-                        player.seekTo(initialPositionMs)
-                      }
-                      showLineList = false
-                    },
-                    modifier = if (index == 0) Modifier.focusRequester(firstChoiceFocus) else Modifier,
-                  )
-                }
-              }
-            }
-            else -> {
-              Text(
-                "No nearby lines from the subtitle file. Use the fine-tune buttons below.",
-                color = MutedBlue,
-                fontSize = 12.sp,
-              )
-            }
-          }
-
-          if (onScreenCue != null) {
-            Spacer(modifier = Modifier.height(8.dp))
-            SettingsChoiceChip(
-              label = "This on-screen line starts now",
-              selected = matchedCueStartMs == onScreenCue.startMs,
-              onClick = {
-                matchedCueStartMs = onScreenCue.startMs
-                selectedCueText = onScreenCue.text
-                onOffsetSelected(subtitleOffsetForCueMatch(initialPositionMs, onScreenCue.startMs))
-                if (!player.isPlaying) {
-                  player.seekTo(initialPositionMs)
-                }
-                showLineList = false
-              },
-              modifier =
-                if (nearbyCues.isEmpty() && cueLoadState != SubtitleCueLoadState.LOADING) {
-                  Modifier.focusRequester(firstChoiceFocus)
-                } else {
-                  Modifier
-                },
-            )
-            Text(
-              onScreenCue.text,
-              color = SoftWhite.copy(alpha = .85f),
-              fontSize = 11.sp,
-              maxLines = 2,
-              overflow = TextOverflow.Ellipsis,
-              modifier = Modifier.padding(top = 4.dp, start = 4.dp, end = 4.dp),
-            )
-          }
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(if (compactHeight) 6.dp else 10.dp))
         Row(
-          modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+          modifier =
+            Modifier
+              .fillMaxWidth()
+              .clip(RoundedCornerShape(12.dp))
+              .background(DeepSpace.copy(alpha = .72f))
+              .padding(horizontal = 12.dp, vertical = if (compactHeight) 5.dp else 8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Column(modifier = Modifier.weight(1f)) {
+            Text(
+              subtitleSyncHeadline(session.currentOffsetMs),
+              color = GizMint,
+              fontWeight = FontWeight.Black,
+              fontSize = 17.sp,
+            )
+            if (!compactHeight) {
+              Text(
+                subtitleSyncDescription(session.currentOffsetMs),
+                color = SoftWhite.copy(alpha = .82f),
+                fontSize = 11.sp,
+              )
+            }
+          }
+          Text(
+            subtitleSyncLabel(session.currentOffsetMs),
+            color = SoftWhite,
+            fontWeight = FontWeight.Black,
+            fontSize = 18.sp,
+          )
+        }
+
+        Spacer(modifier = Modifier.height(if (compactHeight) 6.dp else 8.dp))
+        Row(
+          modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.spacedBy(7.dp),
           verticalAlignment = Alignment.CenterVertically,
         ) {
-          SettingsChoiceChip(
-            label = "Earlier ½s",
-            selected = false,
-            onClick = {
-              onOffsetSelected(adjustSubtitleSync(offsetMs, -500L))
-              if (!player.isPlaying) player.seekTo(player.currentPosition)
-            },
-            modifier =
-              if (
-                !showLineList ||
-                  (nearbyCues.isEmpty() &&
-                    onScreenCue == null &&
-                    cueLoadState != SubtitleCueLoadState.LOADING)
-              ) {
-                Modifier.focusRequester(firstChoiceFocus)
-              } else {
-                Modifier
-              },
+          SubtitleSyncNudgeButton(
+            label = "Subtitles earlier",
+            direction = -1,
+            currentOffsetMs = session.currentOffsetMs,
+            onNudge = { deltaMs -> applySession(session.nudge(deltaMs)) },
+            modifier = Modifier.weight(1f).focusRequester(firstChoiceFocus),
           )
-          SettingsChoiceChip(
-            label = "Earlier",
-            selected = false,
-            onClick = {
-              onOffsetSelected(adjustSubtitleSync(offsetMs, -100L))
-              if (!player.isPlaying) player.seekTo(player.currentPosition)
-            },
-          )
-          SettingsChoiceChip(
+          SubtitleSyncActionButton(
             label = "Reset",
-            selected = offsetMs == 0L,
-            onClick = {
-              matchedCueStartMs = null
-              selectedCueText = null
-              showLineList = true
-              onOffsetSelected(0L)
-              if (!player.isPlaying) player.seekTo(initialPositionMs)
-            },
+            enabled = session.currentOffsetMs != 0L,
+            onClick = { applySession(session.reset()) },
+            modifier = Modifier.widthIn(min = 74.dp),
           )
-          SettingsChoiceChip(
-            label = "Later",
-            selected = false,
-            onClick = {
-              onOffsetSelected(adjustSubtitleSync(offsetMs, 100L))
-              if (!player.isPlaying) player.seekTo(player.currentPosition)
-            },
+          SubtitleSyncNudgeButton(
+            label = "Subtitles later",
+            direction = 1,
+            currentOffsetMs = session.currentOffsetMs,
+            onNudge = { deltaMs -> applySession(session.nudge(deltaMs)) },
+            modifier = Modifier.weight(1f),
           )
-          SettingsChoiceChip(
-            label = "Later ½s",
-            selected = false,
-            onClick = {
-              onOffsetSelected(adjustSubtitleSync(offsetMs, 500L))
-              if (!player.isPlaying) player.seekTo(player.currentPosition)
-            },
+        }
+
+        if (!compactHeight) {
+          Text(
+            "100 ms per press · hold Earlier or Later for faster adjustment",
+            color = MutedBlue,
+            fontSize = 10.sp,
+            modifier = Modifier.padding(top = 5.dp, start = 2.dp),
           )
+        }
+
+        Spacer(modifier = Modifier.height(if (compactHeight) 6.dp else 9.dp))
+        Column(
+          modifier =
+            Modifier
+              .fillMaxWidth()
+              .clip(RoundedCornerShape(12.dp))
+              .background(DeepSpace.copy(alpha = .58f))
+              .padding(horizontal = 11.dp, vertical = if (compactHeight) 6.dp else 9.dp),
+        ) {
+          when {
+            cueLoadState == SubtitleCueLoadState.LOADING ->
+              Text("Loading a line to match…", color = MutedBlue, fontSize = 11.sp)
+            targetCue != null -> {
+              Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                  "PRESS WHEN HEARD",
+                  color = GizMint,
+                  fontSize = 10.sp,
+                  fontWeight = FontWeight.Black,
+                  letterSpacing = 1.sp,
+                  modifier = Modifier.weight(1f),
+                )
+                Text(
+                  formatPlayerTime(targetCue.startMs),
+                  color = MutedBlue,
+                  fontSize = 10.sp,
+                )
+              }
+              Text(
+                targetCue.text.replace('\n', ' '),
+                color = SoftWhite,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 12.sp,
+                maxLines = if (compactHeight) 1 else 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 3.dp, bottom = if (compactHeight) 4.dp else 7.dp),
+              )
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+              ) {
+                SubtitleSyncActionButton(
+                  label = "Previous line",
+                  enabled = targetCueIndex > 0,
+                  onClick = { moveTargetCue(-1) },
+                )
+                SubtitleSyncActionButton(
+                  label = "Sync now",
+                  prominent = true,
+                  onClick = {
+                    applySession(
+                      session.matchNow(
+                        playbackPositionMs = player.currentPosition.coerceAtLeast(0L),
+                        cue = targetCue,
+                      )
+                    )
+                  },
+                  modifier = Modifier.weight(1f),
+                )
+                SubtitleSyncActionButton(
+                  label = "Next line",
+                  enabled = targetCueIndex in 0 until allCues.lastIndex,
+                  onClick = { moveTargetCue(1) },
+                )
+              }
+            }
+            else ->
+              Text(
+                "Line matching is unavailable for this track. Manual Earlier and Later controls still work.",
+                color = MutedBlue,
+                fontSize = 11.sp,
+              )
+          }
+        }
+
+        Row(
+          modifier = Modifier.fillMaxWidth().padding(top = if (compactHeight) 6.dp else 8.dp),
+          horizontalArrangement = Arrangement.End,
+        ) {
+          SubtitleSyncActionButton(
+            label = "Undo changes",
+            enabled = session.currentOffsetMs != session.openingOffsetMs,
+            onClick = { applySession(session.undo()) },
+          )
+          Spacer(modifier = Modifier.width(7.dp))
+          SubtitleSyncActionButton(label = "Done", prominent = true, onClick = onClose)
         }
       }
     }
+  }
+}
+
+@Composable
+private fun SubtitleSyncNudgeButton(
+  label: String,
+  direction: Int,
+  currentOffsetMs: Long,
+  onNudge: (Long) -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  var focused by remember { mutableStateOf(false) }
+  val directionSign = if (direction < 0) -1L else 1L
+  val activationDescription =
+    "$label. ${subtitleSyncDescription(currentOffsetMs)}. 100 milliseconds per press; hold for faster adjustment."
+
+  Box(
+    modifier =
+      modifier
+        .height(52.dp)
+        .clip(RoundedCornerShape(10.dp))
+        .background(if (focused) SoftWhite else DeepSpace)
+        .border(2.dp, if (focused) GizBlue else SoftWhite.copy(alpha = .12f), RoundedCornerShape(10.dp))
+        .onFocusChanged { focused = it.isFocused }
+        .onKeyEvent { event ->
+          val activates =
+            event.key == Key.DirectionCenter || event.key == Key.Enter || event.key == Key.NumPadEnter
+          if (activates && event.type == KeyEventType.KeyDown) {
+            val stepMs = subtitleSyncNudgeStepMs(event.nativeKeyEvent.repeatCount)
+            onNudge(directionSign * stepMs)
+            true
+          } else {
+            activates && event.type == KeyEventType.KeyUp
+          }
+        }
+        .focusable()
+        .pointerInput(directionSign, onNudge) {
+          detectTapGestures(
+            onPress = {
+              onNudge(directionSign * subtitleSyncNudgeStepMs(repeatCount = 0))
+              coroutineScope {
+                val repeatJob = launch {
+                  delay(420L)
+                  var repeatCount = 1
+                  while (true) {
+                    onNudge(directionSign * subtitleSyncNudgeStepMs(repeatCount))
+                    repeatCount++
+                    delay(120L)
+                  }
+                }
+                try {
+                  tryAwaitRelease()
+                } finally {
+                  repeatJob.cancel()
+                }
+              }
+            }
+          )
+        }
+        .semantics {
+          role = Role.Button
+          contentDescription = activationDescription
+          semanticsOnClick {
+            onNudge(directionSign * subtitleSyncNudgeStepMs(repeatCount = 0))
+            true
+          }
+        }
+        .padding(horizontal = 9.dp),
+    contentAlignment = Alignment.Center,
+  ) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+      Text(
+        label,
+        color = if (focused) DeepSpace else SoftWhite,
+        fontWeight = FontWeight.Black,
+        fontSize = 11.sp,
+        maxLines = 1,
+      )
+      Text(
+        "100 ms · hold",
+        color = if (focused) DeepSpace.copy(alpha = .72f) else MutedBlue,
+        fontSize = 9.sp,
+        maxLines = 1,
+      )
+    }
+  }
+}
+
+@Composable
+private fun SubtitleSyncActionButton(
+  label: String,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier,
+  enabled: Boolean = true,
+  prominent: Boolean = false,
+) {
+  var focused by remember { mutableStateOf(false) }
+  val background =
+    when {
+      !enabled -> SoftWhite.copy(alpha = .06f)
+      focused -> SoftWhite
+      prominent -> GizMint
+      else -> SoftWhite.copy(alpha = .12f)
+    }
+  val foreground =
+    when {
+      !enabled -> MutedBlue.copy(alpha = .55f)
+      focused || prominent -> DeepSpace
+      else -> SoftWhite
+    }
+  val inputModifier =
+    if (enabled) {
+      Modifier
+        .onKeyEvent { event ->
+          val activates =
+            event.key == Key.DirectionCenter || event.key == Key.Enter || event.key == Key.NumPadEnter
+          if (
+            activates && event.type == KeyEventType.KeyDown &&
+              event.nativeKeyEvent.repeatCount == 0
+          ) {
+            onClick()
+            true
+          } else {
+            activates && event.type == KeyEventType.KeyUp
+          }
+        }
+        .focusable()
+        .pointerInput(onClick) { detectTapGestures { onClick() } }
+    } else {
+      Modifier
+    }
+
+  Box(
+    modifier =
+      modifier
+        .height(40.dp)
+        .clip(RoundedCornerShape(9.dp))
+        .background(background)
+        .border(2.dp, if (focused) GizBlue else Color.Transparent, RoundedCornerShape(9.dp))
+        .onFocusChanged { focused = it.isFocused }
+        .then(inputModifier)
+        .semantics {
+          role = Role.Button
+          contentDescription = if (enabled) label else "$label unavailable"
+          if (enabled) {
+            semanticsOnClick {
+              onClick()
+              true
+            }
+          }
+        }
+        .padding(horizontal = 12.dp),
+    contentAlignment = Alignment.Center,
+  ) {
+    Text(
+      label,
+      color = foreground,
+      fontWeight = FontWeight.Bold,
+      fontSize = 11.sp,
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis,
+    )
   }
 }
 
@@ -3776,85 +3965,6 @@ private enum class SubtitleCueLoadState {
   LOADING,
   READY,
   UNAVAILABLE,
-}
-
-@Composable
-private fun SubtitleCuePickRow(
-  cue: SubtitleCue,
-  selected: Boolean,
-  onClick: () -> Unit,
-  modifier: Modifier = Modifier,
-) {
-  var focused by remember { mutableStateOf(false) }
-  val background =
-    when {
-      focused -> SoftWhite
-      selected -> GizMint.copy(alpha = .35f)
-      else -> Color.Transparent
-    }
-  val foreground = if (focused) DeepSpace else SoftWhite
-  Row(
-    modifier =
-      modifier
-        .fillMaxWidth()
-        .clip(RoundedCornerShape(10.dp))
-        .background(background)
-        .border(2.dp, if (focused) GizBlue else Color.Transparent, RoundedCornerShape(10.dp))
-        .onFocusChanged { focused = it.isFocused }
-        .onKeyEvent { event ->
-          if (
-            event.type == KeyEventType.KeyDown &&
-              event.nativeKeyEvent.repeatCount == 0 &&
-              (event.key == Key.DirectionCenter || event.key == Key.Enter || event.key == Key.NumPadEnter)
-          ) {
-            onClick()
-            true
-          } else {
-            false
-          }
-        }
-        .focusable()
-        .pointerInput(onClick) { detectTapGestures { onClick() } }
-        .semantics {
-          role = Role.Button
-          semanticsOnClick {
-            onClick()
-            true
-          }
-        }
-        .padding(horizontal = 12.dp, vertical = 8.dp),
-    verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(10.dp),
-  ) {
-    Text(
-      formatPlayerTime(cue.startMs),
-      color = if (focused) DeepSpace else GizMint,
-      fontWeight = FontWeight.Bold,
-      fontSize = 11.sp,
-      maxLines = 1,
-    )
-    Text(
-      cue.text.replace('\n', ' '),
-      color = foreground,
-      fontWeight = FontWeight.SemiBold,
-      fontSize = 12.sp,
-      maxLines = 2,
-      overflow = TextOverflow.Ellipsis,
-      modifier = Modifier.weight(1f),
-    )
-  }
-}
-
-@androidx.annotation.OptIn(UnstableApi::class)
-internal fun onScreenSubtitleCue(cueGroup: CueGroup): SubtitleCue? {
-  val text =
-    cueGroup.cues
-      .mapNotNull { cue -> cue.text?.toString()?.trim()?.takeIf(String::isNotEmpty) }
-      .joinToString("\n")
-      .trim()
-  if (text.isEmpty()) return null
-  val startMs = (cueGroup.presentationTimeUs / 1_000L).coerceAtLeast(0L)
-  return SubtitleCue(startMs = startMs, endMs = startMs, text = text)
 }
 
 @Composable
@@ -4669,8 +4779,9 @@ internal fun selectSubtitleTrack(player: Player, option: SubtitleTrackOption) {
     if (option.override != null) {
       builder.setOverrideForType(option.override)
     } else {
-      // Auto English: pin a specific track. Media3 language preference alone picks the first
-      // English, which catalogs often ship out of sync; "English 2" is usually the match.
+      // Auto English: pin the catalog's highest-ranked ordinary English track. The resolver keeps
+      // the source order, so replacing its first choice with a fixed "English 2" guess can select
+      // a subtitle authored for a different cut of the title.
       preferredEnglishSubtitleOverride(player.currentTracks)?.let(builder::setOverrideForType)
       builder
         .setPreferredTextLanguages("en", "eng")
@@ -4739,10 +4850,11 @@ private fun preferredEnglishAudioOverride(tracks: Tracks): TrackSelectionOverrid
 }
 
 /**
- * Prefer the second non-HI English text track when more than one exists.
+ * Prefer the first non-HI English text track in the catalog's own order.
  *
- * The chooser labels that track "English 2". Stream catalogs commonly attach a first English
- * file that drifts from the video and a second that lines up; Auto used to lock onto the first.
+ * Providers rank their results using release compatibility and trust/download signals that the
+ * player cannot reconstruct from Media3's track metadata. Keeping that first result is safer than
+ * globally guessing that the second English file belongs to the playing encode.
  */
 @androidx.annotation.OptIn(UnstableApi::class)
 internal fun preferredEnglishSubtitleOverride(tracks: Tracks): TrackSelectionOverride? {
@@ -4760,7 +4872,7 @@ internal fun preferredEnglishSubtitleOverride(tracks: Tracks): TrackSelectionOve
     english
       .filterNot { (_, _, format) -> isHearingImpairedSubtitleLabel(format.label) }
       .ifEmpty { english }
-  val chosen = preferred.getOrNull(1) ?: preferred.first()
+  val chosen = preferred.first()
   return TrackSelectionOverride(chosen.first.mediaTrackGroup, chosen.second)
 }
 
@@ -4773,7 +4885,7 @@ internal fun preferredEnglishSubtitleIndex(
   val english = (0 until count).filter(isEnglish)
   if (english.isEmpty()) return null
   val preferred = english.filterNot(isHearingImpaired).ifEmpty { english }
-  return preferred.getOrNull(1) ?: preferred.first()
+  return preferred.first()
 }
 
 internal fun isEnglishSubtitleLabel(label: String?, language: String?): Boolean {

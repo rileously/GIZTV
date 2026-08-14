@@ -9,7 +9,7 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** One timed line from an external VTT/SRT file, used by pause-and-match sync. */
+/** One timed line from an external VTT/SRT file, used by live press-when-heard sync. */
 internal data class SubtitleCue(
   val startMs: Long,
   val endMs: Long,

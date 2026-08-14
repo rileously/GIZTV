@@ -107,7 +107,7 @@ class SubtitleCueParserTest {
         ExternalSubtitleTrack("https://a/es.vtt", "Spanish", "es", "text/vtt"),
       )
     assertEquals("https://a/en2.vtt", resolveSubtitleTrackForCueMatch(tracks, "English 2")?.url)
-    assertEquals("https://a/en2.vtt", resolveSubtitleTrackForCueMatch(tracks, "Auto English")?.url)
+    assertEquals("https://a/en1.vtt", resolveSubtitleTrackForCueMatch(tracks, "Auto English")?.url)
     assertTrue(resolveSubtitleTrackForCueMatch(tracks, "Spanish")?.label == "Spanish")
   }
 }

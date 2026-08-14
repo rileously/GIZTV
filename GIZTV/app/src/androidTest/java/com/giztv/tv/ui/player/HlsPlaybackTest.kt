@@ -779,10 +779,16 @@ class HlsPlaybackTest {
   }
 
   @Test
-  fun subtitleSync_isSharedByEpisodesOfOneShowAndKeptApartFromOtherTitles() {
+  fun subtitleSync_isKeptApartByEpisodeAndProvider() {
     val episodeOne = episodeRequest(showId = 12, episodeNumber = 1)
     val episodeTwo = episodeRequest(showId = 12, episodeNumber = 2)
     val otherShow = episodeRequest(showId = 13, episodeNumber = 1)
+    val sameEpisodeOnVidRock =
+      episodeRequest(
+        showId = 12,
+        episodeNumber = 1,
+        sourcePageUrl = "https://vidrock.ru/tv/12/1/1",
+      )
     val movie =
       HlsStreamRequest(
         url = "https://cdn.example.com/movie.m3u8",
@@ -790,17 +796,34 @@ class HlsPlaybackTest {
         sourcePageUrl = "https://example.com/watch/movie/77",
       )
 
-    assertEquals(subtitleSyncKey(episodeOne), subtitleSyncKey(episodeTwo))
+    assertEquals(
+      subtitleSyncKey(episodeOne),
+      subtitleSyncKey(episodeOne.copy(url = "https://cdn.example.com/new-token.m3u8")),
+    )
+    assertNotEquals(subtitleSyncKey(episodeOne), subtitleSyncKey(episodeTwo))
+    assertNotEquals(subtitleSyncKey(episodeOne), subtitleSyncKey(sameEpisodeOnVidRock))
     assertNotEquals(subtitleSyncKey(episodeOne), subtitleSyncKey(otherShow))
     assertNotEquals(subtitleSyncKey(episodeOne), subtitleSyncKey(movie))
+    assertNotEquals(
+      subtitleSyncKey(episodeOne, "https://subtitles.example.com/english.vtt"),
+      subtitleSyncKey(episodeOne, "https://subtitles.example.com/english-forced.vtt"),
+    )
+    assertEquals(
+      subtitleSyncKey(episodeOne, "https://subtitles.example.com/english.vtt?token=first"),
+      subtitleSyncKey(episodeOne, "https://subtitles.example.com/english.vtt?token=refreshed"),
+    )
   }
 
-  private fun episodeRequest(showId: Int, episodeNumber: Int): HlsStreamRequest {
-    val pageUrl = "https://example.com/watch/tv/$showId/1/$episodeNumber"
+  private fun episodeRequest(
+    showId: Int,
+    episodeNumber: Int,
+    sourcePageUrl: String = "https://player.videasy.to/tv/$showId/1/$episodeNumber",
+  ): HlsStreamRequest {
+    val pageUrl = "https://vidfast.vc/tv/$showId/1/$episodeNumber"
     return HlsStreamRequest(
       url = "https://cdn.example.com/episode-$episodeNumber.m3u8",
       headers = emptyMap(),
-      sourcePageUrl = pageUrl,
+      sourcePageUrl = sourcePageUrl,
       context =
         PlaybackContext(
           pageUrl = pageUrl,

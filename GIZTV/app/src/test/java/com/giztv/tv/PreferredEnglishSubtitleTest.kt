@@ -11,7 +11,7 @@ import org.junit.Test
 class PreferredEnglishSubtitleTest {
 
   @Test
-  fun autoEnglish_prefersSecondEnglishWhenTwoExist() {
+  fun autoEnglish_keepsTheCatalogsFirstEnglishWhenTwoExist() {
     val labels = listOf("English", "English", "Spanish")
     val index =
       preferredEnglishSubtitleIndex(
@@ -19,8 +19,7 @@ class PreferredEnglishSubtitleTest {
         isEnglish = { isEnglishSubtitleLabel(labels[it], null) },
         isHearingImpaired = { isHearingImpairedSubtitleLabel(labels[it]) },
       )
-    // Same as the chooser's "English 2" — the track viewers switch to for sync.
-    assertEquals(1, index)
+    assertEquals(0, index)
   }
 
   @Test
@@ -46,8 +45,7 @@ class PreferredEnglishSubtitleTest {
         isEnglish = { isEnglishSubtitleLabel(labels[it], null) },
         isHearingImpaired = { isHearingImpairedSubtitleLabel(labels[it]) },
       )
-    // Among the two plain English tracks, prefer the second (chooser: English 2).
-    assertEquals(2, index)
+    assertEquals(1, index)
   }
 
   @Test
