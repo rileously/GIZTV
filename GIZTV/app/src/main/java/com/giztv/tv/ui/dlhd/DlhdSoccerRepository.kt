@@ -227,7 +227,7 @@ internal fun parseDlhdSoccerSchedule(
   while (matcher.find()) {
     val header = matcher.group(1) ?: continue
     val channelHtml = matcher.group(2) ?: continue
-    val event = parseEventBlock(header, channelHtml, dayStartUk, zone, category) ?: continue
+    val event = parseEventBlock(header, channelHtml, dayStartUk, zone, nowMs, category) ?: continue
     // One card per fixture: later duplicates (backup schedule columns) are ignored.
     if (!seen.add(event.id)) continue
     events.add(event)
@@ -381,6 +381,7 @@ private fun parseEventBlock(
   channelHtml: String,
   dayStartUk: Long?,
   zone: TimeZone,
+  nowMs: Long,
   category: String,
 ): DlhdSoccerEvent? {
   val timeMatcher = EVENT_TIME.matcher(header)
@@ -407,7 +408,7 @@ private fun parseEventBlock(
     channels = channels,
     ukTime = ukTime,
     startAtMs = startAtMs,
-    kickOffLabel = startAtMs?.let { formatKickOff(it, zone) } ?: ukTime,
+    kickOffLabel = startAtMs?.let { formatKickOff(it, zone, nowMs) } ?: ukTime,
   )
 }
 
@@ -508,12 +509,15 @@ internal fun ukKickOffMs(dayStartUk: Long, ukTime: String): Long? {
   return dayStartUk + TimeUnit.HOURS.toMillis(hour.toLong()) + TimeUnit.MINUTES.toMillis(minute.toLong())
 }
 
-private fun formatKickOff(momentMs: Long, zone: TimeZone): String {
+// The day this is read against is the one the rest of the parse used, not the wall clock: a
+// schedule parsed for a given moment must label its kick-offs against that same moment, or a
+// fixture reads as "today" to the day guard and carries a date to the viewer.
+private fun formatKickOff(momentMs: Long, zone: TimeZone, nowMs: Long): String {
   val clock = SimpleDateFormat("HH:mm", Locale.getDefault()).apply { timeZone = zone }
   val day = SimpleDateFormat("d MMM", Locale.getDefault()).apply { timeZone = zone }
   val todayStamp = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = zone }
   val time = clock.format(Date(momentMs))
-  return if (todayStamp.format(Date(momentMs)) == todayStamp.format(Date())) {
+  return if (todayStamp.format(Date(momentMs)) == todayStamp.format(Date(nowMs))) {
     time
   } else {
     "${day.format(Date(momentMs))} · $time"
