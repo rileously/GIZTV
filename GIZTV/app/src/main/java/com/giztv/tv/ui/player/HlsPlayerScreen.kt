@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.PackageManager
 import android.graphics.Color as AndroidColor
+import android.graphics.Rect as AndroidRect
 import android.media.AudioManager
 import android.provider.Settings
 import android.view.ViewGroup
@@ -117,6 +118,8 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -922,6 +925,9 @@ internal fun HlsPlayerScreen(
     }
   var isCasting by remember(request) { mutableStateOf(false) }
   var videoSize by remember(request) { mutableStateOf(VideoSize.UNKNOWN) }
+  // Where the picture sits on screen, handed to the system so picture in picture shrinks the video
+  // itself into the floating window instead of dissolving the whole screen into it.
+  var videoBounds by remember(request) { mutableStateOf<AndroidRect?>(null) }
   var inPictureInPicture by remember { mutableStateOf(false) }
   var selectedQuality by remember(request, compatibilityMode) {
     mutableStateOf(
@@ -1623,11 +1629,17 @@ internal fun HlsPlayerScreen(
           savePlaybackProgress()
         }
       }
+    // What the viewer left it doing, carried across the trip out of the app. ON_STOP pauses
+    // whatever was happening, so without remembering this the only thing ON_START could put back
+    // is "playing" — and a film deliberately paused before reaching for another app started itself
+    // again on the way back.
+    var playingWhenStopped = resumePlayWhenReady
     val observer =
       LifecycleEventObserver { _, event ->
         when (event) {
-          Lifecycle.Event.ON_START -> player.play()
+          Lifecycle.Event.ON_START -> if (playingWhenStopped) player.play()
           Lifecycle.Event.ON_STOP -> {
+            playingWhenStopped = player.playWhenReady
             savePlaybackProgress()
             player.pause()
           }
@@ -1851,6 +1863,7 @@ internal fun HlsPlayerScreen(
           videoHeight = videoSize.height,
         )
       },
+    videoBounds = videoBounds,
     onPlayPause = { play -> if (play) player.play() else player.pause() },
     onModeChanged = { inPictureInPicture = it },
   )
@@ -2175,9 +2188,18 @@ internal fun HlsPlayerScreen(
       // so the two move as one strip and the gesture reads as scrolling a feed rather than as
       // something being pulled over the top of what was playing.
       modifier =
-        Modifier.fillMaxSize().graphicsLayer {
-          translationY = if (reelMode) reelSlide.value else 0f
-        },
+        Modifier.fillMaxSize()
+          .onGloballyPositioned { coordinates ->
+            val bounds = coordinates.boundsInWindow()
+            videoBounds =
+              AndroidRect(
+                bounds.left.roundToInt(),
+                bounds.top.roundToInt(),
+                bounds.right.roundToInt(),
+                bounds.bottom.roundToInt(),
+              )
+          }
+          .graphicsLayer { translationY = if (reelMode) reelSlide.value else 0f },
     )
 
     val showPauseTip =

@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.Rect
 import android.graphics.drawable.Icon
 import android.os.Build
 import android.util.Rational
@@ -81,6 +82,7 @@ internal fun PictureInPictureEffect(
   enabled: Boolean,
   isPlaying: Boolean,
   aspectRatio: Rational,
+  videoBounds: Rect?,
   onPlayPause: (Boolean) -> Unit,
   onModeChanged: (Boolean) -> Unit,
 ) {
@@ -92,13 +94,14 @@ internal fun PictureInPictureEffect(
   // Read when the viewer actually leaves, which is long after the listener was registered.
   val currentAspectRatio by rememberUpdatedState(aspectRatio)
   val currentIsPlaying by rememberUpdatedState(isPlaying)
+  val currentVideoBounds by rememberUpdatedState(videoBounds)
 
   // Kept current so the window opens at the video's shape and its button matches what the video is
   // doing, both while it floats and at the moment the system enters on the viewer's behalf.
-  LaunchedEffect(activity, enabled, isPlaying, aspectRatio) {
+  LaunchedEffect(activity, enabled, isPlaying, aspectRatio, videoBounds) {
     runCatching {
       activity.setPictureInPictureParams(
-        pictureInPictureParams(activity, aspectRatio, isPlaying, autoEnter = enabled)
+        pictureInPictureParams(activity, aspectRatio, isPlaying, videoBounds, autoEnter = enabled)
       )
     }
   }
@@ -109,7 +112,13 @@ internal fun PictureInPictureEffect(
         if (currentEnabled && Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
           runCatching {
             activity.enterPictureInPictureMode(
-              pictureInPictureParams(activity, currentAspectRatio, currentIsPlaying, autoEnter = false)
+              pictureInPictureParams(
+                activity,
+                currentAspectRatio,
+                currentIsPlaying,
+                currentVideoBounds,
+                autoEnter = false,
+              )
             )
           }
         }
@@ -142,7 +151,13 @@ internal fun PictureInPictureEffect(
       // Leaving the player must not leave the rest of the app shrinking into a window.
       runCatching {
         activity.setPictureInPictureParams(
-          pictureInPictureParams(activity, currentAspectRatio, currentIsPlaying, autoEnter = false)
+          pictureInPictureParams(
+            activity,
+            currentAspectRatio,
+            currentIsPlaying,
+            currentVideoBounds,
+            autoEnter = false,
+          )
         )
       }
     }
@@ -154,12 +169,19 @@ private fun pictureInPictureParams(
   activity: Activity,
   aspectRatio: Rational,
   isPlaying: Boolean,
+  videoBounds: Rect?,
   autoEnter: Boolean,
 ): PictureInPictureParams {
   val builder =
     PictureInPictureParams.Builder()
       .setAspectRatio(aspectRatio)
       .setActions(listOf(playPauseAction(activity, isPlaying)))
+  // Where the picture is on the way out, so the system shrinks the video itself into the window
+  // rather than cross-fading the whole screen into it. An empty rectangle is worse than none.
+  val sourceRectHint = videoBounds?.takeIf { !it.isEmpty }
+  if (sourceRectHint != null) {
+    builder.setSourceRectHint(sourceRectHint)
+  }
   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
     builder.setAutoEnterEnabled(autoEnter)
     builder.setSeamlessResizeEnabled(true)
