@@ -60,9 +60,19 @@ jobs:
           # What changed in this build, and nothing else. Edit this every release.
           RELEASE_NOTES: |
             What changed:
-            - The short drama categories can be scrolled on a phone held upright. The row was wider
-              than the screen, so the last of them — Marriage among them — could not be reached by
-              touch at all. A remote and a television were never affected.
+            - The download is a third of the size it was: 22 MB becomes 6 MB, which is every
+              install by hand and every update after it.
+            - 206 more channels in the IPTV guide. They are served in plain text, so they were
+              hidden rather than listed and left to fail; now the app is allowed to fetch exactly
+              those and nothing else.
+            - A film paused before you left the app is still paused when you come back. It used to
+              start itself again.
+            - Picture in picture shrinks the picture into the window rather than the whole screen.
+            - If GIZTV closes unexpectedly it now writes down why, and offers to pass it on next
+              time you open it. Nothing is sent unless you choose to send it.
+            - Titles on Server 1 no longer occasionally start with no sound: one track out of the
+              set was being taken for the film itself.
+            - Kick-off times in the soccer schedule no longer carry the wrong date.
           # 1.53.0 changed applicationId, so anything older than it still cannot be updated over
           # and has to be reinstalled by hand. Kept apart from the notes above so the release page
           # can put the first-install block between the two. Drop this once 1.52.x is gone.
