@@ -154,6 +154,7 @@ import androidx.media3.cast.MediaRouteButtonFactory
 import androidx.media3.cast.RemoteCastPlayer
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.PlaybackStatsListener
 import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
 import androidx.media3.exoplayer.drm.FrameworkMediaDrm
 import androidx.media3.exoplayer.drm.LocalMediaDrmCallback
@@ -286,12 +287,14 @@ private const val AUTO_QUALITY_BANDWIDTH_FRACTION = .7f
 private const val FAST_LINK_BITRATE_BPS = 8_000_000L
 
 /**
- * A link with room for the highest rendition and the safety margin the selector keeps back.
+ * What a link must have shown, on a film played moments ago, before the next one may open at 720p.
  *
- * The adaptive selector spends only [AUTO_QUALITY_BANDWIDTH_FRACTION] of what it measures, so this
- * is a good deal more than the bitrate of anything it will actually choose.
+ * Well above the bitrate of the rendition it unlocks. The measurement describes the link, not the
+ * edge serving the next title, and the two are not the same: the margin is what covers the
+ * difference. Nothing here unlocks the top of the ladder — the last rung is still earned by
+ * playing without interruption, because that is the only evidence about this particular stream.
  */
-private const val UNRESTRICTED_START_BITRATE_BPS = 20_000_000L
+private const val BALANCED_START_BITRATE_BPS = 12_000_000L
 private const val RELIABLE_MIN_BUFFER_MS = 30_000
 private const val RELIABLE_MAX_BUFFER_MS = 75_000
 /** Start and seek should feel like desktop VLC; the deeper min/max cushion still fills afterwards. */
@@ -645,10 +648,15 @@ internal fun automaticQualityPromotion(phase: AutomaticQualityPhase): AutomaticQ
  */
 internal fun initialAutomaticQualityPhase(
   measuredBitrate: Long = 0L,
+  /**
+   * Whether that number came from a film played over this link a moment ago, rather than from what
+   * the app remembers of the last time it ran. Only a live measurement may skip a rung.
+   */
+  measuredThisSession: Boolean = false,
 ): AutomaticQualityPhase =
   when {
-    measuredBitrate >= UNRESTRICTED_START_BITRATE_BPS -> AutomaticQualityPhase.UNRESTRICTED
-    measuredBitrate >= FAST_LINK_BITRATE_BPS -> AutomaticQualityPhase.BALANCED
+    !measuredThisSession -> AutomaticQualityPhase.LOW_STARTUP
+    measuredBitrate >= BALANCED_START_BITRATE_BPS -> AutomaticQualityPhase.BALANCED
     else -> AutomaticQualityPhase.LOW_STARTUP
   }
 
@@ -1033,7 +1041,7 @@ internal fun HlsPlayerScreen(
   val linkBitrate = remember(player) { measuredLinkBitrate(context) }
   val fastLink = linkBitrate >= FAST_LINK_BITRATE_BPS
   var automaticQualityPhase by
-    remember(player) { mutableStateOf(initialAutomaticQualityPhase(linkBitrate)) }
+    remember(player) { mutableStateOf(initialAutomaticQualityPhase(linkBitrate, PlaybackBandwidth.measuredThisSession)) }
   var automaticQualityRecoveryLock by remember(player) { mutableStateOf(false) }
   // A seek buffers exactly like a stall does, and so does the first segment of a rendition the ramp
   // has just unlocked. Neither says anything about the connection, so both are held apart from it
@@ -1498,6 +1506,13 @@ internal fun HlsPlayerScreen(
     // video address has a player of its own, and the prefetcher runs one behind this screen.
     val audioSource = ActivePlayback.Source { player.pause() }
     ActivePlayback.register(audioSource)
+
+    // What this playback actually did, written down when it ends. `adb logcat -s GizPlayback`.
+    val statsListener =
+      PlaybackStatsListener(/* keepHistory= */ false) { _, stats ->
+        android.util.Log.i("GizPlayback", playbackSessionSummary(stats, playbackTitle(request)))
+      }
+    localPlayer.addAnalyticsListener(statsListener)
     val listener =
       object : Player.Listener {
         override fun onCues(cueGroup: androidx.media3.common.text.CueGroup) {
@@ -1723,6 +1738,7 @@ internal fun HlsPlayerScreen(
       if (hasStartedPlayback) PlaybackBandwidth.remember(context)
       // Nothing is playing here any more, so a resolve held back for this film may go ahead.
       PlaybackHeadroom.idle()
+      localPlayer.removeAnalyticsListener(statsListener)
       // Before the player goes, so nothing can ask a released player to pause itself.
       ActivePlayback.unregister(audioSource)
       lifecycleOwner.lifecycle.removeObserver(observer)
@@ -1739,7 +1755,7 @@ internal fun HlsPlayerScreen(
     automaticQualityRecoveryLock = false
     dataSaverFallbackRank = 0
     automaticQualityPhase =
-      if (selectedQuality.isAuto) initialAutomaticQualityPhase(linkBitrate)
+      if (selectedQuality.isAuto) initialAutomaticQualityPhase(linkBitrate, PlaybackBandwidth.measuredThisSession)
       else AutomaticQualityPhase.UNRESTRICTED
     // A manual fixed rendition is explicit permission to exceed the phone Auto ceiling.
     applyQualityPhase(automaticQualityPhase, allowFixedQualityHeadroom = !selectedQuality.isAuto)
@@ -5162,7 +5178,10 @@ internal fun createHlsPlayer(
         // to work. Either way the ladder above owns everything after the first segment.
         applyAutomaticQualityCeiling(
           selectionBuilder,
-          initialAutomaticQualityPhase(bandwidthMeter.bitrateEstimate),
+          initialAutomaticQualityPhase(
+            bandwidthMeter.bitrateEstimate,
+            PlaybackBandwidth.measuredThisSession,
+          ),
           isTelevision = isTelevision,
           fastLink = fastLink,
         )

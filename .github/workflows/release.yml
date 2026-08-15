@@ -59,17 +59,20 @@ jobs:
         env:
           # What changed in this build, and nothing else. Edit this every release.
           RELEASE_NOTES: |
-            What changed:
-            - Films now open at the quality your connection has already been shown to handle,
-              rather than starting small on every link and spending the first twenty seconds
-              working back up. A link that is slow, or has not been measured yet, is treated
-              exactly as carefully as before.
-            - What has been fetched once is now kept for a while, so seeking back through a scene
-              — and recovering from a stall — no longer pulls it down a second time.
-            - Video travels over HTTP/2, and over HTTP/3 on devices that have it, where a single
-              lost packet no longer holds up everything queued behind it.
-            - Finding the next episode now waits until the film you are watching is comfortably
-              ahead of itself, and gives way the moment it is not.
+            Fixes for 1.70.0, which made films slower to start and more likely to stop:
+
+            - The first film of a session opens carefully again. Only a link measured while
+              actually watching something, minutes earlier, now lets the next film open higher —
+              and never at the top of the range, which is still earned by playing without
+              interruption.
+            - A speed learned on Wi-Fi is no longer assumed of a cellular connection.
+            - Building the store of kept video no longer happens while you are waiting for a
+              picture, and the network connection is opened once for the app rather than rebuilt
+              for every film. Both were adding to the wait before playback began.
+            - Playlists are no longer kept, only video. A kept playlist's links expire within
+              hours, which could break a title on a later viewing.
+            - Each playback now writes a line of diagnostics, so a report of "it feels slower"
+              has numbers behind it next time.
           # 1.53.0 changed applicationId, so anything older than it still cannot be updated over
           # and has to be reinstalled by hand. Kept apart from the notes above so the release page
           # can put the first-install block between the two. Drop this once 1.52.x is gone.

@@ -11,14 +11,17 @@ import android.os.ext.SdkExtensions
 import androidx.annotation.ChecksSdkIntAtLeast
 import androidx.annotation.RequiresExtension
 import androidx.core.content.edit
+import androidx.media3.common.C
+import androidx.media3.datasource.DataSink
 import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpEngineDataSource
 import androidx.media3.datasource.TransferListener
 import androidx.media3.datasource.cache.Cache
+import androidx.media3.datasource.cache.CacheDataSink
 import androidx.media3.datasource.cache.CacheDataSource
-import androidx.media3.datasource.cache.CacheKeyFactory
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.datasource.okhttp.OkHttpDataSource
@@ -99,17 +102,31 @@ internal fun networkKindKey(context: Context): String {
  */
 internal object PlaybackBandwidth {
   private var meter: DefaultBandwidthMeter? = null
-  private var networkKey: String = "unknown"
+
+  /**
+   * Whether a film has already been played over this link, in this session.
+   *
+   * A measurement from a moment ago on the connection actually in use is worth acting on. A number
+   * carried over from the last time the app ran is worth much less: the viewer may have moved from
+   * their home Wi-Fi to a train, and it says nothing about the edge serving the next title. Only
+   * the first is allowed to decide where a film opens.
+   */
+  var measuredThisSession: Boolean = false
+    private set
 
   @Synchronized
   fun meter(context: Context): DefaultBandwidthMeter =
     meter
       ?: run {
         val appContext = context.applicationContext
-        networkKey = networkKindKey(appContext)
-        val remembered = BandwidthEstimateStore(appContext).load(networkKey)
+        val remembered = BandwidthEstimateStore(appContext).load(networkKindKey(appContext))
         DefaultBandwidthMeter.Builder(appContext)
-          .apply { remembered?.let(::setInitialBitrateEstimate) }
+          .apply {
+            // Only for the kind of connection it was measured on. Seeding every network type with
+            // one number is how a speed learned on home Wi-Fi became what the app assumed of a
+            // cellular link — and an opening rendition chosen for a link that was never there.
+            remembered?.let { setInitialBitrateEstimate(networkTypeOf(appContext), openingBid(it)) }
+          }
           .build()
           .also { meter = it }
       }
@@ -117,9 +134,31 @@ internal object PlaybackBandwidth {
   /** Called when a playback ends, which is the only point at which a measurement means anything. */
   fun remember(context: Context) {
     val measured = meter?.bitrateEstimate ?: return
+    measuredThisSession = true
     BandwidthEstimateStore(context).save(networkKindKey(context.applicationContext), measured)
   }
 }
+
+/**
+ * What a remembered measurement is worth as an opening assumption.
+ *
+ * Deliberately less than what was measured. The selector spends a fraction of whatever it is told,
+ * so an optimistic memory does not merely start high — it starts high and then has to be corrected
+ * by a rebuffer, which is the exact experience this was supposed to prevent.
+ */
+internal fun openingBid(rememberedBitrate: Long): Long =
+  (rememberedBitrate * REMEMBERED_ESTIMATE_FRACTION).toLong()
+
+private const val REMEMBERED_ESTIMATE_FRACTION = 0.6
+
+/** Media3 keeps an estimate per kind of connection; this says which one is in use. */
+private fun networkTypeOf(context: Context): Int =
+  when (networkKindKey(context)) {
+    "wifi" -> C.NETWORK_TYPE_WIFI
+    "ethernet" -> C.NETWORK_TYPE_ETHERNET
+    "cellular" -> C.NETWORK_TYPE_CELLULAR_UNKNOWN
+    else -> C.NETWORK_TYPE_OTHER
+  }
 
 /**
  * Where fetched media is kept.
@@ -128,22 +167,47 @@ internal object PlaybackBandwidth {
  * throws. It lives in the cache directory, so a device short of space may take it back.
  */
 internal object PlaybackCache {
-  private var cache: Cache? = null
+  @Volatile private var cache: Cache? = null
+  private var opening = false
+
+  /**
+   * The cache if it is ready, and nothing at all if it is not.
+   *
+   * Opening one reads an index off disk and opens a database, and this is asked for while a film is
+   * being built — on the main thread, in the middle of the composition that puts the player on
+   * screen. Doing that work there is a stall in front of the viewer at the exact moment they are
+   * waiting for a picture, so it happens on a background thread and the film that asked first
+   * simply goes to the network, as it always did.
+   */
+  fun get(context: Context): Cache? {
+    cache?.let { return it }
+    open(context)
+    return null
+  }
 
   @Synchronized
-  fun get(context: Context): Cache? =
-    cache
-      ?: runCatching {
-          val appContext = context.applicationContext
-          SimpleCache(
-              File(appContext.cacheDir, MEDIA_CACHE_DIRECTORY),
-              LeastRecentlyUsedCacheEvictor(MEDIA_CACHE_BYTES),
-              StandaloneDatabaseProvider(appContext),
-            )
-            .also { cache = it }
-        }
-        .onFailure { android.util.Log.w("GizHls", "Media cache unavailable", it) }
-        .getOrNull()
+  private fun open(context: Context) {
+    if (cache != null || opening) return
+    opening = true
+    val appContext = context.applicationContext
+    Thread(
+        {
+          runCatching {
+              SimpleCache(
+                File(appContext.cacheDir, MEDIA_CACHE_DIRECTORY),
+                LeastRecentlyUsedCacheEvictor(MEDIA_CACHE_BYTES),
+                StandaloneDatabaseProvider(appContext),
+              )
+            }
+            .onFailure { android.util.Log.w("GizHls", "Media cache unavailable", it) }
+            .onSuccess { cache = it }
+          synchronized(this) { opening = false }
+        },
+        "GizMediaCache",
+      )
+      .apply { isDaemon = true }
+      .start()
+  }
 }
 
 /**
@@ -236,20 +300,34 @@ private fun httpEngineDataSourceFactory(
   connectTimeoutMs: Int,
   readTimeoutMs: Int,
   transferListener: TransferListener,
-): DataSource.Factory {
-  val engine =
-    HttpEngine.Builder(context.applicationContext)
-      .setEnableBrotli(true)
-      .setEnableHttp2(true)
-      .setEnableQuic(true)
-      .build()
-  return HttpEngineDataSource.Factory(engine, httpEngineExecutor)
+): DataSource.Factory =
+  HttpEngineDataSource.Factory(sharedHttpEngine(context), httpEngineExecutor)
     .setUserAgent(userAgent)
     .setDefaultRequestProperties(requestProperties)
     .setConnectionTimeoutMs(connectTimeoutMs)
     .setReadTimeoutMs(readTimeoutMs)
     .setTransferListener(transferListener)
-}
+
+/**
+ * One engine for the whole app, built once.
+ *
+ * A stack of this kind carries everything worth carrying between requests: open connections, the
+ * knowledge of which hosts speak QUIC, the session tickets that let a repeat handshake be skipped.
+ * Building a new one per film threw all of that away every time and made the first request of every
+ * film pay for it again — which is the opposite of the reason for using this stack at all.
+ */
+@RequiresExtension(extension = Build.VERSION_CODES.S, version = HTTP_ENGINE_EXTENSION_VERSION)
+@Synchronized
+private fun sharedHttpEngine(context: Context): HttpEngine =
+  httpEngine
+    ?: HttpEngine.Builder(context.applicationContext)
+      .setEnableBrotli(true)
+      .setEnableHttp2(true)
+      .setEnableQuic(true)
+      .build()
+      .also { httpEngine = it }
+
+private var httpEngine: HttpEngine? = null
 
 /** HttpEngine hands its callbacks to this; segments are read on it, so it is not the main thread. */
 private val httpEngineExecutor by lazy { Executors.newCachedThreadPool() }
@@ -291,6 +369,46 @@ internal fun playbackDataSourceFactory(
     .setCache(cache)
     .setUpstreamDataSourceFactory(local)
     .setCacheKeyFactory { dataSpec -> dataSpec.key ?: stableCacheKey(dataSpec.uri.toString()) }
+    // Video, and only video. See [SegmentOnlyCacheDataSink].
+    .setCacheWriteDataSinkFactory {
+      SegmentOnlyCacheDataSink(CacheDataSink(cache, CACHE_FRAGMENT_BYTES))
+    }
     // A cache that cannot be read from or written to must never be the reason a film stops.
     .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+}
+
+/** Fragment size for cache writes; Media3's own default, named here because the sink is ours. */
+private const val CACHE_FRAGMENT_BYTES = 5L * 1024L * 1024L
+
+/**
+ * Keeps video, and refuses to keep the list of where the video is.
+ *
+ * A playlist is not the same kind of thing as a segment. It is a list of signed addresses, each of
+ * which stops working within hours, so a playlist read back off disk on a later play hands the
+ * player a set of links that have all expired — a title that used to play, failing on the second
+ * viewing for a reason no server could explain. Playlists are small and worth re-fetching; segments
+ * are large and worth keeping, and only they are written here.
+ */
+private class SegmentOnlyCacheDataSink(private val delegate: DataSink) : DataSink {
+  private var keeping = false
+
+  override fun open(dataSpec: DataSpec) {
+    keeping = !looksLikePlaylist(dataSpec.uri.toString())
+    if (keeping) delegate.open(dataSpec)
+  }
+
+  override fun write(buffer: ByteArray, offset: Int, length: Int) {
+    if (keeping) delegate.write(buffer, offset, length)
+  }
+
+  override fun close() {
+    if (keeping) delegate.close()
+    keeping = false
+  }
+}
+
+/** An HLS or DASH manifest, by the only part of the address that is stable enough to ask. */
+internal fun looksLikePlaylist(uri: String): Boolean {
+  val path = uri.substringBefore('#').substringBefore('?').lowercase()
+  return path.endsWith(".m3u8") || path.endsWith(".m3u") || path.endsWith(".mpd")
 }
