@@ -30,5 +30,7 @@ internal fun playbackSessionSummary(stats: PlaybackStats, title: String): String
     append(" · link ").append(stats.meanBandwidth / 1_000).append("kbps")
     append(" · dropped ").append(stats.totalDroppedFrames)
     append(" · watched ").append(playMs / 1_000).append("s")
+    // Whether keeping fetched video on disk is paying for itself, or is only costing storage.
+    append(" · ").append(PlaybackCacheStats.summary())
   }
 }

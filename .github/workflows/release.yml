@@ -59,39 +59,21 @@ jobs:
         env:
           # What changed in this build, and nothing else. Edit this every release.
           RELEASE_NOTES: |
-            Fetching video goes back to how it worked in 1.69.0.
+            What changed:
+            - The progress bar now shows how much of the film is already loaded ahead of where you
+              are watching, the way a browser's video player does. It was always loading ahead;
+              there was simply no way to see it.
+            - Skipping is quicker. A jump now resumes as soon as there is enough to play rather
+              than waiting for the full cushion a stalled connection needs, and it lands on the
+              nearest whole frame instead of grinding forward to an exact one. A stall still gets
+              its full safety net.
+            - Rewinding within the last 45 seconds no longer fetches anything: that much of what
+              you have watched is now kept. Phones also keep recently loaded video on disk, so
+              going back over it costs nothing; televisions are unchanged, their storage being
+              slower and better left to playing.
+            - Each playback writes a line of diagnostics — time to first picture, pauses, quality,
+              dropped frames. It was meant to do that in 1.70.3 and never did.
 
-            1.70.0 changed how the app fetches video, in four ways at once, and it was worse for
-            it — slower to start and quicker to stop. All of that is switched off again here, with
-            the faults behind each one fixed so they can be tried one at a time later rather than
-            all together.
-
-            Some sites refuse to serve video to anything that looks like a browser, which is what
-            this app had been asking as. A refusal is now answered by asking again as GIZTV, which
-            those sites accept.
-
-            When a film opens and then never plays, the app now writes down which site it was,
-            what it was fetching and how long it waited, so the next report of a broken server is
-            answerable rather than a guess.
-
-            Note: server 1 is refusing everything at the moment, from this app and from anything
-            else. Nothing here can change that; the app moves on to a server that works, and
-            server 1 will start playing again when the site allows it.
-
-            Also carried over from 1.70.1 and 1.70.2:
-
-            - The first film of a session opens carefully again. Only a link measured while
-              actually watching something, minutes earlier, now lets the next film open higher —
-              and never at the top of the range, which is still earned by playing without
-              interruption.
-            - A speed learned on Wi-Fi is no longer assumed of a cellular connection.
-            - Building the store of kept video no longer happens while you are waiting for a
-              picture, and the network connection is opened once for the app rather than rebuilt
-              for every film. Both were adding to the wait before playback began.
-            - Playlists are no longer kept, only video. A kept playlist's links expire within
-              hours, which could break a title on a later viewing.
-            - Each playback now writes a line of diagnostics, so a report of "it feels slower"
-              has numbers behind it next time.
           # 1.53.0 changed applicationId, so anything older than it still cannot be updated over
           # and has to be reinstalled by hand. Kept apart from the notes above so the release page
           # can put the first-install block between the two. Drop this once 1.52.x is gone.

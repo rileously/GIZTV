@@ -154,6 +154,7 @@ import androidx.media3.cast.MediaRouteButtonFactory
 import androidx.media3.cast.RemoteCastPlayer
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.analytics.PlaybackStatsListener
 import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
 import androidx.media3.exoplayer.drm.FrameworkMediaDrm
@@ -315,6 +316,15 @@ private const val PROGRESSIVE_TV_REBUFFER_MS = 4_000
 private const val PROGRESSIVE_PHONE_REBUFFER_MS = 3_000
 /** Retains the common 10-second rewind locally instead of asking the CDN for it again. */
 private const val SEEK_BACK_BUFFER_MS = 15_000
+
+/**
+ * What is kept behind the playhead on a device with memory to spare.
+ *
+ * A rewind inside this window is instant, because the video is still in hand; outside it the player
+ * fetches the segment again — which is why a jump back thirty seconds used to pause exactly like a
+ * jump forward. Held in memory, so a device the system calls low-RAM keeps the old shorter window.
+ */
+private const val ROOMY_SEEK_BACK_BUFFER_MS = 45_000
 /**
  * What a link that is plainly not the problem has to fill before the first frame.
  *
@@ -507,6 +517,15 @@ internal data class PlaybackBufferProfile(
   val startBufferMs: Int,
   val rebufferMs: Int,
 )
+
+/** How much watched video is kept for a rewind, given what the device can hold. */
+internal fun seekBackBufferMs(lowRamDevice: Boolean): Int =
+  if (lowRamDevice) SEEK_BACK_BUFFER_MS else ROOMY_SEEK_BACK_BUFFER_MS
+
+internal fun isLowRamDevice(context: android.content.Context): Boolean =
+  (context.getSystemService(android.content.Context.ACTIVITY_SERVICE)
+      as? android.app.ActivityManager)
+    ?.isLowRamDevice ?: false
 
 internal fun playbackBufferProfile(
   isTelevision: Boolean,
@@ -1507,6 +1526,8 @@ internal fun HlsPlayerScreen(
     val audioSource = ActivePlayback.Source { player.pause() }
     ActivePlayback.register(audioSource)
 
+    // Counted per playback, so the log line reports this film's share rather than the session's.
+    PlaybackCacheStats.reset()
     // What this playback actually did, written down when it ends. `adb logcat -s GizPlayback`.
     val statsListener =
       PlaybackStatsListener(/* keepHistory= */ false) { _, stats ->
@@ -1738,7 +1759,9 @@ internal fun HlsPlayerScreen(
       if (hasStartedPlayback) PlaybackBandwidth.remember(context)
       // Nothing is playing here any more, so a resolve held back for this film may go ahead.
       PlaybackHeadroom.idle()
-      localPlayer.removeAnalyticsListener(statsListener)
+      // The stats listener is deliberately left attached through the release below: releasing the
+      // player is what ends the session, and ending the session is what produces the report. Taken
+      // off first — as it was — the report is never written at all.
       // Before the player goes, so nothing can ask a released player to pause itself.
       ActivePlayback.unregister(audioSource)
       lifecycleOwner.lifecycle.removeObserver(observer)
@@ -2727,6 +2750,8 @@ internal fun HlsPlayerScreen(
 }
 
 @androidx.annotation.OptIn(UnstableApi::class)
+// The slider's track slot, which is what lets the buffer be drawn behind the playhead.
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 private fun ModernPlayerControls(
   player: Player,
@@ -2763,6 +2788,7 @@ private fun ModernPlayerControls(
   var positionMs by remember(player) { mutableLongStateOf(player.currentPosition.coerceAtLeast(0L)) }
   var durationMs by remember(player) { mutableLongStateOf(player.duration.takeIf { it != C.TIME_UNSET }?.coerceAtLeast(0L) ?: 0L) }
   var seekPreviewMs by remember(player) { mutableStateOf<Long?>(null) }
+  var bufferedMs by remember(player) { mutableLongStateOf(0L) }
   var seekBarFocused by remember { mutableStateOf(false) }
   val surroundingControlsAlpha = if (seekBarFocused) 0f else 1f
 
@@ -2788,6 +2814,8 @@ private fun ModernPlayerControls(
     while (true) {
       if (seekPreviewMs == null) positionMs = player.currentPosition.coerceAtLeast(0L)
       durationMs = player.duration.takeIf { it != C.TIME_UNSET }?.coerceAtLeast(0L) ?: 0L
+      // How much of the film is already in hand beyond the playhead. The bar behind the bar.
+      bufferedMs = player.bufferedPosition.coerceAtLeast(0L)
       delay(250L)
     }
   }
@@ -2993,6 +3021,7 @@ private fun ModernPlayerControls(
             if (isTelevision) {
               ModernTvSeekBar(
                 positionMs = positionMs,
+                bufferedMs = bufferedMs,
                 durationMs = durationMs,
                 onSeek = { targetMs ->
                   positionMs = targetMs
@@ -3026,6 +3055,18 @@ private fun ModernPlayerControls(
                     disabledActiveTrackColor = MutedBlue.copy(alpha = .5f),
                     disabledInactiveTrackColor = SoftWhite.copy(alpha = .14f),
                   ),
+                // The track is ours so that what has been fetched can be drawn behind what has
+                // been watched. The thumb and every gesture remain the slider's own.
+                track = {
+                  val (played, fetched) =
+                    seekTrackFractions(seekPreviewMs ?: positionMs, bufferedMs, durationMs)
+                  BufferedSeekTrack(
+                    progress = played,
+                    buffered = fetched,
+                    highlighted = true,
+                    height = 6.dp,
+                  )
+                },
                 modifier = Modifier.fillMaxWidth().height(if (compact) 28.dp else 34.dp),
               )
             }
@@ -3233,9 +3274,62 @@ private fun TitleProgressSeekBar(
   }
 }
 
+/**
+ * What has been played, and what is already in hand behind it.
+ *
+ * Three layers: the whole film, the part of it already fetched, and the part watched. The middle
+ * one is the answer to "is it still loading or is my connection fine" — a question a viewer
+ * otherwise has to guess at by watching for a stall.
+ */
+@Composable
+private fun BufferedSeekTrack(
+  progress: Float,
+  buffered: Float,
+  highlighted: Boolean,
+  modifier: Modifier = Modifier,
+  height: Dp = 6.dp,
+) {
+  Box(
+    modifier =
+      modifier
+        .fillMaxWidth()
+        .height(height)
+        .clip(RoundedCornerShape(99.dp))
+        .background(SoftWhite.copy(alpha = if (highlighted) .32f else .22f))
+  ) {
+    Box(
+      Modifier.fillMaxWidth(buffered.coerceIn(0f, 1f))
+        .fillMaxHeight()
+        .clip(RoundedCornerShape(99.dp))
+        .background(SoftWhite.copy(alpha = .45f))
+    )
+    Box(
+      Modifier.fillMaxWidth(progress.coerceIn(0f, 1f))
+        .fillMaxHeight()
+        .clip(RoundedCornerShape(99.dp))
+        .background(if (highlighted) GizMint else SoftWhite)
+    )
+  }
+}
+
+/** Where the playhead and the buffer sit on a timeline, as fractions of it. */
+internal fun seekTrackFractions(
+  positionMs: Long,
+  bufferedMs: Long,
+  durationMs: Long,
+): Pair<Float, Float> {
+  if (durationMs <= 0L) return 0f to 0f
+  val progress = (positionMs.toFloat() / durationMs).coerceIn(0f, 1f)
+  // Never behind the playhead: a buffer measured a moment before a seek would otherwise draw a
+  // stripe that has already been watched.
+  val buffered = (bufferedMs.toFloat() / durationMs).coerceIn(progress, 1f)
+  return progress to buffered
+}
+
 @Composable
 private fun ModernTvSeekBar(
   positionMs: Long,
+  bufferedMs: Long,
   durationMs: Long,
   onSeek: (Long) -> Unit,
   onScrub: (Long?) -> Unit,
@@ -3358,18 +3452,12 @@ private fun ModernTvSeekBar(
       )
     }
     Box(modifier = Modifier.fillMaxWidth().height(16.dp), contentAlignment = Alignment.CenterStart) {
-      Box(
-        modifier =
-          Modifier.fillMaxWidth().height(if (highlighted) 9.dp else 6.dp)
-            .clip(RoundedCornerShape(99.dp))
-            .background(SoftWhite.copy(alpha = if (highlighted) .32f else .22f)),
-      ) {
-        Box(
-          Modifier.fillMaxWidth(progress).fillMaxHeight()
-            .clip(RoundedCornerShape(99.dp))
-            .background(if (highlighted) GizMint else SoftWhite)
-        )
-      }
+      BufferedSeekTrack(
+        progress = progress,
+        buffered = seekTrackFractions(positionMs, bufferedMs, durationMs).second,
+        highlighted = highlighted,
+        height = if (highlighted) 9.dp else 6.dp,
+      )
       if (highlighted) {
         val thumbSize = if (scrubbing) 16.dp else 12.dp
         Box(
@@ -5147,9 +5235,12 @@ internal fun createHlsPlayer(
         bufferProfile.startBufferMs,
         bufferProfile.rebufferMs,
       )
-      .setBackBuffer(SEEK_BACK_BUFFER_MS, true)
+      // What is kept behind the playhead, which is what makes a rewind free rather than a fetch.
+      .setBackBuffer(seekBackBufferMs(isLowRamDevice(context)), true)
       .setPrioritizeTimeOverSizeThresholdsForStreaming(true)
       .build()
+      // A jump resumes sooner than a stall does; everything else above is untouched.
+      .let(::SeekAwareLoadControl)
   val renderersFactory =
     OffsetSubtitleRenderersFactory(context, subtitleOffset, passthroughMode)
       .setEnableDecoderFallback(true)
@@ -5171,6 +5262,25 @@ internal fun createHlsPlayer(
     .build()
     .apply {
       setHandleAudioBecomingNoisy(true)
+      // Land on the nearest keyframe rather than the exact frame asked for. Exact seeking makes the
+      // decoder start at the keyframe before the target and work forward to it, unseen, before
+      // anything appears — real work on every jump, spent arriving at a frame nobody could tell
+      // from its neighbour. What it costs is landing up to a second or so off; what it saves is the
+      // wait that made a ten-second skip feel like a stall.
+      setSeekParameters(SeekParameters.CLOSEST_SYNC)
+      // Told here rather than by the screen: every seek reaches the player, wherever it came from —
+      // a double tap, the bar, a skipped intro, a paired phone's remote.
+      addListener(
+        object : Player.Listener {
+          override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int,
+          ) {
+            if (reason == Player.DISCONTINUITY_REASON_SEEK) loadControl.noteSeek()
+          }
+        }
+      )
       val selectionBuilder =
         trackSelectionParameters
           .buildUpon()
@@ -5221,6 +5331,9 @@ internal fun createHlsMediaSource(
 
   // Under the name the page fetched it with, and — if that earns a 403 — under our own. At least
   // two of these CDNs refuse a browser's user agent on the media itself while serving anything else.
+  // The meter still sees every byte; the wrapper only counts them, so the share the cache serves
+  // can be worked out against what the link actually had to carry.
+  val transferListener = countingTransferListener(bandwidthMeter)
   val httpFactory =
     forbiddenFallbackDataSourceFactory(
       asBrowser =
@@ -5230,7 +5343,7 @@ internal fun createHlsMediaSource(
           requestProperties = requestProperties,
           connectTimeoutMs = connectTimeout,
           readTimeoutMs = readTimeout,
-          transferListener = bandwidthMeter,
+          transferListener = transferListener,
         ),
       asOurselves =
         playbackHttpDataSourceFactory(
@@ -5239,7 +5352,7 @@ internal fun createHlsMediaSource(
           requestProperties = requestProperties,
           connectTimeoutMs = connectTimeout,
           readTimeoutMs = readTimeout,
-          transferListener = bandwidthMeter,
+          transferListener = transferListener,
         ),
     )
   // What has been fetched once is worth keeping: a seek back through what was just watched, and

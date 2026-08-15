@@ -2,7 +2,9 @@
 
 package com.giztv.tv.ui.player
 
+import android.app.ActivityManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.http.HttpEngine
@@ -32,6 +34,7 @@ import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import okhttp3.OkHttpClient
 
 private const val BANDWIDTH_PREFERENCES = "giztv_link_speed"
@@ -64,19 +67,103 @@ private const val HTTP_ENGINE_EXTENSION_VERSION = 7
  */
 private const val MODERN_HTTP_STACK_ENABLED = false
 
+/** Below this much free space the cache is not worth the room it would take. */
+private const val MEDIA_CACHE_FREE_SPACE_FLOOR_BYTES = 2L * 1024L * 1024L * 1024L
+
 /**
- * Whether fetched media is kept on disk.
+ * Whether fetched media is kept on disk for this device.
  *
- * Off for the same reason, and with an additional fault of its own now fixed: the key ignored the
- * query string, on the reasoning that a signed address changes signature on every resolve. Where a
- * provider identifies the *content* in the query — the same path serving different films — that
- * turned two films into one entry, and a player reading one film's bytes for another gets exactly
- * the symptom reported: opens, waits, never plays.
+ * Keyed on the whole address, after a version that keyed on the path alone turned two films into
+ * one entry and fed a player the wrong bytes. That means a re-resolve simply misses, which costs a
+ * fetch that would have happened anyway; what still hits is a seek back inside a playback, and the
+ * reload after a stall — the one that used to re-fetch a buffer it had just thrown away over a link
+ * that was already struggling.
  *
- * Keyed on the whole address now. A re-resolve simply misses, which costs a fetch that would have
- * happened anyway; a seek back inside a playback, and the reload after a stall, still hit.
+ * Phones only, and not every phone. A television is the device least able to afford it: the boxes
+ * this app runs on have slow storage, and a write competing with playback shows up as a stutter
+ * rather than as a number. A phone short of space, or one the system calls low-RAM, is left out for
+ * the same reason.
+ *
+ * Whether it earns its place is not a matter of opinion: [PlaybackCacheStats] counts what it serves
+ * against what still had to be fetched, and every playback writes the answer to the log.
  */
-private const val MEDIA_CACHE_ENABLED = false
+internal fun mediaCacheAllowed(context: Context): Boolean {
+  val appContext = context.applicationContext
+  if (appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)) return false
+  val activityManager =
+    appContext.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return false
+  if (activityManager.isLowRamDevice) return false
+  val free = runCatching { appContext.cacheDir.usableSpace }.getOrDefault(0L)
+  return free >= MEDIA_CACHE_FREE_SPACE_FLOOR_BYTES
+}
+
+/**
+ * What the cache saved, and what it did not.
+ *
+ * Counted per playback so the log line can carry a share rather than a total: a cache that serves
+ * two percent of a film is one to remove, and nothing but this can tell the difference.
+ */
+internal object PlaybackCacheStats {
+  private val fromCache = AtomicLong(0L)
+  private val fromNetwork = AtomicLong(0L)
+
+  fun reset() {
+    fromCache.set(0L)
+    fromNetwork.set(0L)
+  }
+
+  fun addCached(bytes: Long) {
+    fromCache.addAndGet(bytes)
+  }
+
+  fun addNetwork(bytes: Long) {
+    fromNetwork.addAndGet(bytes)
+  }
+
+  fun summary(): String {
+    val cached = fromCache.get()
+    val network = fromNetwork.get()
+    val total = cached + network
+    if (total <= 0L) return "cache unused"
+    val share = cached * 100.0 / total
+    return String.format(
+      java.util.Locale.US,
+      "cache %.1f%% (%dMB of %dMB)",
+      share,
+      cached / (1024L * 1024L),
+      total / (1024L * 1024L),
+    )
+  }
+}
+
+/** Counts what actually came over the link, so the cache's share can be worked out against it. */
+private class NetworkByteCounter(private val delegate: TransferListener) : TransferListener {
+  override fun onTransferInitializing(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) {
+    delegate.onTransferInitializing(source, dataSpec, isNetwork)
+  }
+
+  override fun onTransferStart(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) {
+    delegate.onTransferStart(source, dataSpec, isNetwork)
+  }
+
+  override fun onBytesTransferred(
+    source: DataSource,
+    dataSpec: DataSpec,
+    isNetwork: Boolean,
+    bytesTransferred: Int,
+  ) {
+    delegate.onBytesTransferred(source, dataSpec, isNetwork, bytesTransferred)
+    if (isNetwork) PlaybackCacheStats.addNetwork(bytesTransferred.toLong())
+  }
+
+  override fun onTransferEnd(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) {
+    delegate.onTransferEnd(source, dataSpec, isNetwork)
+  }
+}
+
+/** Wraps [listener] so network bytes are counted alongside whatever it was already doing. */
+internal fun countingTransferListener(listener: TransferListener): TransferListener =
+  NetworkByteCounter(listener)
 
 /**
  * What the last session measured of the link, so the next one does not begin blind.
@@ -471,12 +558,21 @@ internal fun playbackDataSourceFactory(
   cacheable: Boolean,
 ): DataSource.Factory {
   val local = DefaultDataSource.Factory(context, upstream)
-  if (!cacheable || !MEDIA_CACHE_ENABLED) return local
+  if (!cacheable || !mediaCacheAllowed(context)) return local
   val cache = PlaybackCache.get(context) ?: return local
   return CacheDataSource.Factory()
     .setCache(cache)
     .setUpstreamDataSourceFactory(local)
     .setCacheKeyFactory { dataSpec -> dataSpec.key ?: stableCacheKey(dataSpec.uri.toString()) }
+    .setEventListener(
+      object : CacheDataSource.EventListener {
+        override fun onCachedBytesRead(cacheSizeBytes: Long, cachedBytesRead: Long) {
+          PlaybackCacheStats.addCached(cachedBytesRead)
+        }
+
+        override fun onCacheIgnored(reason: Int) = Unit
+      }
+    )
     // Video, and only video. See [SegmentOnlyCacheDataSink].
     .setCacheWriteDataSinkFactory {
       SegmentOnlyCacheDataSink(CacheDataSink(cache, CACHE_FRAGMENT_BYTES))
