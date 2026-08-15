@@ -59,15 +59,26 @@ jobs:
         env:
           # What changed in this build, and nothing else. Edit this every release.
           RELEASE_NOTES: |
-            Fixes servers 1 and 4 failing to load, and the 1.70.0 slowdown.
+            Fetching video goes back to how it worked in 1.69.0.
 
-            Servers 1 and 4 only hand over a video once their own player starts, and two things
-            this app was doing to keep those pages quiet were stopping them from doing it. The
-            page you are waiting on is now left alone entirely, and a page still searching for a
-            video is only ever muted, never paused. A search that runs out of time now says which
-            site it was and how far it got, so this is answerable next time.
+            1.70.0 changed how the app fetches video, in four ways at once, and it was worse for
+            it — slower to start and quicker to stop. All of that is switched off again here, with
+            the faults behind each one fixed so they can be tried one at a time later rather than
+            all together.
 
-            Also in this build, fixes for 1.70.0 making films slower to start and quicker to stop:
+            Some sites refuse to serve video to anything that looks like a browser, which is what
+            this app had been asking as. A refusal is now answered by asking again as GIZTV, which
+            those sites accept.
+
+            When a film opens and then never plays, the app now writes down which site it was,
+            what it was fetching and how long it waited, so the next report of a broken server is
+            answerable rather than a guess.
+
+            Note: server 1 is refusing everything at the moment, from this app and from anything
+            else. Nothing here can change that; the app moves on to a server that works, and
+            server 1 will start playing again when the site allows it.
+
+            Also carried over from 1.70.1 and 1.70.2:
 
             - The first film of a session opens carefully again. Only a link measured while
               actually watching something, minutes earlier, now lets the next film open higher —

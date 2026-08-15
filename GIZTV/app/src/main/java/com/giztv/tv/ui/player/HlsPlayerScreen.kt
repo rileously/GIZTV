@@ -1813,6 +1813,18 @@ internal fun HlsPlayerScreen(
   LaunchedEffect(player, isBuffering, wantsPlayback, error, hasStartedPlayback) {
     if (!isBuffering || !wantsPlayback || error != null) return@LaunchedEffect
     delay(stallTimeoutMs(hasStartedPlayback))
+    // A player that opens an address and never plays a frame reports nothing by itself: no error,
+    // no state change, nothing in the log at all. This is the one line that says it happened, and
+    // which address and which site it happened on.
+    android.util.Log.w(
+      "GizHls",
+      "Stalled ${if (hasStartedPlayback) "mid-playback" else "before the first frame"}" +
+        " on ${request.sourcePageUrl?.toUri()?.host ?: request.url.toUri().host}" +
+        " · ${if (isProgressiveStreamRequest(request)) "file" else "playlist"}" +
+        " · buffered ${player.totalBufferedDuration}ms" +
+        " · recovery attempt $stallRecoveryAttempts" +
+        " · ${request.url}",
+    )
     when (prolongedStallAction(stallRecoveryAttempts)) {
       ProlongedStallAction.RELOAD_CURRENT_STREAM -> {
         stallRecoveryAttempts++
@@ -5207,14 +5219,28 @@ internal fun createHlsMediaSource(
   val connectTimeout = if (isProgressive) 12_000 else RELIABLE_HTTP_CONNECT_TIMEOUT_MS
   val readTimeout = if (isProgressive) 15_000 else RELIABLE_HTTP_READ_TIMEOUT_MS
 
+  // Under the name the page fetched it with, and — if that earns a 403 — under our own. At least
+  // two of these CDNs refuse a browser's user agent on the media itself while serving anything else.
   val httpFactory =
-    playbackHttpDataSourceFactory(
-      context = context,
-      userAgent = userAgent,
-      requestProperties = requestProperties,
-      connectTimeoutMs = connectTimeout,
-      readTimeoutMs = readTimeout,
-      transferListener = bandwidthMeter,
+    forbiddenFallbackDataSourceFactory(
+      asBrowser =
+        playbackHttpDataSourceFactory(
+          context = context,
+          userAgent = userAgent,
+          requestProperties = requestProperties,
+          connectTimeoutMs = connectTimeout,
+          readTimeoutMs = readTimeout,
+          transferListener = bandwidthMeter,
+        ),
+      asOurselves =
+        playbackHttpDataSourceFactory(
+          context = context,
+          userAgent = playbackUserAgent(),
+          requestProperties = requestProperties,
+          connectTimeoutMs = connectTimeout,
+          readTimeoutMs = readTimeout,
+          transferListener = bandwidthMeter,
+        ),
     )
   // What has been fetched once is worth keeping: a seek back through what was just watched, and
   // the reload this player performs after a stall, both used to go over the link a second time.

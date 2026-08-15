@@ -9,6 +9,7 @@ import android.net.http.HttpEngine
 import android.os.Build
 import android.os.ext.SdkExtensions
 import androidx.annotation.ChecksSdkIntAtLeast
+import com.giztv.tv.BuildConfig
 import androidx.annotation.RequiresExtension
 import androidx.core.content.edit
 import androidx.media3.common.C
@@ -17,6 +18,7 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.HttpEngineDataSource
 import androidx.media3.datasource.TransferListener
 import androidx.media3.datasource.cache.Cache
@@ -45,6 +47,36 @@ private const val MEDIA_CACHE_DIRECTORY = "media"
 
 /** The S extension that carries HttpEngine, which is not the same question as an API level. */
 private const val HTTP_ENGINE_EXTENSION_VERSION = 7
+
+/**
+ * Whether segments are fetched over HTTP/2 and QUIC rather than the platform's own HTTP/1.1 stack.
+ *
+ * Off, and off until someone has watched a film from every provider on a device with it on.
+ *
+ * Turning it on was measured, by the viewer rather than by a test, to break two of the four
+ * providers outright: their addresses resolved, the player opened them, and no bytes ever arrived.
+ * Two candidates were never separated — content encoding (this file used to ask for Brotli, which
+ * has no business on a media fetch, and a range request against an encoded body is not the range
+ * anyone meant) and QUIC being dropped or mishandled between here and those particular CDNs.
+ *
+ * Both are answerable in ten minutes with a device and [PlaybackReport]'s log line, and neither is
+ * answerable without one. The fetch that has always worked is what ships until then.
+ */
+private const val MODERN_HTTP_STACK_ENABLED = false
+
+/**
+ * Whether fetched media is kept on disk.
+ *
+ * Off for the same reason, and with an additional fault of its own now fixed: the key ignored the
+ * query string, on the reasoning that a signed address changes signature on every resolve. Where a
+ * provider identifies the *content* in the query — the same path serving different films — that
+ * turned two films into one entry, and a player reading one film's bytes for another gets exactly
+ * the symptom reported: opens, waits, never plays.
+ *
+ * Keyed on the whole address now. A re-resolve simply misses, which costs a fetch that would have
+ * happened anyway; a seek back inside a playback, and the reload after a stall, still hit.
+ */
+private const val MEDIA_CACHE_ENABLED = false
 
 /**
  * What the last session measured of the link, so the next one does not begin blind.
@@ -213,19 +245,16 @@ internal object PlaybackCache {
 /**
  * What a fetched piece of media is filed under.
  *
- * These addresses are signed, and the signature changes every time a title is resolved — so the URL
- * itself names nothing that survives until the next play. The host and path do: they are the same
- * segment of the same film whoever signed for it, which is what makes the cache worth having at
- * all. Anything with no path to speak of falls back to the whole address rather than colliding.
+ * The whole address, bar the fragment, which no server ever sees. It was the host and path alone,
+ * so that a signature changing on every resolve would still hit — and that is a good trick right up
+ * against a provider whose query string is what says *which film this is*. Two films, one entry,
+ * and a player fed the wrong bytes waits for a picture that is never coming.
+ *
+ * Keyed whole, a re-resolve misses and fetches, which is what it would have done anyway. What still
+ * hits is what matters most: a seek back through a scene, and the reload after a stall, both of
+ * which ask for the very address they were already given.
  */
-internal fun stableCacheKey(uri: String): String {
-  val withoutFragment = uri.substringBefore('#')
-  val withoutQuery = withoutFragment.substringBefore('?')
-  val schemeEnd = withoutQuery.indexOf("://")
-  if (schemeEnd < 0) return withoutQuery.ifBlank { uri }
-  val hostAndPath = withoutQuery.substring(schemeEnd + 3)
-  return hostAndPath.ifBlank { uri }
-}
+internal fun stableCacheKey(uri: String): String = uri.substringBefore('#').ifBlank { uri }
 
 /**
  * The stack every segment travels over.
@@ -247,6 +276,15 @@ internal fun playbackHttpDataSourceFactory(
   readTimeoutMs: Int,
   transferListener: TransferListener,
 ): DataSource.Factory {
+  if (!MODERN_HTTP_STACK_ENABLED) {
+    return DefaultHttpDataSource.Factory()
+      .setUserAgent(userAgent)
+      .setDefaultRequestProperties(requestProperties)
+      .setAllowCrossProtocolRedirects(true)
+      .setConnectTimeoutMs(connectTimeoutMs)
+      .setReadTimeoutMs(readTimeoutMs)
+      .setTransferListener(transferListener)
+  }
   if (httpEngineSupported()) {
     runCatching {
         httpEngineDataSourceFactory(
@@ -321,7 +359,9 @@ private fun httpEngineDataSourceFactory(
 private fun sharedHttpEngine(context: Context): HttpEngine =
   httpEngine
     ?: HttpEngine.Builder(context.applicationContext)
-      .setEnableBrotli(true)
+      // No content encoding. A media fetch asks for byte ranges of a file, and a range of an
+      // encoded body is a range of something else; asking for Brotli here was a mistake.
+      .setEnableBrotli(false)
       .setEnableHttp2(true)
       .setEnableQuic(true)
       .build()
@@ -352,6 +392,74 @@ private fun playbackHttpClient(connectTimeoutMs: Int, readTimeoutMs: Int): OkHtt
       .also { httpClient = it }
 
 /**
+ * The name this app fetches media under when the browser's own is refused.
+ *
+ * Deliberately not a browser. See [forbiddenFallbackDataSourceFactory].
+ */
+internal fun playbackUserAgent(): String = "GIZTV/${BuildConfig.VERSION_NAME}"
+
+/**
+ * A second attempt under a different name, for a CDN that refuses the first.
+ *
+ * The address of a stream is found by watching a provider's page fetch it, and the headers that
+ * fetch carried are copied so that playback looks like the same client — which is right, and is
+ * what several of these CDNs check. But at least two of them check the opposite way: they see a
+ * browser's user agent on a request for the media itself, decide it is a page hotlinking their
+ * video, and answer 403. Measured against one of them, the same address in the same second: no user
+ * agent 200, this app's own name 200, the browser's name 403.
+ *
+ * So the browser's name is still tried first, because where it is required nothing else works, and
+ * a refusal is answered by asking again as ourselves instead of surfacing a dead server. A stream
+ * that was never going to play either way is no worse off for the second request.
+ */
+private class ForbiddenFallbackDataSource(
+  private val asBrowser: DataSource,
+  private val asOurselves: DataSource,
+) : DataSource {
+  private var active: DataSource = asBrowser
+
+  override fun addTransferListener(transferListener: TransferListener) {
+    asBrowser.addTransferListener(transferListener)
+    asOurselves.addTransferListener(transferListener)
+  }
+
+  override fun open(dataSpec: DataSpec): Long {
+    active = asBrowser
+    return try {
+      asBrowser.open(dataSpec)
+    } catch (refused: HttpDataSource.InvalidResponseCodeException) {
+      if (refused.responseCode != 403) throw refused
+      android.util.Log.i(
+        "GizHls",
+        "403 as the browser; asking again as ${playbackUserAgent()}: ${dataSpec.uri}",
+      )
+      runCatching { asBrowser.close() }
+      active = asOurselves
+      asOurselves.open(dataSpec)
+    }
+  }
+
+  override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
+    active.read(buffer, offset, length)
+
+  override fun getUri(): android.net.Uri? = active.uri
+
+  override fun getResponseHeaders(): Map<String, List<String>> = active.responseHeaders
+
+  override fun close() {
+    runCatching { active.close() }
+  }
+}
+
+/** Pairs each fetch with a second one under this app's own name; see [ForbiddenFallbackDataSource]. */
+internal fun forbiddenFallbackDataSourceFactory(
+  asBrowser: DataSource.Factory,
+  asOurselves: DataSource.Factory,
+): DataSource.Factory = DataSource.Factory {
+  ForbiddenFallbackDataSource(asBrowser.createDataSource(), asOurselves.createDataSource())
+}
+
+/**
  * Wraps [upstream] so that what has been fetched once need not be fetched again.
  *
  * Only for a title with an end. A live playlist is a moving window whose segments are never asked
@@ -363,7 +471,7 @@ internal fun playbackDataSourceFactory(
   cacheable: Boolean,
 ): DataSource.Factory {
   val local = DefaultDataSource.Factory(context, upstream)
-  if (!cacheable) return local
+  if (!cacheable || !MEDIA_CACHE_ENABLED) return local
   val cache = PlaybackCache.get(context) ?: return local
   return CacheDataSource.Factory()
     .setCache(cache)

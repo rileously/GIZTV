@@ -14,14 +14,31 @@ import org.junit.Test
 
 class PlaybackNetworkTest {
   @Test
-  fun aSignatureThatChangesEveryResolveIsNotPartOfTheKey() {
-    val first =
-      stableCacheKey("https://cdn.example.com/films/1234/segment-9.ts?token=aaa&expires=1")
-    val second =
-      stableCacheKey("https://cdn.example.com/films/1234/segment-9.ts?token=bbb&expires=2")
+  fun twoFilmsToldApartOnlyByTheirQueryAreNeverOneEntry() {
+    // The fault behind "opens, waits, never plays": a provider whose query says which film this is
+    // had both of them filed under the same key, and the player was fed the wrong bytes.
+    val one = stableCacheKey("https://cdn.example.com/stream.ts?file=film-one")
+    val other = stableCacheKey("https://cdn.example.com/stream.ts?file=film-two")
 
-    assertEquals(first, second)
-    assertEquals("cdn.example.com/films/1234/segment-9.ts", first)
+    assertEquals(false, one == other)
+  }
+
+  @Test
+  fun theSameAddressAskedForTwiceInAPlaybackIsOneEntry() {
+    // What the cache is actually for: a seek back, and the reload after a stall, ask for the very
+    // address they were already given.
+    val address = "https://cdn.example.com/films/1234/segment-9.ts?token=aaa&expires=1"
+
+    assertEquals(stableCacheKey(address), stableCacheKey(address))
+    assertEquals(address, stableCacheKey(address))
+  }
+
+  @Test
+  fun aFragmentIsNotPartOfTheKeyBecauseNoServerEverSeesOne() {
+    assertEquals(
+      "https://cdn.example.com/a.ts?token=x",
+      stableCacheKey("https://cdn.example.com/a.ts?token=x#t=10"),
+    )
   }
 
   @Test
@@ -33,17 +50,11 @@ class PlaybackNetworkTest {
   }
 
   @Test
-  fun thesameSegmentPathOnDifferentHostsIsKeptApart() {
+  fun theSameSegmentPathOnDifferentHostsIsKeptApart() {
     val one = stableCacheKey("https://one.example.com/hls/index.m3u8")
     val other = stableCacheKey("https://two.example.com/hls/index.m3u8")
 
     assertEquals(false, one == other)
-  }
-
-  @Test
-  fun anAddressWithNothingToStripSurvivesWhole() {
-    assertEquals("cdn.example.com/a.ts", stableCacheKey("https://cdn.example.com/a.ts"))
-    assertEquals("file.ts", stableCacheKey("file.ts"))
   }
 
   @Test
