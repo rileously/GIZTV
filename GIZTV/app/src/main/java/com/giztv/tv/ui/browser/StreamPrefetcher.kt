@@ -118,6 +118,8 @@ internal fun StreamPrefetcher(
               currentOnResolved(target, stream)
             },
             onRendererGone = {},
+            // Nobody is waiting for this page, and a film behind a film must not be heard.
+            silenceMedia = true,
           )
         webViewClient = resolver
         client = resolver

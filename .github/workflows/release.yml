@@ -59,7 +59,15 @@ jobs:
         env:
           # What changed in this build, and nothing else. Edit this every release.
           RELEASE_NOTES: |
-            Fixes for 1.70.0, which made films slower to start and more likely to stop:
+            Fixes servers 1 and 4 failing to load, and the 1.70.0 slowdown.
+
+            Servers 1 and 4 only hand over a video once their own player starts, and two things
+            this app was doing to keep those pages quiet were stopping them from doing it. The
+            page you are waiting on is now left alone entirely, and a page still searching for a
+            video is only ever muted, never paused. A search that runs out of time now says which
+            site it was and how far it got, so this is answerable next time.
+
+            Also in this build, fixes for 1.70.0 making films slower to start and quicker to stop:
 
             - The first film of a session opens carefully again. Only a link measured while
               actually watching something, minutes earlier, now lets the next film open higher —
