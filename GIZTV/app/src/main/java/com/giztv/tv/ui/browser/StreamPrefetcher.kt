@@ -21,6 +21,8 @@ import com.giztv.tv.data.StreamResolutionStore
 import com.giztv.tv.ui.catalog.nextProviderPageUrl
 import com.giztv.tv.ui.player.ActivePlayback
 import com.giztv.tv.ui.player.HlsStreamRequest
+import com.giztv.tv.ui.player.PlaybackHeadroom
+import com.giztv.tv.ui.player.mayPrefetch
 
 /**
  * Finds the next episode's stream while the viewer is still looking at the last one.
@@ -47,6 +49,12 @@ internal fun StreamPrefetcher(
   val currentOnResolved by rememberUpdatedState(onResolved)
   var client by remember(target.pageUrl) { mutableStateOf<AdBlockingWebViewClient?>(null) }
   var webView by remember { mutableStateOf<WebView?>(null) }
+
+  // Never at the expense of the film being watched. A page loaded here is a second video on the
+  // same connection, so it waits for the one in front of the viewer to be comfortably ahead — and
+  // gives way entirely the moment that one starts refilling.
+  var started by remember(target.pageUrl) { mutableStateOf(false) }
+  if (!mayPrefetch(PlaybackHeadroom.status, started)) return
   // Muted rather than stopped: this page is only useful while it keeps running, and it is never
   // heard in the first place. Registering it is what lets the player insist on that.
   val audioSource = remember {
@@ -102,12 +110,19 @@ internal fun StreamPrefetcher(
             onPageState = { _, _, _, _ -> },
             onStatus = {},
             onStage = {},
-            onStreamDetected = { stream -> currentOnResolved(target, stream) },
+            onStreamDetected = { stream ->
+              // The address is what this page was for. Whatever it started playing to produce it is
+              // now pure cost — bytes taken from the film being watched — so the page is stopped
+              // here rather than left running until this view is taken down.
+              webView?.let { view -> view.post { view.evaluateJavascript(stopWebMediaScript, null) } }
+              currentOnResolved(target, stream)
+            },
             onRendererGone = {},
           )
         webViewClient = resolver
         client = resolver
         webView = this
+        started = true
         loadUrl(nextProviderPageUrl(target.pageUrl, prefetchAttempt) ?: target.pageUrl)
       }
     },
@@ -134,6 +149,9 @@ internal fun StreamPrefetcher(
         destroy()
       }
       webView = null
+      // Whatever this page had got through is gone with it, so the next attempt is a new one and
+      // has to wait for the same clear water as the first.
+      started = false
     }
   }
 }

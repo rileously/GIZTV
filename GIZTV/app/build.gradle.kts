@@ -44,8 +44,8 @@ android {
         applicationId = "com.giztv.tv"
         minSdk = 23
         targetSdk = 36
-        versionCode = 130
-        versionName = "1.69.0"
+        versionCode = 131
+        versionName = "1.70.0"
         buildConfigField("String", "TMDB_API_KEY", "\"$escapedTmdbApiKey\"")
         buildConfigField("String", "UPDATE_MANIFEST_URL", "\"$escapedUpdateManifestUrl\"")
     }
@@ -136,6 +136,8 @@ dependencies {
   implementation(libs.androidx.media3.ui)
   implementation(libs.androidx.media3.cast)
   implementation(libs.androidx.media3.session)
+  // HTTP/2 for segment fetches below API 34, where HttpEngine and its QUIC support do not exist.
+  implementation(libs.androidx.media3.datasource.okhttp)
   // Tooling
   debugImplementation(libs.androidx.compose.ui.tooling)
   // Instrumented tests

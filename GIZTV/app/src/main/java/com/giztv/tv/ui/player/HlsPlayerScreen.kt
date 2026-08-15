@@ -152,8 +152,6 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.cast.CastPlayer
 import androidx.media3.cast.MediaRouteButtonFactory
 import androidx.media3.cast.RemoteCastPlayer
-import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
@@ -165,7 +163,6 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.trackselection.AdaptiveTrackSelection
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
-import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
@@ -287,6 +284,14 @@ private const val AUTO_QUALITY_RETAIN_BUFFER_MS = 25_000
 private const val AUTO_QUALITY_BANDWIDTH_FRACTION = .7f
 /** A genuinely fast measured link may eventually use the wider phone ceiling and lean file start. */
 private const val FAST_LINK_BITRATE_BPS = 8_000_000L
+
+/**
+ * A link with room for the highest rendition and the safety margin the selector keeps back.
+ *
+ * The adaptive selector spends only [AUTO_QUALITY_BANDWIDTH_FRACTION] of what it measures, so this
+ * is a good deal more than the bitrate of anything it will actually choose.
+ */
+private const val UNRESTRICTED_START_BITRATE_BPS = 20_000_000L
 private const val RELIABLE_MIN_BUFFER_MS = 30_000
 private const val RELIABLE_MAX_BUFFER_MS = 75_000
 /** Start and seek should feel like desktop VLC; the deeper min/max cushion still fills afterwards. */
@@ -341,6 +346,9 @@ private const val PROLONGED_STALL_TIMEOUT_MS = 45_000L
  */
 private const val STARTUP_STALL_TIMEOUT_MS = 25_000L
 private const val STABLE_PLAYBACK_RESET_MS = 60_000L
+
+/** Often enough for a film falling behind to stop a resolve; rare enough to cost nothing. */
+private const val HEADROOM_REPORT_INTERVAL_MS = 2_000L
 private const val LOCAL_STALL_RECOVERY_ATTEMPTS = 1
 private const val PLAYER_SWIPE_SENSITIVITY = 1.25f
 private const val PLAYER_GESTURE_FEEDBACK_MS = 650L
@@ -624,11 +632,25 @@ internal fun automaticQualityPromotion(phase: AutomaticQualityPhase): AutomaticQ
 /**
  * Where Auto should begin.
  *
- * A process-wide bandwidth estimate can be stale or can have been measured against a faster CDN.
- * Starting every new HLS address at the small rendition gets a first frame and post-seek segment on
- * screen quickly. The existing buffer-aware ladder promotes it after playback is stable.
+ * Starting a new address at the small rendition gets a first frame, and a post-seek segment, on
+ * screen quickly, and the buffer-aware ladder promotes it once playback has proven stable. That is
+ * the right opening bid against a link nothing is known about — but it was being made against every
+ * link, so a connection with bandwidth to spare still spent the first twenty seconds of every film
+ * at 360p, which reads as a fault rather than as caution.
+ *
+ * A measurement worth trusting therefore starts further up the ladder. It is only ever a starting
+ * point: the ceiling above still has to be earned segment by segment, and the ramp still steps back
+ * down the moment the link cannot hold what it was given. Nothing measured, or measured slow, keeps
+ * exactly the behaviour that was here before.
  */
-internal fun initialAutomaticQualityPhase(): AutomaticQualityPhase = AutomaticQualityPhase.LOW_STARTUP
+internal fun initialAutomaticQualityPhase(
+  measuredBitrate: Long = 0L,
+): AutomaticQualityPhase =
+  when {
+    measuredBitrate >= UNRESTRICTED_START_BITRATE_BPS -> AutomaticQualityPhase.UNRESTRICTED
+    measuredBitrate >= FAST_LINK_BITRATE_BPS -> AutomaticQualityPhase.BALANCED
+    else -> AutomaticQualityPhase.LOW_STARTUP
+  }
 
 /**
  * Whether a buffering event is evidence that the link cannot keep up.
@@ -1005,12 +1027,13 @@ internal fun HlsPlayerScreen(
   var subtitlesRendering by remember(request) { mutableStateOf(false) }
   var seekBurst by remember(request) { mutableStateOf<PlayerSeekBurst?>(null) }
   var playbackFinished by remember(request) { mutableStateOf(false) }
-  // The estimate still controls the eventual phone ceiling, but a new address always opens on the
-  // inexpensive first rung so one stale measurement cannot make its first segment unnecessarily big.
+  // What the link has actually managed — this session and, on the first film of a session, the last
+  // one. It sets both the eventual phone ceiling and where the ramp starts, so a connection with
+  // room to spare need not spend the opening of every film proving it.
   val linkBitrate = remember(player) { measuredLinkBitrate(context) }
   val fastLink = linkBitrate >= FAST_LINK_BITRATE_BPS
   var automaticQualityPhase by
-    remember(player) { mutableStateOf(initialAutomaticQualityPhase()) }
+    remember(player) { mutableStateOf(initialAutomaticQualityPhase(linkBitrate)) }
   var automaticQualityRecoveryLock by remember(player) { mutableStateOf(false) }
   // A seek buffers exactly like a stall does, and so does the first segment of a rendition the ramp
   // has just unlocked. Neither says anything about the connection, so both are held apart from it
@@ -1694,6 +1717,12 @@ internal fun HlsPlayerScreen(
 
     onDispose {
       savePlaybackProgress()
+      // What this link managed, so the next film need not work it out from nothing. Only after a
+      // playback that actually ran: a title abandoned while it was still opening measured a
+      // handshake, not a connection.
+      if (hasStartedPlayback) PlaybackBandwidth.remember(context)
+      // Nothing is playing here any more, so a resolve held back for this film may go ahead.
+      PlaybackHeadroom.idle()
       // Before the player goes, so nothing can ask a released player to pause itself.
       ActivePlayback.unregister(audioSource)
       lifecycleOwner.lifecycle.removeObserver(observer)
@@ -1710,7 +1739,7 @@ internal fun HlsPlayerScreen(
     automaticQualityRecoveryLock = false
     dataSaverFallbackRank = 0
     automaticQualityPhase =
-      if (selectedQuality.isAuto) initialAutomaticQualityPhase()
+      if (selectedQuality.isAuto) initialAutomaticQualityPhase(linkBitrate)
       else AutomaticQualityPhase.UNRESTRICTED
     // A manual fixed rendition is explicit permission to exceed the phone Auto ceiling.
     applyQualityPhase(automaticQualityPhase, allowFixedQualityHeadroom = !selectedQuality.isAuto)
@@ -1804,6 +1833,21 @@ internal fun HlsPlayerScreen(
     while (true) {
       delay(3_000L)
       savePlaybackProgress()
+    }
+  }
+
+  // What this film can spare for the search for the next one. The prefetcher loads a provider page
+  // behind this screen, and that page is a second video on the same connection: worth having when
+  // the buffer is deep, worth nothing at all while this one is refilling.
+  LaunchedEffect(player, isBuffering) {
+    while (true) {
+      PlaybackHeadroom.report(
+        playbackHeadroomStatus(
+          isBuffering = isBuffering,
+          bufferedAheadMs = player.totalBufferedDuration.coerceAtLeast(0L),
+        )
+      )
+      delay(HEADROOM_REPORT_INTERVAL_MS)
     }
   }
 
@@ -5032,7 +5076,7 @@ internal fun createHlsPlayer(
    */
   handleAudioFocus: Boolean = true,
 ): ExoPlayer {
-  val bandwidthMeter = DefaultBandwidthMeter.getSingletonInstance(context)
+  val bandwidthMeter = PlaybackBandwidth.meter(context)
   val trackSelector =
     DefaultTrackSelector(
       context,
@@ -5114,11 +5158,11 @@ internal fun createHlsPlayer(
       } else if (!progressive) {
         // Ceilings only matter when the source publishes multiple renditions. A single progressive
         // file has nowhere to step down to; capping tracks would not change the bytes on the wire.
-        // Every address starts cheaply. The measured link still controls the eventual phone ceiling
-        // after the buffer-aware quality ladder has proven this particular CDN can sustain it.
+        // An unmeasured link starts cheaply; a measured one opens where it has already been shown
+        // to work. Either way the ladder above owns everything after the first segment.
         applyAutomaticQualityCeiling(
           selectionBuilder,
-          initialAutomaticQualityPhase(),
+          initialAutomaticQualityPhase(bandwidthMeter.bitrateEstimate),
           isTelevision = isTelevision,
           fastLink = fastLink,
         )
@@ -5133,7 +5177,7 @@ internal fun createHlsMediaSource(
   context: android.content.Context,
   request: HlsStreamRequest,
 ): MediaSource {
-  val bandwidthMeter = DefaultBandwidthMeter.getSingletonInstance(context)
+  val bandwidthMeter = PlaybackBandwidth.meter(context)
   val safeHeaders =
     request.headers.filterKeys {
       it.lowercase() !in setOf("accept-encoding", "connection", "content-length", "host", "range")
@@ -5145,14 +5189,18 @@ internal fun createHlsMediaSource(
   val readTimeout = if (isProgressive) 15_000 else RELIABLE_HTTP_READ_TIMEOUT_MS
 
   val httpFactory =
-    DefaultHttpDataSource.Factory()
-      .setUserAgent(userAgent)
-      .setTransferListener(bandwidthMeter)
-      .setAllowCrossProtocolRedirects(true)
-      .setConnectTimeoutMs(connectTimeout)
-      .setReadTimeoutMs(readTimeout)
-      .setDefaultRequestProperties(requestProperties)
-  val dataSourceFactory = DefaultDataSource.Factory(context, httpFactory)
+    playbackHttpDataSourceFactory(
+      context = context,
+      userAgent = userAgent,
+      requestProperties = requestProperties,
+      connectTimeoutMs = connectTimeout,
+      readTimeoutMs = readTimeout,
+      transferListener = bandwidthMeter,
+    )
+  // What has been fetched once is worth keeping: a seek back through what was just watched, and
+  // the reload this player performs after a stall, both used to go over the link a second time.
+  val dataSourceFactory =
+    playbackDataSourceFactory(context, httpFactory, cacheable = !request.isLive)
   val mediaItem = createMediaItem(request)
   val mediaSourceFactory =
     DefaultMediaSourceFactory(dataSourceFactory)
@@ -5184,7 +5232,7 @@ internal fun reliableHlsLoadErrorPolicy(
 /** What this app has measured of the link, across every stream it has fetched so far. */
 @androidx.annotation.OptIn(UnstableApi::class)
 internal fun measuredLinkBitrate(context: android.content.Context): Long =
-  DefaultBandwidthMeter.getSingletonInstance(context).bitrateEstimate
+  PlaybackBandwidth.meter(context).bitrateEstimate
 
 /** Applies only a temporary ceiling; the adaptive selector remains responsible for the rendition. */
 @androidx.annotation.OptIn(UnstableApi::class)

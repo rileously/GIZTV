@@ -60,11 +60,16 @@ jobs:
           # What changed in this build, and nothing else. Edit this every release.
           RELEASE_NOTES: |
             What changed:
-            - A film's page now plays the film itself, silently, behind its artwork. It fades in
-              once there is a picture to show, and tapping it starts watching properly — on the
-              same stream, so there is no wait for one.
-            - The preview is never heard, stands aside for anything you are actually watching or
-              listening to, keeps to a low quality, and stops on its own after two minutes.
+            - Films now open at the quality your connection has already been shown to handle,
+              rather than starting small on every link and spending the first twenty seconds
+              working back up. A link that is slow, or has not been measured yet, is treated
+              exactly as carefully as before.
+            - What has been fetched once is now kept for a while, so seeking back through a scene
+              — and recovering from a stall — no longer pulls it down a second time.
+            - Video travels over HTTP/2, and over HTTP/3 on devices that have it, where a single
+              lost packet no longer holds up everything queued behind it.
+            - Finding the next episode now waits until the film you are watching is comfortably
+              ahead of itself, and gives way the moment it is not.
           # 1.53.0 changed applicationId, so anything older than it still cannot be updated over
           # and has to be reinstalled by hand. Kept apart from the notes above so the release page
           # can put the first-install block between the two. Drop this once 1.52.x is gone.
