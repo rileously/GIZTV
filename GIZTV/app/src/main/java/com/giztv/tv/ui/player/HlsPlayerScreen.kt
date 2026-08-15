@@ -1471,6 +1471,10 @@ internal fun HlsPlayerScreen(
   }
 
   DisposableEffect(player, lifecycleOwner) {
+    // Nothing else in the app may be heard while this is playing. A provider page being read for a
+    // video address has a player of its own, and the prefetcher runs one behind this screen.
+    val audioSource = ActivePlayback.Source { player.pause() }
+    ActivePlayback.register(audioSource)
     val listener =
       object : Player.Listener {
         override fun onCues(cueGroup: androidx.media3.common.text.CueGroup) {
@@ -1577,7 +1581,11 @@ internal fun HlsPlayerScreen(
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
           isVideoPlaying = isPlaying
-          if (isPlaying) hasStartedPlayback = true
+          if (isPlaying) {
+            // This is what the viewer is watching, so anything else with a sound stands down.
+            ActivePlayback.claim(audioSource)
+            hasStartedPlayback = true
+          }
           // A floating window is too small for the controls, and the viewer is looking elsewhere.
           if (!isPlaying && !inPictureInPicture) controlsVisible = true
         }
@@ -1686,6 +1694,8 @@ internal fun HlsPlayerScreen(
 
     onDispose {
       savePlaybackProgress()
+      // Before the player goes, so nothing can ask a released player to pause itself.
+      ActivePlayback.unregister(audioSource)
       lifecycleOwner.lifecycle.removeObserver(observer)
       player.removeListener(listener)
       player.release()

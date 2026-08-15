@@ -19,6 +19,7 @@ import androidx.compose.ui.platform.LocalContext
 import com.giztv.tv.data.PlaybackContext
 import com.giztv.tv.data.StreamResolutionStore
 import com.giztv.tv.ui.catalog.nextProviderPageUrl
+import com.giztv.tv.ui.player.ActivePlayback
 import com.giztv.tv.ui.player.HlsStreamRequest
 
 /**
@@ -29,9 +30,13 @@ import com.giztv.tv.ui.player.HlsStreamRequest
  * screen, so it happens behind the player and the next episode opens on a stream already in hand.
  *
  * It is laid out at full size and covered by the player rather than shrunk to nothing, because a
- * page given no room may never lay out its player at all. Nothing is heard from it: media here
- * needs a gesture to start, the same as during discovery, which is why a stream can be found
- * without a frame ever being played.
+ * page given no room may never lay out its player at all.
+ *
+ * Nothing is heard from it. Media here needs a gesture to start, which is how most titles are found
+ * without a frame ever being played — but a provider that only asks for its video once its own play
+ * control is pressed has to be pressed ([startVideasyPlaybackScript]), and that starts a whole film
+ * behind the one being watched. Every page loaded here is muted by [silenceWebMediaScript] for as
+ * long as it is loaded, and the view itself is destroyed the moment this stops being wanted.
  */
 @Composable
 internal fun StreamPrefetcher(
@@ -41,6 +46,19 @@ internal fun StreamPrefetcher(
   if (target == null) return
   val currentOnResolved by rememberUpdatedState(onResolved)
   var client by remember(target.pageUrl) { mutableStateOf<AdBlockingWebViewClient?>(null) }
+  var webView by remember { mutableStateOf<WebView?>(null) }
+  // Muted rather than stopped: this page is only useful while it keeps running, and it is never
+  // heard in the first place. Registering it is what lets the player insist on that.
+  val audioSource = remember {
+    ActivePlayback.Source {
+      val view = webView ?: return@Source
+      view.post { view.evaluateJavascript(silenceWebMediaScript, null) }
+    }
+  }
+  DisposableEffect(audioSource) {
+    ActivePlayback.register(audioSource)
+    onDispose { ActivePlayback.unregister(audioSource) }
+  }
   val appContext = LocalContext.current.applicationContext
   val resolutionStore = remember(appContext) { StreamResolutionStore(appContext) }
   // Whichever site last gave up a stream, which for a viewer who keeps picking one server is the
@@ -89,6 +107,7 @@ internal fun StreamPrefetcher(
           )
         webViewClient = resolver
         client = resolver
+        webView = this
         loadUrl(nextProviderPageUrl(target.pageUrl, prefetchAttempt) ?: target.pageUrl)
       }
     },
@@ -100,6 +119,21 @@ internal fun StreamPrefetcher(
     onDispose {
       client?.close()
       client = null
+    }
+  }
+
+  // A page told to press play keeps playing for as long as the view holding it exists, and this one
+  // is behind everything: closing the client alone left a film running where nobody could see it,
+  // let alone stop it. Tied to the view rather than to the title, because the view outlives one.
+  DisposableEffect(Unit) {
+    onDispose {
+      webView?.apply {
+        stopLoading()
+        loadUrl("about:blank")
+        removeAllViews()
+        destroy()
+      }
+      webView = null
     }
   }
 }

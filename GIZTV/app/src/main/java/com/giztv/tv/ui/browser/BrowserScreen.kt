@@ -112,6 +112,7 @@ import com.giztv.tv.ui.catalog.TmdbArtwork
 import com.giztv.tv.ui.catalog.TmdbPlaybackDetails
 import com.giztv.tv.ui.catalog.TmdbPlaybackDetailsRepository
 import com.giztv.tv.ui.catalog.remoteFocusNavigation
+import com.giztv.tv.ui.player.ActivePlayback
 import com.giztv.tv.ui.player.ExternalSubtitleTrack
 import com.giztv.tv.ui.player.HlsStreamRequest
 import java.io.ByteArrayInputStream
@@ -323,6 +324,116 @@ private val enableYoutubePlaybackScript =
   })();
   """.trimIndent()
 
+/**
+ * Takes the sound off a page that is being read rather than watched.
+ *
+ * A provider page only gives up its video address once its own player starts, and one of them —
+ * Videasy — has to be told to press play, which is why [startVideasyPlaybackScript] exists. That is
+ * a second film running behind whatever the viewer is actually watching, and it used to be audible.
+ * It keeps playing here, because stopping it would stop the resolve; it is simply never heard.
+ *
+ * Installed once per document and left in place: a player that rebuilds its video element, or turns
+ * its own volume up on the way in, is caught by the listeners rather than by luck of timing. Frames
+ * of the same origin are reached too; a cross-origin player is beyond any script we can inject.
+ */
+internal val silenceWebMediaScript =
+  """
+  (function () {
+    window.__giztvHush = true;
+
+    function hush(node) {
+      if (!node || !window.__giztvHush) return;
+      try {
+        node.muted = true;
+        node.volume = 0;
+      } catch (_) {}
+    }
+
+    function hushDocument(doc) {
+      if (!doc) return;
+      try { doc.querySelectorAll('video, audio').forEach(hush); } catch (_) {}
+      try {
+        doc.querySelectorAll('iframe').forEach(function (frame) {
+          var inner = null;
+          try { inner = frame.contentDocument; } catch (_) {}
+          hushDocument(inner);
+        });
+      } catch (_) {}
+    }
+
+    window.__giztvHushAll = function () { hushDocument(document); };
+
+    if (!window.__giztvHushInstalled) {
+      window.__giztvHushInstalled = true;
+      var play = HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play = function () {
+        hush(this);
+        return play.apply(this, arguments);
+      };
+      document.addEventListener('play', function (event) { hush(event.target); }, true);
+      document.addEventListener('volumechange', function (event) {
+        var node = event.target;
+        if (window.__giztvHush && node && (node.muted !== true || node.volume !== 0)) hush(node);
+      }, true);
+      try {
+        new MutationObserver(function () { window.__giztvHushAll(); })
+          .observe(document.documentElement, { childList: true, subtree: true });
+      } catch (_) {}
+    }
+
+    window.__giztvHushAll();
+  })();
+  """
+    .trimIndent()
+
+/** The same, and stopped as well: for a page nothing is waiting on any more. */
+internal val stopWebMediaScript =
+  """
+  (function () {
+    window.__giztvHush = true;
+
+    function stop(doc) {
+      if (!doc) return;
+      try {
+        doc.querySelectorAll('video, audio').forEach(function (node) {
+          try {
+            node.muted = true;
+            node.volume = 0;
+            node.pause();
+          } catch (_) {}
+        });
+      } catch (_) {}
+      try {
+        doc.querySelectorAll('iframe').forEach(function (frame) {
+          var inner = null;
+          try { inner = frame.contentDocument; } catch (_) {}
+          stop(inner);
+        });
+      } catch (_) {}
+    }
+
+    stop(document);
+  })();
+  """
+    .trimIndent()
+
+/** Gives a page its sound back, for one that has stopped being a resolve and become a video. */
+internal val restoreWebMediaSoundScript =
+  """
+  (function () {
+    window.__giztvHush = false;
+    try {
+      document.querySelectorAll('video, audio').forEach(function (node) {
+        try {
+          node.muted = false;
+          if (node.volume === 0) node.volume = 1;
+        } catch (_) {}
+      });
+    } catch (_) {}
+  })();
+  """
+    .trimIndent()
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 internal fun BrowserScreen(
@@ -340,6 +451,18 @@ internal fun BrowserScreen(
   val latestStreamDetected = rememberUpdatedState(onStreamDetected)
   var webView by remember { mutableStateOf<WebView?>(null) }
   var activeWebViewClient by remember { mutableStateOf<AdBlockingWebViewClient?>(null) }
+  // What the player says stop to. A page here is either being read for an address, in which case it
+  // is muted already, or being watched — and either way it stands down for the film.
+  val webAudioSource = remember {
+    ActivePlayback.Source {
+      val view = webView ?: return@Source
+      view.post { view.evaluateJavascript(stopWebMediaScript, null) }
+    }
+  }
+  DisposableEffect(webAudioSource) {
+    ActivePlayback.register(webAudioSource)
+    onDispose { ActivePlayback.unregister(webAudioSource) }
+  }
   var title by remember { mutableStateOf("Skyflix") }
   var currentUrl by remember { mutableStateOf(initialUrl) }
   var progress by remember { mutableIntStateOf(0) }
@@ -484,6 +607,10 @@ internal fun BrowserScreen(
                   // Reveal hoofoot's page as soon as its embed appears instead of waiting for an
                   // HLS request that will never exist.
                   this@webView.settings.mediaPlaybackRequiresUserGesture = false
+                  // This page has stopped being a resolve and become the video itself, so it is
+                  // allowed its sound — and takes it from whatever else was playing.
+                  this@webView.evaluateJavascript(restoreWebMediaSoundScript, null)
+                  ActivePlayback.claim(webAudioSource)
                   this@webView.evaluateJavascript(enableYoutubePlaybackScript, null)
                   preparationFailed = false
                   pageRevealed = true
@@ -1199,6 +1326,8 @@ internal class AdBlockingWebViewClient(
   }
 
   override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+    // Before the page has had a chance to start anything. A resolve is read, never listened to.
+    if (resolvingOnly) view.evaluateJavascript(silenceWebMediaScript, null)
     currentPageUrl = url
     currentPageTitle = view.title.orEmpty()
     pageGeneration.incrementAndGet()
@@ -1233,6 +1362,9 @@ internal class AdBlockingWebViewClient(
   override fun onPageFinished(view: WebView, url: String) {
     currentPageTitle = view.title.orEmpty()
     view.evaluateJavascript(adCleanupScript, null)
+    // Again now the document is complete, and ahead of the play below: whatever that starts is a
+    // film the viewer is not watching, playing behind one they are.
+    if (resolvingOnly) view.evaluateJavascript(silenceWebMediaScript, null)
     if (providerIdOf(url) == "videasy") {
       // The resolver is covered by the preparation screen, so it must perform the play action that
       // makes Videasy emit its HLS request. Popups remain disabled by PopupBlockingChromeClient.
