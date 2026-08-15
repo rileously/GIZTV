@@ -60,13 +60,11 @@ jobs:
           # What changed in this build, and nothing else. Edit this every release.
           RELEASE_NOTES: |
             What changed:
-            - No more second film playing where you cannot see it. Having the next episode ready
-              means loading a provider's page and letting its player start, and one of those
-              providers has to be told to press play — which was audible behind what you were
-              watching.
-            - A page loaded only to find a video is now silent for as long as it is loaded, and
-              the page is closed properly once it is no longer needed.
-            - One thing is heard at a time. Whatever starts playing stops everything else.
+            - A film's page now plays the film itself, silently, behind its artwork. It fades in
+              once there is a picture to show, and tapping it starts watching properly — on the
+              same stream, so there is no wait for one.
+            - The preview is never heard, stands aside for anything you are actually watching or
+              listening to, keeps to a low quality, and stops on its own after two minutes.
           # 1.53.0 changed applicationId, so anything older than it still cannot be updated over
           # and has to be reinstalled by hand. Kept apart from the notes above so the release page
           # can put the first-install block between the two. Drop this once 1.52.x is gone.

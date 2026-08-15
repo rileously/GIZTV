@@ -24,16 +24,30 @@ internal object ActivePlayback {
 
   private val lock = Any()
   private val sources = mutableListOf<Source>()
+  /** Whoever last said it was playing, so that something arriving late knows to stay quiet. */
+  private var playing: Source? = null
 
-  /** Says that [source] exists and can be silenced. Registering twice is the same as once. */
+  /**
+   * Says that [source] exists and can be silenced. Registering twice is the same as once.
+   *
+   * Something that turns up while a film is already playing is silenced there and then. A silent
+   * preview opened behind the mini player is the case: it would take nothing but bandwidth, and
+   * bandwidth is exactly what the film being watched cannot spare.
+   */
   fun register(source: Source) {
-    synchronized(lock) {
-      if (sources.none { it === source }) sources += source
-    }
+    val silenceNow =
+      synchronized(lock) {
+        if (sources.none { it === source }) sources += source
+        playing != null && playing !== source
+      }
+    if (silenceNow) source.silence()
   }
 
   fun unregister(source: Source) {
-    synchronized(lock) { sources.removeAll { it === source } }
+    synchronized(lock) {
+      sources.removeAll { it === source }
+      if (playing === source) playing = null
+    }
   }
 
   /**
@@ -43,7 +57,11 @@ internal object ActivePlayback {
    */
   fun claim(source: Source) {
     // Copied out of the lock, so silencing something is free to unregister it.
-    val others = synchronized(lock) { sources.filter { it !== source } }
+    val others =
+      synchronized(lock) {
+        playing = source
+        sources.filter { it !== source }
+      }
     others.forEach(Source::silence)
   }
 }

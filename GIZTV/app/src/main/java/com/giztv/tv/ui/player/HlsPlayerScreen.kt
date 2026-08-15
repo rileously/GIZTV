@@ -5024,6 +5024,13 @@ internal fun createHlsPlayer(
   isTelevision: Boolean =
     context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK),
   passthroughMode: AudioPassthroughMode = AudioPassthroughMode.AUTO,
+  /**
+   * Whether this player is entitled to the device's sound.
+   *
+   * A silent preview is not: asking for audio focus would pause whatever the viewer has playing
+   * elsewhere for a picture that is never going to be heard.
+   */
+  handleAudioFocus: Boolean = true,
 ): ExoPlayer {
   val bandwidthMeter = DefaultBandwidthMeter.getSingletonInstance(context)
   val trackSelector =
@@ -5088,7 +5095,7 @@ internal fun createHlsPlayer(
     .setLoadControl(loadControl)
     .setBandwidthMeter(bandwidthMeter)
     .setTrackSelector(trackSelector)
-    .setAudioAttributes(audioAttributes, true)
+    .setAudioAttributes(audioAttributes, handleAudioFocus)
     .build()
     .apply {
       setHandleAudioBecomingNoisy(true)

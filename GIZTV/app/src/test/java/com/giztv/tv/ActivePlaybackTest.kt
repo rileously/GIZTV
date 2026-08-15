@@ -80,6 +80,29 @@ class ActivePlaybackTest {
   }
 
   @Test
+  fun arrivingWhileSomethingIsPlayingStartsSilenced() {
+    val player = register(RecordingSource())
+    ActivePlayback.claim(player)
+
+    val preview = register(RecordingSource())
+
+    assertEquals(1, preview.silencedTimes)
+    assertEquals(0, player.silencedTimes)
+  }
+
+  @Test
+  fun aPlayerThatHasLeftNoLongerSilencesWhatArrivesAfterIt() {
+    val player = RecordingSource()
+    ActivePlayback.register(player)
+    ActivePlayback.claim(player)
+    ActivePlayback.unregister(player)
+
+    val preview = register(RecordingSource())
+
+    assertEquals(0, preview.silencedTimes)
+  }
+
+  @Test
   fun silencingIsFreeToUnregisterWhateverItSilences() {
     val player = register(RecordingSource())
     lateinit var self: ActivePlayback.Source

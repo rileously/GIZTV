@@ -57,6 +57,7 @@ import com.giztv.tv.ui.catalog.providerIndexOf
 import com.giztv.tv.ui.catalog.providerPageUrl
 import com.giztv.tv.ui.catalog.TmdbMovie
 import com.giztv.tv.ui.catalog.TmdbShow
+import com.giztv.tv.ui.catalog.toPlaybackContext
 import com.giztv.tv.ui.catalog.TmdbTvRepository
 import com.giztv.tv.ui.catalog.seasonPlaylist
 import com.giztv.tv.ui.drama.chartDramaSlugOf
@@ -401,6 +402,31 @@ fun GizTvRoot(
         )
       destination = Destination.PLAYER
     }
+  }
+
+  /**
+   * This title's video, if one is already in hand, for a page that wants to show it silently.
+   *
+   * Only what has already been found: whatever the prefetcher has just resolved for this title, or
+   * what a previous play remembered. A page asking for this never starts a search of its own — the
+   * one behind `onConsidering` is the only search there is, and a preview is worth nothing that the
+   * viewer has to wait for.
+   */
+  fun readyStreamFor(context: PlaybackContext): HlsStreamRequest? {
+    prefetched?.let { (pageUrl, stream) ->
+      if (pageUrl == context.pageUrl) return stream.copy(context = context)
+    }
+    val cached = streamCache.find(context.pageUrl) ?: return null
+    return HlsStreamRequest(
+      url = cached.url,
+      headers = cached.headers,
+      subtitles =
+        cached.subtitles.map { ExternalSubtitleTrack(it.url, it.label, it.language, it.mimeType) },
+      sourcePageUrl = cached.sourcePageUrl,
+      // Progressive CDN files must not inherit the HLS default mime; null lets Media3 sniff.
+      mimeType = streamMimeType(cached.url),
+      context = context,
+    )
   }
 
   fun openStreamProviderPlayback(context: PlaybackContext, returnTo: Destination) {
@@ -762,8 +788,16 @@ fun GizTvRoot(
             Destination.MOVIE_DETAIL -> {
               val movie = selectedMovie
               if (movie != null) {
+                val moviePlayback = remember(movie.id) { movie.toPlaybackContext() }
                 MovieDetailScreen(
                   movie = movie,
+                  // Only while this page is the one in front. A hero playing through the
+                  // transition to somewhere else is a film nobody asked for.
+                  previewStream =
+                    remember(moviePlayback, prefetched, destination) {
+                      if (destination != Destination.MOVIE_DETAIL) null
+                      else readyStreamFor(moviePlayback)
+                    },
                   onPlay = { context -> openForPlayback(context, Destination.MOVIE_DETAIL) },
                   onOpenMovie = { nextMovie ->
                     openCatalogDetail(CatalogDetailRoute.Movie(nextMovie))

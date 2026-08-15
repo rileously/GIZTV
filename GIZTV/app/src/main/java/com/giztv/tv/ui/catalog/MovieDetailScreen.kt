@@ -74,6 +74,8 @@ import com.giztv.tv.data.LibraryItem
 import com.giztv.tv.data.LibraryKind
 import com.giztv.tv.data.MyListStore
 import com.giztv.tv.data.PlaybackContext
+import com.giztv.tv.ui.player.HeroStreamPreview
+import com.giztv.tv.ui.player.HlsStreamRequest
 import com.giztv.tv.theme.GizBlue
 import com.giztv.tv.theme.GizMint
 import com.giztv.tv.theme.DeepSpace
@@ -122,6 +124,13 @@ internal fun MovieDetailScreen(
   onOpenMovie: (TmdbMovie) -> Unit,
   onOpenPerson: (personId: Int, name: String, isDirector: Boolean) -> Unit = { _, _, _ -> },
   onConsidering: (PlaybackContext) -> Unit = {},
+  /**
+   * This film's stream, once there is one, so the hero can play it silently behind the artwork.
+   *
+   * Handed down rather than found here: the search behind [onConsidering] belongs to the host, and
+   * a page that opened its own would be a second search for a video that is already on its way.
+   */
+  previewStream: HlsStreamRequest? = null,
   onBack: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -208,16 +217,32 @@ internal fun MovieDetailScreen(
         .verticalScroll(scrollState)
     ) {
       // Hero Header with Backdrop Image & Controls
+      //
+      // The whole hero opens the film, the way its artwork does on a poster wall. Everything drawn
+      // over it — the back button, Play, Trailer, My List — is declared after this and keeps its
+      // own press; only what lands on the picture itself comes here.
       Box(
         modifier = Modifier
           .fillMaxWidth()
           .height(if (narrow) 300.dp else 420.dp)
+          .clickable { onPlay(movie.toPlaybackContext()) }
+          .semantics {
+            role = Role.Button
+            contentDescription = "Play ${movie.title}"
+          }
       ) {
         TmdbArtwork(
           url = backdropUrl,
           contentDescription = "${movie.title} backdrop",
           modifier = Modifier.fillMaxSize(),
           fallbackLabel = movie.title,
+        )
+
+        // The film itself, silent, over its own artwork. Nothing is fetched for it that pressing
+        // Play would not have fetched anyway, and it fades in only once it has a frame to show.
+        HeroStreamPreview(
+          request = previewStream,
+          modifier = Modifier.fillMaxSize(),
         )
 
         // Dark overlay gradients for text contrast
