@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import com.giztv.tv.link.LinkHost
+import com.giztv.tv.link.pairingUri
 import com.giztv.tv.theme.GizMint
 import com.giztv.tv.theme.DeepSpace
 import com.giztv.tv.theme.MutedBlue
@@ -50,10 +51,23 @@ internal fun PairingCodeOverlay() {
     modifier = Modifier.fillMaxSize().padding(48.dp).testTag("pairing_overlay"),
     contentAlignment = Alignment.BottomEnd,
   ) {
-    Column(
+    Row(
       modifier =
         Modifier.background(NightSurface, RoundedCornerShape(24.dp))
           .padding(horizontal = 36.dp, vertical = 28.dp),
+      horizontalArrangement = Arrangement.spacedBy(28.dp),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+    // The square carries the address as well as the number, so a phone that cannot hear this
+    // television announce itself is still one photograph away from being its remote.
+    pairingUri(address, showing)?.let { uri ->
+      Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        PairingQrCode(content = uri)
+        Spacer(Modifier.height(10.dp))
+        Text("Point your camera here", color = MutedBlue, fontSize = 13.sp)
+      }
+    }
+    Column(
       horizontalAlignment = Alignment.CenterHorizontally,
     ) {
       Text(
@@ -77,7 +91,7 @@ internal fun PairingCodeOverlay() {
         }
       }
       Spacer(Modifier.height(14.dp))
-      Text("Enter this in GIZTV on your phone", color = MutedBlue, fontSize = 14.sp)
+      Text("Or enter this in GIZTV on your phone", color = MutedBlue, fontSize = 14.sp)
       // Shown because a phone sharing its own connection with this television cannot hear it
       // announce itself, and then being able to type the address in is the only way through.
       address?.let {
@@ -86,6 +100,7 @@ internal fun PairingCodeOverlay() {
       }
       Spacer(Modifier.height(8.dp))
       Text("Press Back to dismiss", color = MutedBlue.copy(alpha = .8f), fontSize = 12.sp)
+    }
     }
   }
 }

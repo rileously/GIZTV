@@ -15,6 +15,7 @@ import com.giztv.tv.home.EXTRA_RESUME_PAGE_URL
 import com.giztv.tv.home.refreshHomeSurfaces
 import com.giztv.tv.home.isTelevision
 import com.giztv.tv.link.LinkHost
+import com.giztv.tv.link.parsePairingUri
 import com.giztv.tv.link.PhoneLink
 import com.giztv.tv.link.RemoteControl
 import com.giztv.tv.theme.GizTvTheme
@@ -30,6 +31,9 @@ class MainActivity : AppCompatActivity() {
    * the remote's socket every time a film was handed over.
    */
   private val resumeRequest = mutableStateOf<String?>(null)
+
+  /** A television's pairing square, read by this phone's camera. Held for the same reason. */
+  private val pairingRequest = mutableStateOf<String?>(null)
 
   override fun onCreate(savedInstanceState: Bundle?) {
     // First thing in, so a fault while the rest of this is setting itself up is still written down.
@@ -57,12 +61,14 @@ class MainActivity : AppCompatActivity() {
           (uri.host.equals("skyflix.to", ignoreCase = true) || uri.host.equals("www.skyflix.to", ignoreCase = true))
       }
     resumeRequest.value = intent?.getStringExtra(EXTRA_RESUME_PAGE_URL)
+    pairingRequest.value = intent?.data?.toString()?.takeIf { parsePairingUri(it) != null }
     setContent {
       GizTvTheme {
         GizTvRoot(
           initialStreamUrl = launchStreamUrl,
           initialBrowserUrl = launchBrowserUrl,
           initialResumePageUrl = resumeRequest.value,
+          initialPairingUri = pairingRequest.value,
         )
       }
     }
@@ -72,6 +78,9 @@ class MainActivity : AppCompatActivity() {
     super.onNewIntent(intent)
     setIntent(intent)
     intent.getStringExtra(EXTRA_RESUME_PAGE_URL)?.let { resumeRequest.value = it }
+    // A camera reading a television's square while the app is already open arrives here rather
+    // than through onCreate, which is the common case: the phone had GIZTV open a moment ago.
+    intent.data?.toString()?.takeIf { parsePairingUri(it) != null }?.let { pairingRequest.value = it }
   }
 
   override fun onStart() {

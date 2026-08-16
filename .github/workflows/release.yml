@@ -60,19 +60,15 @@ jobs:
           # What changed in this build, and nothing else. Edit this every release.
           RELEASE_NOTES: |
             What changed:
-            - The progress bar now shows how much of the film is already loaded ahead of where you
-              are watching, the way a browser's video player does. It was always loading ahead;
-              there was simply no way to see it.
-            - Skipping is quicker. A jump now resumes as soon as there is enough to play rather
-              than waiting for the full cushion a stalled connection needs, and it lands on the
-              nearest whole frame instead of grinding forward to an exact one. A stall still gets
-              its full safety net.
-            - Rewinding within the last 45 seconds no longer fetches anything: that much of what
-              you have watched is now kept. Phones also keep recently loaded video on disk, so
-              going back over it costs nothing; televisions are unchanged, their storage being
-              slower and better left to playing.
-            - Each playback writes a line of diagnostics — time to first picture, pauses, quality,
-              dropped frames. It was meant to do that in 1.70.3 and never did.
+            - Pairing a phone to a television no longer means typing anything. The television now
+              shows a square alongside the six digits; point your phone's camera at it and GIZTV
+              opens already connecting.
+            - It also works where it used not to. The television's address travels inside the
+              square, so a phone that cannot find the television on the network — a guest network,
+              or a phone sharing its own connection — pairs anyway. That used to mean reading an
+              address off the screen and typing it in.
+            - The six digits are still there, and still work, for a camera that will not open the
+              link.
 
           # 1.53.0 changed applicationId, so anything older than it still cannot be updated over
           # and has to be reinstalled by hand. Kept apart from the notes above so the release page

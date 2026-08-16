@@ -42,6 +42,10 @@ import com.giztv.tv.data.streamStillLive
 import com.giztv.tv.home.isTelevision
 import com.giztv.tv.home.resumeContextFor
 import com.giztv.tv.link.LinkKey
+import com.giztv.tv.link.LinkTarget
+import com.giztv.tv.link.PairingRequest
+import com.giztv.tv.link.parsePairingUri
+import com.giztv.tv.link.PhoneLink
 import com.giztv.tv.link.RemoteUiBridge
 import com.giztv.tv.ui.browser.BrowserScreen
 import com.giztv.tv.ui.browser.StreamPrefetcher
@@ -224,6 +228,8 @@ fun GizTvRoot(
   initialStreamUrl: String? = null,
   initialBrowserUrl: String? = null,
   initialResumePageUrl: String? = null,
+  /** A television's pairing square, read by this phone's camera and handed straight here. */
+  initialPairingUri: String? = null,
 ) {
   val appContext = LocalContext.current.applicationContext
   val isTelevision = remember(appContext) { appContext.isTelevision() }
@@ -234,6 +240,8 @@ fun GizTvRoot(
   var destination by remember {
     mutableStateOf(
       when {
+        // Scanned a television's code: the remote is the only place worth landing.
+        parsePairingUri(initialPairingUri) != null && !isTelevision -> Destination.REMOTE
         initialStreamUrl != null -> Destination.PLAYER
         // A title picked from a widget or the television's own row still has to have its stream
         // found, so it goes through the same loading page a title picked in the catalog does.
@@ -543,6 +551,27 @@ fun GizTvRoot(
         openStreamProviderPlayback(context, returnTo)
       }
     }
+  }
+
+  /**
+   * Pairing from the square on the television, with nothing typed.
+   *
+   * The address travelled in the code alongside the number, so this connects straight to the
+   * television that drew it rather than waiting to hear it announce itself — which is what makes
+   * this work on the networks where the old way did not. A television that somehow receives one of
+   * these ignores it: it is the thing being paired to.
+   */
+  var lastPairing by remember { mutableStateOf<PairingRequest?>(null) }
+  LaunchedEffect(initialPairingUri, isTelevision) {
+    val request = parsePairingUri(initialPairingUri) ?: return@LaunchedEffect
+    if (isTelevision || request == lastPairing) return@LaunchedEffect
+    lastPairing = request
+    destination = Destination.REMOTE
+    PhoneLink.client(appContext)
+      .connect(
+        LinkTarget(name = "GIZTV at ${request.host}", host = request.host, port = request.port),
+        code = request.code,
+      )
   }
 
   // A title asked for from a widget, the television's own row, or a phone handing one over.

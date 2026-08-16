@@ -44,8 +44,8 @@ android {
         applicationId = "com.giztv.tv"
         minSdk = 23
         targetSdk = 36
-        versionCode = 135
-        versionName = "1.71.0"
+        versionCode = 136
+        versionName = "1.72.0"
         buildConfigField("String", "TMDB_API_KEY", "\"$escapedTmdbApiKey\"")
         buildConfigField("String", "UPDATE_MANIFEST_URL", "\"$escapedUpdateManifestUrl\"")
     }
@@ -138,6 +138,8 @@ dependencies {
   implementation(libs.androidx.media3.session)
   // HTTP/2 for segment fetches below API 34, where HttpEngine and its QUIC support do not exist.
   implementation(libs.androidx.media3.datasource.okhttp)
+  // Drawing the pairing code as something a phone's camera can read. Pure Java, no Android parts.
+  implementation(libs.zxing.core)
   // Tooling
   debugImplementation(libs.androidx.compose.ui.tooling)
   // Instrumented tests

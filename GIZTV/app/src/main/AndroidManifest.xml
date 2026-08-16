@@ -79,6 +79,17 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
+            <!--
+              What a phone's own camera hands back after reading the square on a television. The
+              address and the code travel in it, so pairing needs neither typing nor the television
+              being discoverable on the network.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="giztv" android:host="pair" />
+            </intent-filter>
         </activity>
     </application>
 
