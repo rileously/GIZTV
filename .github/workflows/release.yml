@@ -60,12 +60,12 @@ jobs:
           # What changed in this build, and nothing else. Edit this every release.
           RELEASE_NOTES: |
             What changed:
-            - Skipping ten seconds now moves the picture, not just the clock. Since 1.71.0 a jump
-              could start playing again a moment before the video was ready, so the frame you were
-              already looking at stayed on screen while the time and the sound moved on — most
-              noticeably in Shorts and Anime. Playback waits for the picture again.
-            - Rewinding within the last 45 seconds is still instant, and skipping still lands on
-              the nearest whole frame; both of those are unchanged.
+            - Double tapping to skip now works reliably in Shorts and Anime. A short episode
+              rolls into the next one about once a minute, and each roll was quietly resetting
+              the part of the screen that listens for taps — so a double tap that landed near
+              one of those changes did nothing at all, and the episode carried on from where it
+              was.
+            - Longer films were never affected: they build their player once.
 
           # 1.53.0 changed applicationId, so anything older than it still cannot be updated over
           # and has to be reinstalled by hand. Kept apart from the notes above so the release page

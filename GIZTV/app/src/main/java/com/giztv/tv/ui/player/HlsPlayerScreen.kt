@@ -2009,6 +2009,18 @@ internal fun HlsPlayerScreen(
     reelHintVisible = false
   }
 
+  /**
+   * The tap actions as they stand right now, rather than as they stood when the gesture began.
+   *
+   * A short drama rolls into its next episode about once a minute, and every roll builds a new
+   * player. The tap detector was keyed on that player, so each roll tore the detector down and
+   * rebuilt it — and a double tap that landed in the swap reached nothing at all. The film carried
+   * on from where it was, which is exactly what a viewer reports as a skip that did not happen.
+   *
+   * Held this way, the detector outlives the players it drives.
+   */
+  val latestSeekByTap by rememberUpdatedState<(PlayerSeekSide) -> Unit> { side -> seekByTap(side) }
+
   val revealControlsKeys =
     remember {
       setOf(
@@ -2072,7 +2084,7 @@ internal fun HlsPlayerScreen(
         }
       }
       .focusable(enabled = !controlsVisible && !settingsOpen)
-      .pointerInput(isTelevision, settingsOpen, reelPanelOpen, player) {
+      .pointerInput(isTelevision, settingsOpen, reelPanelOpen) {
         // The panel is drawn over the picture and owns everything that lands on it.
         if (reelPanelOpen) return@pointerInput
 
@@ -2115,7 +2127,7 @@ internal fun HlsPlayerScreen(
               return@detectTapGestures
             }
             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-            seekByTap(side)
+            latestSeekByTap(side)
           },
           onTap = { offset ->
             if (settingsOpen) return@detectTapGestures
@@ -2123,7 +2135,7 @@ internal fun HlsPlayerScreen(
             // double-tap the viewer should not have to double-tap again for every ten seconds.
             val side = playerSeekSide(offset.x, size.width)
             if (side != null && seekBurst?.side == side) {
-              seekByTap(side)
+              latestSeekByTap(side)
               return@detectTapGestures
             }
             toggleControls()
