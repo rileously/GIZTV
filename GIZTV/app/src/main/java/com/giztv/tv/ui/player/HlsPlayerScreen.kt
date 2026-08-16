@@ -5239,8 +5239,6 @@ internal fun createHlsPlayer(
       .setBackBuffer(seekBackBufferMs(isLowRamDevice(context)), true)
       .setPrioritizeTimeOverSizeThresholdsForStreaming(true)
       .build()
-      // A jump resumes sooner than a stall does; everything else above is untouched.
-      .let(::SeekAwareLoadControl)
   val renderersFactory =
     OffsetSubtitleRenderersFactory(context, subtitleOffset, passthroughMode)
       .setEnableDecoderFallback(true)
@@ -5268,19 +5266,6 @@ internal fun createHlsPlayer(
       // from its neighbour. What it costs is landing up to a second or so off; what it saves is the
       // wait that made a ten-second skip feel like a stall.
       setSeekParameters(SeekParameters.CLOSEST_SYNC)
-      // Told here rather than by the screen: every seek reaches the player, wherever it came from —
-      // a double tap, the bar, a skipped intro, a paired phone's remote.
-      addListener(
-        object : Player.Listener {
-          override fun onPositionDiscontinuity(
-            oldPosition: Player.PositionInfo,
-            newPosition: Player.PositionInfo,
-            reason: Int,
-          ) {
-            if (reason == Player.DISCONTINUITY_REASON_SEEK) loadControl.noteSeek()
-          }
-        }
-      )
       val selectionBuilder =
         trackSelectionParameters
           .buildUpon()

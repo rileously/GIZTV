@@ -60,14 +60,12 @@ jobs:
           # What changed in this build, and nothing else. Edit this every release.
           RELEASE_NOTES: |
             What changed:
-            - Every film now behaves the same as the first one you play. 1.71.0 began keeping
-              fetched video on disk, and it opened in the background — so the first film of a
-              session played without it and every film after played through it. Two different
-              paths, and the second one could be slow to seek. The store is gone; there is one
-              path now.
-            - Up to 384MB it had already written is deleted the first time you open this build.
-            - Nothing was lost with it. Instant rewinding comes from what the player holds in
-              memory, which is untouched, and so are the quicker skips added in 1.71.0.
+            - Skipping ten seconds now moves the picture, not just the clock. Since 1.71.0 a jump
+              could start playing again a moment before the video was ready, so the frame you were
+              already looking at stayed on screen while the time and the sound moved on — most
+              noticeably in Shorts and Anime. Playback waits for the picture again.
+            - Rewinding within the last 45 seconds is still instant, and skipping still lands on
+              the nearest whole frame; both of those are unchanged.
 
           # 1.53.0 changed applicationId, so anything older than it still cannot be updated over
           # and has to be reinstalled by hand. Kept apart from the notes above so the release page
