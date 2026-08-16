@@ -43,10 +43,8 @@ private const val BANDWIDTH_PREFERENCES = "giztv_link_speed"
 private const val MINIMUM_CREDIBLE_BITRATE = 400_000L
 private const val MAXIMUM_CREDIBLE_BITRATE = 100_000_000L
 
-/** Enough for seeking back through what was just watched and for reloading after a stall. */
-private const val MEDIA_CACHE_BYTES = 384L * 1024L * 1024L
-
-private const val MEDIA_CACHE_DIRECTORY = "media"
+/** The folder a disk cache used to fill. Kept only so that what it left can be cleared away. */
+private const val ABANDONED_MEDIA_CACHE_DIRECTORY = "media"
 
 /** The S extension that carries HttpEngine, which is not the same question as an API level. */
 private const val HTTP_ENGINE_EXTENSION_VERSION = 7
@@ -67,76 +65,52 @@ private const val HTTP_ENGINE_EXTENSION_VERSION = 7
  */
 private const val MODERN_HTTP_STACK_ENABLED = false
 
-/** Below this much free space the cache is not worth the room it would take. */
-private const val MEDIA_CACHE_FREE_SPACE_FLOOR_BYTES = 2L * 1024L * 1024L * 1024L
-
 /**
- * Whether fetched media is kept on disk for this device.
+ * What a playback actually cost the connection.
  *
- * Keyed on the whole address, after a version that keyed on the path alone turned two films into
- * one entry and fed a player the wrong bytes. That means a re-resolve simply misses, which costs a
- * fetch that would have happened anyway; what still hits is a seek back inside a playback, and the
- * reload after a stall — the one that used to re-fetch a buffer it had just thrown away over a link
- * that was already struggling.
- *
- * Phones only, and not every phone. A television is the device least able to afford it: the boxes
- * this app runs on have slow storage, and a write competing with playback shows up as a stutter
- * rather than as a number. A phone short of space, or one the system calls low-RAM, is left out for
- * the same reason.
- *
- * Whether it earns its place is not a matter of opinion: [PlaybackCacheStats] counts what it serves
- * against what still had to be fetched, and every playback writes the answer to the log.
+ * It began as a way to judge a disk cache — what it served against what still had to be fetched —
+ * and the judgement was that the cache had to go. The total is worth keeping on its own: it is what
+ * a film costs someone counting their data, and what a quality ceiling is really deciding.
  */
-internal fun mediaCacheAllowed(context: Context): Boolean {
-  val appContext = context.applicationContext
-  if (appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)) return false
-  val activityManager =
-    appContext.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return false
-  if (activityManager.isLowRamDevice) return false
-  val free = runCatching { appContext.cacheDir.usableSpace }.getOrDefault(0L)
-  return free >= MEDIA_CACHE_FREE_SPACE_FLOOR_BYTES
-}
-
-/**
- * What the cache saved, and what it did not.
- *
- * Counted per playback so the log line can carry a share rather than a total: a cache that serves
- * two percent of a film is one to remove, and nothing but this can tell the difference.
- */
-internal object PlaybackCacheStats {
-  private val fromCache = AtomicLong(0L)
-  private val fromNetwork = AtomicLong(0L)
+internal object PlaybackTraffic {
+  private val fetchedBytes = AtomicLong(0L)
 
   fun reset() {
-    fromCache.set(0L)
-    fromNetwork.set(0L)
+    fetchedBytes.set(0L)
   }
 
-  fun addCached(bytes: Long) {
-    fromCache.addAndGet(bytes)
+  fun add(bytes: Long) {
+    fetchedBytes.addAndGet(bytes)
   }
 
-  fun addNetwork(bytes: Long) {
-    fromNetwork.addAndGet(bytes)
-  }
-
-  fun summary(): String {
-    val cached = fromCache.get()
-    val network = fromNetwork.get()
-    val total = cached + network
-    if (total <= 0L) return "cache unused"
-    val share = cached * 100.0 / total
-    return String.format(
-      java.util.Locale.US,
-      "cache %.1f%% (%dMB of %dMB)",
-      share,
-      cached / (1024L * 1024L),
-      total / (1024L * 1024L),
-    )
-  }
+  fun summary(): String = "fetched ${fetchedBytes.get() / (1024L * 1024L)}MB"
 }
 
-/** Counts what actually came over the link, so the cache's share can be worked out against it. */
+/**
+ * Deletes what the disk cache left behind, once.
+ *
+ * A version of this app kept up to 384MB of video in the cache directory. Removing the feature does
+ * not remove what it wrote, and nothing else will: the folder is ours, so it would sit there taking
+ * a third of a gigabyte until someone cleared the app's data by hand. Run off the main thread at
+ * startup, and free to fail — a device that will not let go of it is no worse off than before.
+ */
+internal fun clearAbandonedMediaCache(context: Context) {
+  val appContext = context.applicationContext
+  Thread(
+      {
+        runCatching {
+            val folder = File(appContext.cacheDir, ABANDONED_MEDIA_CACHE_DIRECTORY)
+            if (folder.isDirectory) folder.deleteRecursively()
+          }
+          .onFailure { android.util.Log.i("GizHls", "Old media cache could not be cleared", it) }
+      },
+      "GizCacheSweep",
+    )
+    .apply { isDaemon = true }
+    .start()
+}
+
+/** Counts what actually came over the link. */
 private class NetworkByteCounter(private val delegate: TransferListener) : TransferListener {
   override fun onTransferInitializing(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) {
     delegate.onTransferInitializing(source, dataSpec, isNetwork)
@@ -153,7 +127,7 @@ private class NetworkByteCounter(private val delegate: TransferListener) : Trans
     bytesTransferred: Int,
   ) {
     delegate.onBytesTransferred(source, dataSpec, isNetwork, bytesTransferred)
-    if (isNetwork) PlaybackCacheStats.addNetwork(bytesTransferred.toLong())
+    if (isNetwork) PlaybackTraffic.add(bytesTransferred.toLong())
   }
 
   override fun onTransferEnd(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) {
@@ -279,69 +253,6 @@ private fun networkTypeOf(context: Context): Int =
     else -> C.NETWORK_TYPE_OTHER
   }
 
-/**
- * Where fetched media is kept.
- *
- * One instance per process: SimpleCache locks its folder and a second one over the same directory
- * throws. It lives in the cache directory, so a device short of space may take it back.
- */
-internal object PlaybackCache {
-  @Volatile private var cache: Cache? = null
-  private var opening = false
-
-  /**
-   * The cache if it is ready, and nothing at all if it is not.
-   *
-   * Opening one reads an index off disk and opens a database, and this is asked for while a film is
-   * being built — on the main thread, in the middle of the composition that puts the player on
-   * screen. Doing that work there is a stall in front of the viewer at the exact moment they are
-   * waiting for a picture, so it happens on a background thread and the film that asked first
-   * simply goes to the network, as it always did.
-   */
-  fun get(context: Context): Cache? {
-    cache?.let { return it }
-    open(context)
-    return null
-  }
-
-  @Synchronized
-  private fun open(context: Context) {
-    if (cache != null || opening) return
-    opening = true
-    val appContext = context.applicationContext
-    Thread(
-        {
-          runCatching {
-              SimpleCache(
-                File(appContext.cacheDir, MEDIA_CACHE_DIRECTORY),
-                LeastRecentlyUsedCacheEvictor(MEDIA_CACHE_BYTES),
-                StandaloneDatabaseProvider(appContext),
-              )
-            }
-            .onFailure { android.util.Log.w("GizHls", "Media cache unavailable", it) }
-            .onSuccess { cache = it }
-          synchronized(this) { opening = false }
-        },
-        "GizMediaCache",
-      )
-      .apply { isDaemon = true }
-      .start()
-  }
-}
-
-/**
- * What a fetched piece of media is filed under.
- *
- * The whole address, bar the fragment, which no server ever sees. It was the host and path alone,
- * so that a signature changing on every resolve would still hit — and that is a good trick right up
- * against a provider whose query string is what says *which film this is*. Two films, one entry,
- * and a player fed the wrong bytes waits for a picture that is never coming.
- *
- * Keyed whole, a re-resolve misses and fetches, which is what it would have done anyway. What still
- * hits is what matters most: a seek back through a scene, and the reload after a stall, both of
- * which ask for the very address they were already given.
- */
-internal fun stableCacheKey(uri: String): String = uri.substringBefore('#').ifBlank { uri }
 
 /**
  * The stack every segment travels over.
@@ -547,72 +458,18 @@ internal fun forbiddenFallbackDataSourceFactory(
 }
 
 /**
- * Wraps [upstream] so that what has been fetched once need not be fetched again.
+ * The local wrapper every fetch goes through.
  *
- * Only for a title with an end. A live playlist is a moving window whose segments are never asked
- * for twice, so caching one fills the disk with video nobody can return to.
+ * Nothing is kept on disk. A cache lived here for a day: keyed on the whole address it could only
+ * ever hit inside a single playback, and measured on a device it served 2.5% of one film and 0% of
+ * another. What it did do reliably was make the second film of a session behave unlike the first —
+ * it opened on a background thread, so the first film played without it and every film after it
+ * played through it. A difference that large in exchange for a fortieth of the bytes is not a
+ * trade worth keeping, and instant rewinds never came from it: those are the back buffer, which is
+ * memory, per film, and untouched by any of this.
  */
 internal fun playbackDataSourceFactory(
   context: Context,
   upstream: DataSource.Factory,
-  cacheable: Boolean,
-): DataSource.Factory {
-  val local = DefaultDataSource.Factory(context, upstream)
-  if (!cacheable || !mediaCacheAllowed(context)) return local
-  val cache = PlaybackCache.get(context) ?: return local
-  return CacheDataSource.Factory()
-    .setCache(cache)
-    .setUpstreamDataSourceFactory(local)
-    .setCacheKeyFactory { dataSpec -> dataSpec.key ?: stableCacheKey(dataSpec.uri.toString()) }
-    .setEventListener(
-      object : CacheDataSource.EventListener {
-        override fun onCachedBytesRead(cacheSizeBytes: Long, cachedBytesRead: Long) {
-          PlaybackCacheStats.addCached(cachedBytesRead)
-        }
-
-        override fun onCacheIgnored(reason: Int) = Unit
-      }
-    )
-    // Video, and only video. See [SegmentOnlyCacheDataSink].
-    .setCacheWriteDataSinkFactory {
-      SegmentOnlyCacheDataSink(CacheDataSink(cache, CACHE_FRAGMENT_BYTES))
-    }
-    // A cache that cannot be read from or written to must never be the reason a film stops.
-    .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-}
-
-/** Fragment size for cache writes; Media3's own default, named here because the sink is ours. */
-private const val CACHE_FRAGMENT_BYTES = 5L * 1024L * 1024L
-
-/**
- * Keeps video, and refuses to keep the list of where the video is.
- *
- * A playlist is not the same kind of thing as a segment. It is a list of signed addresses, each of
- * which stops working within hours, so a playlist read back off disk on a later play hands the
- * player a set of links that have all expired — a title that used to play, failing on the second
- * viewing for a reason no server could explain. Playlists are small and worth re-fetching; segments
- * are large and worth keeping, and only they are written here.
- */
-private class SegmentOnlyCacheDataSink(private val delegate: DataSink) : DataSink {
-  private var keeping = false
-
-  override fun open(dataSpec: DataSpec) {
-    keeping = !looksLikePlaylist(dataSpec.uri.toString())
-    if (keeping) delegate.open(dataSpec)
-  }
-
-  override fun write(buffer: ByteArray, offset: Int, length: Int) {
-    if (keeping) delegate.write(buffer, offset, length)
-  }
-
-  override fun close() {
-    if (keeping) delegate.close()
-    keeping = false
-  }
-}
-
-/** An HLS or DASH manifest, by the only part of the address that is stable enough to ask. */
-internal fun looksLikePlaylist(uri: String): Boolean {
-  val path = uri.substringBefore('#').substringBefore('?').lowercase()
-  return path.endsWith(".m3u8") || path.endsWith(".m3u") || path.endsWith(".mpd")
-}
+  @Suppress("UNUSED_PARAMETER") cacheable: Boolean,
+): DataSource.Factory = DefaultDataSource.Factory(context, upstream)

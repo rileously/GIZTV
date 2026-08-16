@@ -1526,8 +1526,8 @@ internal fun HlsPlayerScreen(
     val audioSource = ActivePlayback.Source { player.pause() }
     ActivePlayback.register(audioSource)
 
-    // Counted per playback, so the log line reports this film's share rather than the session's.
-    PlaybackCacheStats.reset()
+    // Counted per playback, so the log line reports this film rather than the session.
+    PlaybackTraffic.reset()
     // What this playback actually did, written down when it ends. `adb logcat -s GizPlayback`.
     val statsListener =
       PlaybackStatsListener(/* keepHistory= */ false) { _, stats ->

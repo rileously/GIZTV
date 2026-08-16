@@ -19,6 +19,7 @@ import com.giztv.tv.link.parsePairingUri
 import com.giztv.tv.link.PhoneLink
 import com.giztv.tv.link.RemoteControl
 import com.giztv.tv.theme.GizTvTheme
+import com.giztv.tv.ui.player.clearAbandonedMediaCache
 import com.giztv.tv.ui.GizTvRoot
 import com.giztv.tv.update.UpdateCheckWorker
 
@@ -39,6 +40,9 @@ class MainActivity : AppCompatActivity() {
     // First thing in, so a fault while the rest of this is setting itself up is still written down.
     CrashReporter.install(this)
     installHttpResponseCache(this)
+    // A version of this app kept video on disk. It no longer does, and what it left is nobody's
+    // until this clears it away.
+    clearAbandonedMediaCache(this)
     requestedOrientation =
       gizTvOrientation(
         isTelevision = packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK),

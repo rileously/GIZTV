@@ -60,15 +60,14 @@ jobs:
           # What changed in this build, and nothing else. Edit this every release.
           RELEASE_NOTES: |
             What changed:
-            - Pairing a phone to a television no longer means typing anything. The television now
-              shows a square alongside the six digits; point your phone's camera at it and GIZTV
-              opens already connecting.
-            - It also works where it used not to. The television's address travels inside the
-              square, so a phone that cannot find the television on the network — a guest network,
-              or a phone sharing its own connection — pairs anyway. That used to mean reading an
-              address off the screen and typing it in.
-            - The six digits are still there, and still work, for a camera that will not open the
-              link.
+            - Every film now behaves the same as the first one you play. 1.71.0 began keeping
+              fetched video on disk, and it opened in the background — so the first film of a
+              session played without it and every film after played through it. Two different
+              paths, and the second one could be slow to seek. The store is gone; there is one
+              path now.
+            - Up to 384MB it had already written is deleted the first time you open this build.
+            - Nothing was lost with it. Instant rewinding comes from what the player holds in
+              memory, which is untouched, and so are the quicker skips added in 1.71.0.
 
           # 1.53.0 changed applicationId, so anything older than it still cannot be updated over
           # and has to be reinstalled by hand. Kept apart from the notes above so the release page
